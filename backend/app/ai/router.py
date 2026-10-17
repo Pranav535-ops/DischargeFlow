@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.ai import service as ai_service
 from app.ai.models import DischargeSummary
 from app.core.db import DB, utcnow
-from app.core.security import AuthUser, CurrentUser, require_roles
+from app.core.security import AuthUser, CurrentUser, requires
 from app.discharge import service as discharge_service
 from app.discharge.models import Task, Workflow
 from app.patients.models import Patient
@@ -20,7 +20,7 @@ class GenerateSummaryRequest(BaseModel):
 
 @router.post("/generate-summary")
 async def generate_discharge_summary(
-    req: GenerateSummaryRequest, db: DB, user: CurrentUser = Depends(require_roles(["physician", "admin"]))
+    req: GenerateSummaryRequest, db: DB, user: CurrentUser = Depends(requires("summary:manage"))
 ):
     patient = await db.get(Patient, req.patient_id)
     if not patient:
@@ -41,7 +41,7 @@ async def generate_discharge_summary(
 
 
 @router.put("/approve-summary/{summary_id}")
-async def approve_summary(summary_id: str, db: DB, user: CurrentUser = Depends(require_roles(["physician", "admin"]))):
+async def approve_summary(summary_id: str, db: DB, user: CurrentUser = Depends(requires("summary:manage"))):
     summary = await db.get(DischargeSummary, summary_id)
     if not summary:
         raise HTTPException(status_code=404, detail="Summary not found")

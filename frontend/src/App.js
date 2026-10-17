@@ -56,7 +56,7 @@ const AppRouter = () => {
   const location = useLocation();
 
   // Check URL fragment (not query params) for session_id synchronously during render
-  // This prevents race conditions by processing new session_id FIRST before checking existing session_token
+  // This prevents race conditions by processing a new session_id FIRST, before refreshing an existing session
   if (location.hash?.includes('session_id=')) {
     return <AuthCallback />;
   }

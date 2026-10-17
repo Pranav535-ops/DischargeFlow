@@ -3,29 +3,27 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import text
 from starlette.middleware.cors import CORSMiddleware
 
 from app.ai.router import router as ai_router
 from app.analytics.router import router as analytics_router
-from app.audit.models import AuditLog
 from app.audit.router import router as audit_router
 from app.chatbot.router import router as chatbot_router
 from app.core.config import settings
 from app.core.db import DB, SessionLocal, engine, utcnow
+from app.core.migrate import ensure_migrated
 from app.discharge.router import tasks_router, workflows_router
 from app.identity.router import auth_router, users_router
-from app.insurance.models import InsuranceClaim
 from app.insurance.router import router as insurance_router
 from app.notifications.router import router as notifications_router
-from app.patients.models import Patient
 from app.patients.router import router as patients_router
 from app.seed import seed_demo_data
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 
 @asynccontextmanager
@@ -41,6 +39,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    settings.require_jwt_secret()  # fail fast: the API cannot issue or verify tokens without it
+
     app = FastAPI(title="DischargeFlow API", version=VERSION, lifespan=lifespan)
 
     app.add_middleware(
@@ -58,7 +58,18 @@ def create_app() -> FastAPI:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Cache-Control"] = "no-store"
         return response
+
+    if settings.auto_migrate:
+        @app.middleware("http")
+        async def migrate_on_first_request(request: Request, call_next):
+            try:
+                await ensure_migrated()
+            except Exception:
+                logger.exception("Automatic migration failed")
+                return JSONResponse(status_code=503, content={"detail": "Database migration in progress or failed"})
+            return await call_next(request)
 
     api = APIRouter(prefix="/api")
     for router in (
@@ -69,20 +80,17 @@ def create_app() -> FastAPI:
 
     @api.get("/health", tags=["Health"])
     async def health_check(db: DB):
+        # Unauthenticated, so it reports reachability only; record counts would leak tenant data.
         try:
             await db.execute(text("SELECT 1"))
         except Exception:
             logger.exception("Health check: database unreachable")
             return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "unreachable"})
-        counts = {}
-        for name, model in (("patients", Patient), ("insurance_claims", InsuranceClaim), ("audit_logs", AuditLog)):
-            counts[name] = await db.scalar(select(func.count()).select_from(model))
         return {
             "status": "healthy",
             "version": VERSION,
             "database": engine.dialect.name,
             "timestamp": utcnow().isoformat(),
-            "metrics": counts,
         }
 
     app.include_router(api)

@@ -44,12 +44,18 @@ class UTCDateTime(TypeDecorator):
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
+    # Columns never returned by the API (key material, token hashes).
+    __api_exclude__: frozenset[str] = frozenset()
+
     def to_dict(self) -> dict:
         """API representation: every column, datetimes as ISO-8601 strings (matches the old Mongo docs)."""
         out = {}
         for col in self.__table__.columns:
-            value = getattr(self, col.key)
-            out[col.key] = value.isoformat() if isinstance(value, datetime) else value
+            if col.name in self.__api_exclude__:
+                continue
+            # col.name, not col.key: encrypted columns map to private attributes behind public synonyms.
+            value = getattr(self, col.name)
+            out[col.name] = value.isoformat() if isinstance(value, datetime) else value
         return out
 
 

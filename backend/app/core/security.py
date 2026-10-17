@@ -1,68 +1,113 @@
-"""Session token handling and role-based access dependencies."""
+"""Access tokens, request identity and permission checks.
+
+Access tokens are short-lived (15 min) HS256 JWTs carrying only the user, session and tenant ids. The user's role and
+whether the session is still active are read from the database on each request (cached for 30 s per process), so a
+role change or logout takes effect within that window instead of when a 7-day token expires.
+"""
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 import jwt
 from fastapi import Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.db import DB, utcnow
+from app.core.tenancy import use_tenant
+from app.identity.models import AuthSession, User
+from app.identity.permissions import ROLES, permissions_for
 
-TOKEN_TTL = timedelta(days=7)
-VALID_ROLES = ("physician", "nurse", "pharmacist", "admin")
+ACCESS_TOKEN_TTL = timedelta(minutes=15)
+VALID_ROLES = ROLES
+_IDENTITY_CACHE_TTL = 30.0
 
 
 class CurrentUser(BaseModel):
-    """Identity carried in the session token. Phase 2 moves role lookup to the database."""
-
     user_id: str
     email: str
     name: str
     picture: Optional[str] = None
-    role: str = "nurse"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    role: str
+    tenant_id: str
+    session_id: str
+    created_at: datetime
 
 
-def create_session_token(user: dict) -> str:
-    created_at = user["created_at"]
-    payload = {
-        "user_id": user["user_id"],
-        "email": user["email"],
-        "name": user["name"],
-        "picture": user.get("picture"),
-        "role": user["role"],
-        "created_at": created_at.isoformat() if isinstance(created_at, datetime) else created_at,
-        "exp": datetime.now(timezone.utc) + TOKEN_TTL,
-    }
-    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+def create_access_token(user_id: str, session_id: str, tenant_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {"sub": user_id, "sid": session_id, "tid": tenant_id, "typ": "access", "iat": now,
+               "exp": now + ACCESS_TOKEN_TTL}
+    return jwt.encode(payload, settings.require_jwt_secret(), algorithm="HS256")
 
 
-async def get_current_user(request: Request) -> CurrentUser:
-    """Read the session token from the cookie or an Authorization: Bearer header."""
-    token = request.cookies.get("session_token")
-    if not token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+def decode_access_token(token: str) -> dict:
     try:
-        claims = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        claims = jwt.decode(token, settings.require_jwt_secret(), algorithms=["HS256"],
+                            options={"require": ["sub", "sid", "tid", "exp"]})
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired")
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return CurrentUser(**claims)
+    if claims.get("typ") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return claims
 
 
-def require_roles(allowed_roles: list[str]):
-    async def role_checker(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-        if user.role not in allowed_roles:
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        return user
+_identity_cache: dict[str, tuple[float, CurrentUser]] = {}
 
-    return role_checker
+
+def invalidate_identity(*, user_id: Optional[str] = None, session_id: Optional[str] = None) -> None:
+    """Drop cached identities in this process (other instances expire within the cache TTL)."""
+    for sid, (_, cached) in list(_identity_cache.items()):
+        if sid == session_id or cached.user_id == user_id:
+            _identity_cache.pop(sid, None)
+
+
+async def load_identity(db, user_id: str, session_id: str) -> Optional[CurrentUser]:
+    row = (await db.execute(
+        select(User, AuthSession)
+        .join(AuthSession, AuthSession.user_id == User.user_id)
+        .where(User.user_id == user_id, AuthSession.session_id == session_id)
+    )).first()
+    if row is None:
+        return None
+    user, session = row
+    if session.revoked_at is not None or session.expires_at <= utcnow():
+        return None
+    return CurrentUser(user_id=user.user_id, email=user.email, name=user.name, picture=user.picture, role=user.role,
+                       tenant_id=user.tenant_id, session_id=session.session_id, created_at=user.created_at)
+
+
+async def get_current_user(request: Request, db: DB) -> CurrentUser:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    claims = decode_access_token(auth_header[7:])
+
+    # Bind the request's transaction to the token's tenant before reading any tenant-scoped row.
+    await use_tenant(db, claims["tid"])
+
+    cached = _identity_cache.get(claims["sid"])
+    if cached and cached[0] > time.monotonic() and cached[1].user_id == claims["sub"]:
+        return cached[1]
+    identity = await load_identity(db, claims["sub"], claims["sid"])
+    if identity is None or identity.tenant_id != claims["tid"]:
+        raise HTTPException(status_code=401, detail="Session is no longer active")
+    _identity_cache[claims["sid"]] = (time.monotonic() + _IDENTITY_CACHE_TTL, identity)
+    return identity
 
 
 AuthUser = Annotated[CurrentUser, Depends(get_current_user)]
+
+
+def requires(permission: str):
+    """Dependency: the signed-in user's role must hold `permission`."""
+
+    async def checker(user: AuthUser, db: DB) -> CurrentUser:
+        if permission not in await permissions_for(db, user.role):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return user
+
+    return checker

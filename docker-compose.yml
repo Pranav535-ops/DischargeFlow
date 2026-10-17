@@ -20,7 +20,7 @@ services:
   migrate:
     build:
       context: ./backend
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "-m", "app.cli", "migrate"]  # alembic upgrade head + encrypt any plaintext PHI
     environment: &backend-env
       APP_ENV: development
       DATABASE_URL: postgresql+asyncpg://dischargeflow:dischargeflow@postgres:5432/dischargeflow

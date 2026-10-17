@@ -7,13 +7,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, UTCDateTime, utcnow
 from app.core.ids import new_id
+from app.core.tenancy import TenantMixin
 
 CodeList = JSON().with_variant(JSONB(), "postgresql")
 # Numeric, not float, so stored money is exact. asdecimal=False hands floats back to the API layer.
 Money = Numeric(12, 2, asdecimal=False)
 
 
-class InsuranceClaim(Base):
+class InsuranceClaim(TenantMixin, Base):
     __tablename__ = "insurance_claims"
 
     claim_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("clm"))

@@ -6,9 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, UTCDateTime, utcnow
 from app.core.ids import new_id
+from app.core.tenancy import TenantMixin
 
 
-class DischargeSummary(Base):
+class DischargeSummary(TenantMixin, Base):
     __tablename__ = "discharge_summaries"
 
     summary_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sum"))

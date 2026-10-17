@@ -6,9 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, UTCDateTime, utcnow
 from app.core.ids import new_id
+from app.core.tenancy import TenantMixin
 
 
-class Notification(Base):
+class Notification(TenantMixin, Base):
     __tablename__ = "notifications"
     __table_args__ = (Index("ix_notifications_user_created", "user_id", "created_at"),)
 

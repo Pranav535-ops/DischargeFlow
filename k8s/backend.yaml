@@ -1,7 +1,8 @@
 # Requires a secret with the database URL and token signing key:
 #   kubectl -n dischargeflow-prod create secret generic backend-secrets \
 #     --from-literal=DATABASE_URL=postgresql+asyncpg://dischargeflow:<password>@postgres:5432/dischargeflow \
-#     --from-literal=JWT_SECRET=$(openssl rand -base64 48)
+#     --from-literal=JWT_SECRET=$(openssl rand -base64 48) \
+#     --from-literal=PHI_KEK=$(openssl rand -base64 32)
 # Apply the migration Job and wait for it before rolling out a new backend image:
 #   kubectl -n dischargeflow-prod wait --for=condition=complete job/backend-migrate --timeout=120s
 apiVersion: batch/v1
@@ -18,7 +19,7 @@ spec:
       containers:
       - name: migrate
         image: ftaakash/dischargeflow-backend:latest
-        command: ["alembic", "upgrade", "head"]
+        command: ["python", "-m", "app.cli", "migrate"]
         envFrom:
         - secretRef:
             name: backend-secrets

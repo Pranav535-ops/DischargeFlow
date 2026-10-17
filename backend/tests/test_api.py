@@ -14,18 +14,23 @@ async def test_requests_without_token_are_rejected(client):
 
 
 async def test_forged_token_is_rejected(client):
-    forged = jwt.encode({"user_id": "x", "email": "x@x", "name": "x", "role": "admin"}, "wrong-secret-but-long-enough-for-hs256-0123456789", algorithm="HS256")
+    forged = jwt.encode({"sub": "x", "sid": "x", "tid": "default", "typ": "access", "exp": 9999999999},
+                        "wrong-secret-but-long-enough-for-hs256-0123456789", algorithm="HS256")
     resp = await client.get("/api/users", headers={"Authorization": f"Bearer {forged}"})
     assert resp.status_code == 401
 
 
-async def test_cookie_auth_and_me(client, make_user):
+async def test_legacy_long_lived_token_is_rejected(client, make_user):
+    """Pre-Phase-2 tokens carried the role and lasted 7 days; they must not be accepted any more."""
+    user, _ = await make_user("admin")
+    legacy = jwt.encode({**user, "role": "admin", "exp": 9999999999}, settings.jwt_secret, algorithm="HS256")
+    assert (await client.get("/api/users", headers={"Authorization": f"Bearer {legacy}"})).status_code == 401
+
+
+async def test_me_comes_from_database(client, make_user):
     user, headers = await make_user("pharmacist", name="Pat Pharm")
-    token = headers["Authorization"].split(" ", 1)[1]
-    client.cookies.set("session_token", token)
-    me = (await client.get("/api/auth/me")).json()
-    client.cookies.clear()
-    assert me["user_id"] == user["user_id"] and me["role"] == "pharmacist"
+    me = (await client.get("/api/auth/me", headers=headers)).json()
+    assert me["user_id"] == user["user_id"] and me["role"] == "pharmacist" and me["tenant_id"] == "default"
 
 
 async def test_role_gates(client, make_user, create_patient):
@@ -43,10 +48,13 @@ async def test_role_gates(client, make_user, create_patient):
 
 
 async def test_admin_updates_role(client, make_user):
-    target, _ = await make_user("nurse")
+    target, target_headers = await make_user("nurse")
     _, admin = await make_user("admin")
+    assert (await client.get("/api/auth/me", headers=target_headers)).json()["role"] == "nurse"
     resp = await client.put(f"/api/users/{target['user_id']}/role", json={"role": "physician"}, headers=admin)
     assert resp.json() == {"success": True, "role": "physician"}
+    # Takes effect on the user's existing token, without signing in again.
+    assert (await client.get("/api/auth/me", headers=target_headers)).json()["role"] == "physician"
     users = {u["user_id"]: u for u in (await client.get("/api/users", headers=admin)).json()}
     assert users[target["user_id"]]["role"] == "physician"
 
@@ -64,8 +72,10 @@ async def test_session_exchange_creates_user_once(client, monkeypatch):
     first = await client.post("/api/auth/session", json={"session_id": "abc"})
     assert first.status_code == 200, first.text
     body = first.json()
-    assert body["user"]["role"] == "nurse"
-    assert "session_token" in first.headers.get("set-cookie", "")
+    assert body["user"]["role"] == "nurse" and body["expires_in"] == 900
+    cookie = first.headers.get("set-cookie", "")
+    assert "df_refresh=" in cookie and "HttpOnly" in cookie and "SameSite=strict" in cookie
+    assert "Path=/api/auth" in cookie
 
     second = (await client.post("/api/auth/session", json={"session_id": "def"})).json()
     assert second["user"]["user_id"] == body["user"]["user_id"]
@@ -222,8 +232,8 @@ async def test_health_and_security_headers(client):
     resp = await client.get("/api/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "healthy" and body["metrics"] == {"patients": 0, "insurance_claims": 0, "audit_logs": 0}
-    assert resp.headers["X-Frame-Options"] == "DENY"
+    assert body["status"] == "healthy" and "metrics" not in body  # no unauthenticated record counts
+    assert resp.headers["X-Frame-Options"] == "DENY" and resp.headers["Cache-Control"] == "no-store"
 
 
 async def test_seed_endpoint_is_gone(client):

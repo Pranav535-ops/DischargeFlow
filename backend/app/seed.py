@@ -2,6 +2,9 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.core.tenancy import use_tenant
+from app.identity.models import Tenant
 from app.patients.models import Patient
 
 DEMO_PATIENTS = [
@@ -16,9 +19,18 @@ DEMO_PATIENTS = [
 ]
 
 
-async def seed_demo_data(db: AsyncSession) -> int:
-    """Insert demo patients into an empty database. Returns how many were inserted (0 if data already exists)."""
-    if await db.scalar(select(func.count()).select_from(Patient)):
+async def ensure_tenant(db: AsyncSession, tenant_id: str, name: str) -> None:
+    if await db.get(Tenant, tenant_id) is None:
+        db.add(Tenant(tenant_id=tenant_id, name=name))
+        await db.flush()
+
+
+async def seed_demo_data(db: AsyncSession, tenant_id: str | None = None) -> int:
+    """Insert demo patients into a tenant with no patients. Returns how many were inserted."""
+    tenant_id = tenant_id or settings.default_tenant_id
+    await ensure_tenant(db, tenant_id, "Default Hospital")
+    await use_tenant(db, tenant_id)
+    if await db.scalar(select(func.count()).select_from(Patient).where(Patient.tenant_id == tenant_id)):
         return 0
     db.add_all(Patient(**p) for p in DEMO_PATIENTS)
     await db.flush()
