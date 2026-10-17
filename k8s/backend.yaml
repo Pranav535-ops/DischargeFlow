@@ -1,3 +1,28 @@
+# Requires a secret with the database URL and token signing key:
+#   kubectl -n dischargeflow-prod create secret generic backend-secrets \
+#     --from-literal=DATABASE_URL=postgresql+asyncpg://dischargeflow:<password>@postgres:5432/dischargeflow \
+#     --from-literal=JWT_SECRET=$(openssl rand -base64 48)
+# Apply the migration Job and wait for it before rolling out a new backend image:
+#   kubectl -n dischargeflow-prod wait --for=condition=complete job/backend-migrate --timeout=120s
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backend-migrate
+  namespace: dischargeflow-prod
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: ftaakash/dischargeflow-backend:latest
+        command: ["alembic", "upgrade", "head"]
+        envFrom:
+        - secretRef:
+            name: backend-secrets
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,12 +45,24 @@ spec:
         ports:
         - containerPort: 8000
         env:
-        - name: MONGO_URL
-          value: "mongodb://mongodb:27017"
-        - name: DB_NAME
-          value: "dischargeflow"
+        - name: APP_ENV
+          value: "production"
         - name: CORS_ORIGINS
-          value: "*"
+          value: "https://dischargeflow.example.com"  # set to the real frontend origin(s), comma-separated
+        envFrom:
+        - secretRef:
+            name: backend-secrets
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
         resources:
           limits:
             memory: "512Mi"

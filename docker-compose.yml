@@ -1,34 +1,48 @@
-version: '3.8'
-
 services:
-  mongodb:
-    image: mongo:6.0
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: dischargeflow
+      POSTGRES_USER: dischargeflow
+      POSTGRES_PASSWORD: dischargeflow  # local development only
     ports:
-      - "27017:27017"
+      - "5432:5432"
     volumes:
-      - mongodb_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dischargeflow -d dischargeflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - dischargeflow-network
 
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
+  migrate:
+    build:
+      context: ./backend
+    command: ["alembic", "upgrade", "head"]
+    environment: &backend-env
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://dischargeflow:dischargeflow@postgres:5432/dischargeflow
+      JWT_SECRET: local-dev-only-secret-change-me-0123456789
+      CORS_ORIGINS: http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - dischargeflow-network
 
   backend:
-    build: 
+    build:
       context: ./backend
     ports:
       - "8000:8000"
     environment:
-      - MONGO_URL=mongodb://mongodb:27017
-      - DB_NAME=dischargeflow
-      - CORS_ORIGINS=http://localhost:3000
+      <<: *backend-env
+      SEED_ON_STARTUP: "true"
     depends_on:
-      - mongodb
-      - redis
+      migrate:
+        condition: service_completed_successfully
     networks:
       - dischargeflow-network
 
@@ -43,7 +57,7 @@ services:
       - dischargeflow-network
 
 volumes:
-  mongodb_data:
+  postgres_data:
 
 networks:
   dischargeflow-network:

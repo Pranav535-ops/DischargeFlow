@@ -28,9 +28,6 @@ const Dashboard = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        // Seed data if needed
-        await axios.post(`${API}/seed`, {}, { withCredentials: true });
-        // Fetch notifications
         const notifRes = await axios.get(`${API}/notifications`, { withCredentials: true });
         setNotifications(notifRes.data);
         setUnreadCount(notifRes.data.filter(n => !n.read).length);
