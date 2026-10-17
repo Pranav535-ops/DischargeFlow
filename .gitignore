@@ -87,3 +87,6 @@ android-sdk/-e
 # Environment files
 *.env
 *.env.*
+
+# Local SQLite databases (backend dev default)
+*.db

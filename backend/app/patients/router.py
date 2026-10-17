@@ -1,0 +1,107 @@
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import select
+
+from app.audit.service import write_audit
+from app.core.db import DB
+from app.core.security import AuthUser, CurrentUser, require_roles
+from app.patients.models import Patient
+
+router = APIRouter(prefix="/patients", tags=["Patients"])
+
+REDACTED = "[REDACTED]"
+
+
+class PatientCreate(BaseModel):
+    name: str
+    date_of_birth: str
+    admission_date: str
+    room_number: str
+    diagnosis: str
+    attending_physician: str
+
+
+class PatientUpdate(BaseModel):
+    """Editable fields. Unknown keys are ignored, so clients can't overwrite IDs, timestamps or erasure flags."""
+
+    name: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    admission_date: Optional[str] = None
+    room_number: Optional[str] = None
+    diagnosis: Optional[str] = None
+    attending_physician: Optional[str] = None
+    status: Optional[Literal["admitted", "pending_discharge", "discharged"]] = None
+
+
+class ConsentUpdate(BaseModel):
+    gdpr_consent: bool
+
+
+async def get_patient_or_404(db, patient_id: str) -> Patient:
+    patient = await db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return patient
+
+
+@router.get("")
+async def get_patients(db: DB, user: AuthUser, status: Optional[str] = None):
+    stmt = select(Patient).order_by(Patient.admission_date.desc())
+    if status:
+        stmt = stmt.where(Patient.status == status)
+    return [p.to_dict() for p in (await db.scalars(stmt))]
+
+
+@router.get("/{patient_id}")
+async def get_patient(patient_id: str, db: DB, user: AuthUser):
+    return (await get_patient_or_404(db, patient_id)).to_dict()
+
+
+@router.post("")
+async def create_patient(
+    patient_data: PatientCreate, db: DB, user: CurrentUser = Depends(require_roles(["physician", "nurse", "admin"]))
+):
+    patient = Patient(**patient_data.model_dump())
+    db.add(patient)
+    await db.flush()
+    return patient.to_dict()
+
+
+@router.put("/{patient_id}")
+async def update_patient(
+    patient_id: str,
+    updates: PatientUpdate,
+    db: DB,
+    user: CurrentUser = Depends(require_roles(["physician", "nurse", "admin"])),
+):
+    patient = await get_patient_or_404(db, patient_id)
+    for field, value in updates.model_dump(exclude_unset=True, exclude_none=True).items():
+        setattr(patient, field, value)
+    await db.flush()
+    await db.refresh(patient)
+    return patient.to_dict()
+
+
+@router.post("/{patient_id}/consent")
+async def update_patient_consent(patient_id: str, body: ConsentUpdate, request: Request, db: DB, user: AuthUser):
+    patient = await get_patient_or_404(db, patient_id)
+    patient.gdpr_consent = body.gdpr_consent
+    await write_audit(db, user, "UPDATE_CONSENT", "patient", patient_id, f"GDPR consent → {body.gdpr_consent}", request)
+    return {"message": "Consent updated", "gdpr_consent": body.gdpr_consent}
+
+
+@router.delete("/{patient_id}/data")
+async def delete_patient_data(
+    patient_id: str, request: Request, db: DB, user: CurrentUser = Depends(require_roles(["admin"]))
+):
+    """GDPR right-to-erasure: anonymize identifying fields, keep the row so audit references stay valid."""
+    patient = await get_patient_or_404(db, patient_id)
+    patient.name = REDACTED
+    patient.date_of_birth = REDACTED
+    patient.diagnosis = REDACTED
+    patient.attending_physician = REDACTED
+    patient.gdpr_erased = True
+    await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data anonymized per GDPR request", request)
+    return {"message": "Patient data erased per GDPR right-to-be-forgotten"}

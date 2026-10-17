@@ -7,7 +7,7 @@
     <a href="https://reactjs.org/"><img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" alt="React" /></a>
     <a href="https://tailwindcss.com/"><img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" /></a>
     <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi" alt="FastAPI" /></a>
-    <a href="https://www.mongodb.com/"><img src="https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB" /></a>
+    <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" /></a>
     <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-2CA5E0?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" /></a>
   </p>
 </div>
@@ -30,8 +30,8 @@
 
 ### 1. Requirements
 - Node.js (v18+)
-- Python (v3.10+) 
-- _Note: This project can run locally with an in-memory MongoDB mock via `mongomock_motor` without a dedicated database server!_
+- Python (v3.12+)
+- _Note: Local development uses SQLite by default (no database server needed). Docker Compose and production use PostgreSQL._
 
 ### 2. Frontend Setup
 ```bash
@@ -47,7 +47,10 @@ cd backend
 python -m venv venv
 venv\Scripts\activate   # Windows
 pip install -r requirements.txt
+alembic upgrade head          # create the schema (SQLite by default; set DATABASE_URL for Postgres)
+python -m app.cli seed        # optional: demo patients
 python -m uvicorn server:app --port 8000
+python -m pytest              # run the test suite
 ```
 _The backend API will be exposed at `http://localhost:8000`._
 
@@ -56,7 +59,7 @@ DischargeFlow includes a unified production setup using Compose. You do not need
 ```bash
 docker-compose up --build -d
 ```
-All frontend files, API routes, Redis caches, and simulated MongoDBs execute immediately inside their isolated network containers!
+Compose starts PostgreSQL, applies the Alembic migrations, then runs the API (seeded with demo patients) and the frontend.
 
 ### ☸️ Kubernetes Escalation
 Ready for AWS/GCP workloads? Access the unified manifest files within the `/k8s/` folder:

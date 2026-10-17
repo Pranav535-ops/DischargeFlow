@@ -1,30 +1,46 @@
+# Self-hosted PostgreSQL for cluster deployments. In AWS, prefer RDS (ADR-001) and point DATABASE_URL at it instead.
+# Create the credentials first:
+#   kubectl -n dischargeflow-prod create secret generic postgres-credentials \
+#     --from-literal=POSTGRES_USER=dischargeflow --from-literal=POSTGRES_PASSWORD=<strong-password>
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: mongodb
+  name: postgres
   namespace: dischargeflow-prod
 spec:
-  serviceName: "mongodb"
+  serviceName: "postgres"
   replicas: 1
   selector:
     matchLabels:
-      app: mongodb
+      app: postgres
   template:
     metadata:
       labels:
-        app: mongodb
+        app: postgres
     spec:
       containers:
-      - name: mongodb
-        image: mongo:6.0
+      - name: postgres
+        image: postgres:16-alpine
         ports:
-        - containerPort: 27017
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "dischargeflow"
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        envFrom:
+        - secretRef:
+            name: postgres-credentials
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d dischargeflow"]
+          periodSeconds: 5
         volumeMounts:
-        - name: mongo-data
-          mountPath: /data/db
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
   volumeClaimTemplates:
   - metadata:
-      name: mongo-data
+      name: postgres-data
     spec:
       accessModes: [ "ReadWriteOnce" ]
       resources:
@@ -34,10 +50,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: mongodb
+  name: postgres
   namespace: dischargeflow-prod
 spec:
   ports:
-  - port: 27017
+  - port: 5432
   selector:
-    app: mongodb
+    app: postgres
