@@ -74,6 +74,16 @@ async def test_seed_is_idempotent(db):
     assert await db.scalar(select(func.count()).select_from(Patient)) == len(DEMO_PATIENTS)
 
 
+def test_server_imports_by_path_from_repo_root():
+    """Vercel loads backend/server.py by file path with the repo root as cwd; `app` must still resolve."""
+    repo_root = BACKEND_DIR.parent
+    code = "import runpy; ns = runpy.run_path('backend/server.py'); print(type(ns['app']).__name__)"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    result = subprocess.run([sys.executable, "-c", code], cwd=repo_root, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "FastAPI"
+
+
 def _alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "APP_ENV": "test", "DATABASE_URL": database_url}
     return subprocess.run(
