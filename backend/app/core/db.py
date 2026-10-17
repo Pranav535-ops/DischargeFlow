@@ -1,5 +1,6 @@
 """SQLAlchemy engine, session factory and declarative base."""
 import os
+import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated
 from datetime import datetime, timezone
@@ -74,10 +75,30 @@ def normalize_database_url(url: str) -> tuple[str, dict]:
     return url, connect_args
 
 
+def uses_transaction_pooler(url: str) -> bool:
+    """Transaction-mode poolers (Neon's "-pooler" hosts, ?pgbouncer=true).
+
+    PgBouncer >= 1.21 handles asyncpg's prepared statements, but older or differently configured poolers break
+    them, so pooled URLs get the conservative settings below.
+    """
+    parts = urlsplit(url)
+    return "-pooler." in (parts.hostname or "") or dict(parse_qsl(parts.query)).get("pgbouncer") == "true"
+
+
 def make_engine(url: str, **kwargs):
+    pooler = uses_transaction_pooler(url)
     url, connect_args = normalize_database_url(url)
+    if pooler:
+        url = urlunsplit(urlsplit(url)._replace(
+            query=urlencode({k: v for k, v in parse_qsl(urlsplit(url).query) if k != "pgbouncer"})))
+        # SQLAlchemy's documented PgBouncer settings: no statement cache, unique statement names.
+        connect_args |= {
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+            "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
+        }
     # Serverless platforms (Vercel) freeze processes between requests; pooled connections go stale.
-    if os.environ.get("VERCEL") and "poolclass" not in kwargs:
+    if (os.environ.get("VERCEL") or pooler) and "poolclass" not in kwargs:
         kwargs["poolclass"] = NullPool
     eng = create_async_engine(url, connect_args=connect_args, pool_pre_ping=True, **kwargs)
     if eng.dialect.name == "sqlite":

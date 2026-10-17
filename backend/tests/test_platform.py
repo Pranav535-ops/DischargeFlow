@@ -47,6 +47,25 @@ def test_normalize_database_url(raw, url, connect_args):
     assert normalize_database_url(raw) == (url, connect_args)
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("postgresql://u:p@ep-cool-123-pooler.us-east-2.aws.neon.tech/db?sslmode=require", True),
+        ("postgresql://u:p@db.example.com/db?pgbouncer=true", True),
+        ("postgresql://u:p@ep-cool-123.us-east-2.aws.neon.tech/db?sslmode=require", False),
+    ],
+)
+def test_transaction_pooler_detection(raw, expected):
+    from sqlalchemy.pool import NullPool
+
+    from app.core.db import make_engine, uses_transaction_pooler
+
+    assert uses_transaction_pooler(raw) is expected
+    eng = make_engine(raw)  # no connection is opened here
+    assert "pgbouncer" not in str(eng.url)
+    assert isinstance(eng.pool, NullPool) is expected
+
+
 @pytest.mark.anyio
 async def test_seed_is_idempotent(db):
     assert await seed_demo_data(db) == len(DEMO_PATIENTS)
