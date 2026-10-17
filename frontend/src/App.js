@@ -10,13 +10,9 @@ import { Loader2 } from 'lucide-react';
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
-  const location = useLocation();
 
-  // If we have user data passed from AuthCallback, use it
-  if (location.state?.user) {
-    return children;
-  }
-
+  // No shortcut via router state: it survives reloads, and rendering before the session refresh finishes
+  // makes the first API calls fail with 401.
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
@@ -56,7 +52,7 @@ const AppRouter = () => {
   const location = useLocation();
 
   // Check URL fragment (not query params) for session_id synchronously during render
-  // This prevents race conditions by processing new session_id FIRST before checking existing session_token
+  // This prevents race conditions by processing a new session_id FIRST, before refreshing an existing session
   if (location.hash?.includes('session_id=')) {
     return <AuthCallback />;
   }

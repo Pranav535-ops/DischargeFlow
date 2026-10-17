@@ -6,12 +6,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, UTCDateTime, utcnow
 from app.core.ids import new_id
+from app.core.tenancy import TenantMixin
 
 ACTIVE_WORKFLOW_STATUSES = ("in_progress", "pending_approval")
 _ACTIVE_SQL = text("status IN ('in_progress', 'pending_approval')")
 
 
-class Workflow(Base):
+class Workflow(TenantMixin, Base):
     __tablename__ = "workflows"
     __table_args__ = (
         # At most one active discharge per patient, enforced by the database rather than a read-then-write check.
@@ -33,7 +34,7 @@ class Workflow(Base):
     estimated_discharge_time: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
 
 
-class Task(Base):
+class Task(TenantMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (Index("ix_tasks_role_status", "assigned_role", "status"),)
 

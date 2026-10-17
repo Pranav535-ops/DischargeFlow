@@ -6,12 +6,10 @@ from sqlalchemy import select
 
 from app.audit.service import write_audit
 from app.core.db import DB
-from app.core.security import AuthUser, CurrentUser, require_roles
+from app.core.security import AuthUser, CurrentUser, requires
 from app.patients.models import Patient
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
-
-REDACTED = "[REDACTED]"
 
 
 class PatientCreate(BaseModel):
@@ -61,7 +59,7 @@ async def get_patient(patient_id: str, db: DB, user: AuthUser):
 
 @router.post("")
 async def create_patient(
-    patient_data: PatientCreate, db: DB, user: CurrentUser = Depends(require_roles(["physician", "nurse", "admin"]))
+    patient_data: PatientCreate, db: DB, user: CurrentUser = Depends(requires("patient:write"))
 ):
     patient = Patient(**patient_data.model_dump())
     db.add(patient)
@@ -74,7 +72,7 @@ async def update_patient(
     patient_id: str,
     updates: PatientUpdate,
     db: DB,
-    user: CurrentUser = Depends(require_roles(["physician", "nurse", "admin"])),
+    user: CurrentUser = Depends(requires("patient:write")),
 ):
     patient = await get_patient_or_404(db, patient_id)
     for field, value in updates.model_dump(exclude_unset=True, exclude_none=True).items():
@@ -94,14 +92,13 @@ async def update_patient_consent(patient_id: str, body: ConsentUpdate, request: 
 
 @router.delete("/{patient_id}/data")
 async def delete_patient_data(
-    patient_id: str, request: Request, db: DB, user: CurrentUser = Depends(require_roles(["admin"]))
+    patient_id: str, request: Request, db: DB, user: CurrentUser = Depends(requires("patient:erase"))
 ):
-    """GDPR right-to-erasure: anonymize identifying fields, keep the row so audit references stay valid."""
+    """GDPR right-to-erasure: destroy the patient's data key and overwrite identifiers.
+
+    The row stays so audit references remain valid.
+    """
     patient = await get_patient_or_404(db, patient_id)
-    patient.name = REDACTED
-    patient.date_of_birth = REDACTED
-    patient.diagnosis = REDACTED
-    patient.attending_physician = REDACTED
-    patient.gdpr_erased = True
-    await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data anonymized per GDPR request", request)
+    patient.shred()
+    await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data key destroyed and identifiers erased", request)
     return {"message": "Patient data erased per GDPR right-to-be-forgotten"}

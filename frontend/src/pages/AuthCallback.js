@@ -25,11 +25,8 @@ const AuthCallback = () => {
         return;
       }
 
-      // Safeguard against React StrictMode Double-execution
+      // Safeguard against React StrictMode Double-execution: the first run owns the exchange.
       if (sessionStorage.getItem(`auth_processing_${sessionId}`)) {
-        if (localStorage.getItem('session_token')) {
-          navigate('/dashboard', { replace: true });
-        }
         return;
       }
       sessionStorage.setItem(`auth_processing_${sessionId}`, 'true');

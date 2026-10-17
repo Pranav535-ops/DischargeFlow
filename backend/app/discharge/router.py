@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 
 from app.core.db import DB, utcnow
-from app.core.security import AuthUser, CurrentUser, require_roles
+from app.core.security import AuthUser, CurrentUser, requires
 from app.discharge import service
 from app.discharge.models import Task, Workflow
 from app.patients.models import Patient
@@ -34,7 +34,7 @@ class TaskUpdate(BaseModel):
 
 @workflows_router.post("/initiate/{patient_id}")
 async def initiate_discharge(
-    patient_id: str, db: DB, user: CurrentUser = Depends(require_roles(["physician", "admin"]))
+    patient_id: str, db: DB, user: CurrentUser = Depends(requires("workflow:manage"))
 ):
     return await service.initiate_discharge(db, patient_id, user)
 
@@ -63,7 +63,7 @@ async def get_workflow(workflow_id: str, db: DB, user: AuthUser):
 
 @workflows_router.put("/{workflow_id}/complete")
 async def complete_workflow(
-    workflow_id: str, db: DB, user: CurrentUser = Depends(require_roles(["physician", "admin"]))
+    workflow_id: str, db: DB, user: CurrentUser = Depends(requires("workflow:manage"))
 ):
     return await service.complete_discharge(db, workflow_id)
 
@@ -72,7 +72,7 @@ async def complete_workflow(
 
 @tasks_router.post("")
 async def create_task(
-    task_data: TaskCreate, db: DB, user: CurrentUser = Depends(require_roles(["physician", "nurse", "admin"]))
+    task_data: TaskCreate, db: DB, user: CurrentUser = Depends(requires("task:create"))
 ):
     """Create a manual task, attached to the patient's active workflow if there is one."""
     if not await db.get(Patient, task_data.patient_id):

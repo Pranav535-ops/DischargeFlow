@@ -282,11 +282,11 @@ Sequenced as Agile increments of roughly two weeks each. Every phase ends deploy
 3. [x] Remove `POST /seed` from the dashboard and add `python -m app.cli seed` (non-prod only).
 4. [x] pytest suite for the discharge state machine, RBAC, claims, chatbot and migrations. Runs on SQLite locally and against a Postgres 16 service container in CI (used instead of Testcontainers: simpler in GitHub Actions, and no Docker needed for local runs). The root `*_test.py` scripts are removed.
 
-**Phase 2: Identity + security**
-5. [ ] Cognito user pool (Google federation, MFA for admin/physician). PKCE in the SPA, with tokens kept in memory and a refresh cookie.
-6. [ ] DB-backed roles/permissions with a Redis cache; `requires(permission)` dependency.
-7. [ ] Append-only `audit_events` with a hash chain, PHI field encryption and crypto-shred erasure.
-8. [ ] `tenant_id` + Postgres RLS.
+**Phase 2: Identity + security** (done 2026-10-18; two items deliberately deferred, noted below)
+5. [x] Tokens kept in memory with a rotating refresh cookie: 15-minute access JWTs, plus an httpOnly SameSite=Strict refresh cookie that rotates on every use, with reuse detection and server-side revocation. **Deferred:** the switch to Cognito, and MFA with it. Google login via Emergent stays for now, because Cognito needs an AWS account the project doesn't have yet. It is planned for the AWS phase.
+6. [x] DB-backed `role_permissions` with a `requires(permission)` dependency. The cache is per process (30–60 s) instead of Redis, because serverless instances are short-lived and Redis isn't provisioned.
+7. [x] Append-only, hash-chained `audit_logs` (the table name is kept; triggers block UPDATE/DELETE for every role, and the app role has INSERT/SELECT only), with `GET /api/audit/verify`. PHI (name, DOB, diagnosis) is encrypted per patient with AES-256-GCM, and erasure crypto-shreds the patient's key. **Deferred:** the KEK comes from app config (`PHI_KEK`) behind a `KeyProvider` interface, not from KMS, so wrapped keys in old backups remain decryptable until it moves to KMS.
+8. [x] `tenant_id` on every tenant-scoped table, enforced by Postgres RLS through a non-bypass `dischargeflow_app` role that each request switches to with `SET LOCAL ROLE`. Existing data was moved into a `default` tenant.
 
 **Phase 3: AI layer**
 9. [ ] `LLMClient` interface with Bedrock Claude + mock adapters, and a prompt registry with versioned templates.

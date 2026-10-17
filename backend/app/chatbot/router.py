@@ -160,11 +160,14 @@ async def _submit_claim(db, message: str, user: CurrentUser) -> tuple[str, dict 
     except ValueError:
         billed = 0.0
 
+    patients = list(await db.scalars(select(Patient).order_by(Patient.created_at)))
     patient = None
     if f["patient"]:
-        patient = await db.scalar(select(Patient).where(Patient.name.ilike(f"%{f['patient']}%")).limit(1))
+        # Names are encrypted at rest, so match after decryption rather than with SQL ILIKE.
+        needle = f["patient"].lower()
+        patient = next((p for p in patients if needle in (p.name or "").lower()), None)
     if not patient:
-        patient = await db.scalar(select(Patient).order_by(Patient.created_at).limit(1))
+        patient = patients[0] if patients else None
     if not patient:
         return "There are no patients in the system to attach this claim to.", None
 
