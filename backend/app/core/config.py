@@ -69,6 +69,9 @@ class Settings:
     # in, whatever their domain.
     allowed_email_domains: tuple[str, ...] = ()
     self_registration: bool = True
+    # ADR-002 item 3: staff see only patients on their own units (plus unassigned patients and break-glass grants),
+    # enforced by RLS on Postgres. Off by default, so units can be set up before anyone loses access.
+    unit_scoped_access: bool = False
     # How long one notification stream (GET /api/notifications/stream) stays open before the client reconnects.
     # Kept under the serverless function limit on Vercel; a long-running host (ECS) can raise it.
     notification_stream_seconds: float = 25.0
@@ -148,6 +151,7 @@ def load_settings() -> Settings:
         enable_dev_login=is_dev and _bool("ENABLE_DEV_LOGIN"),
         allowed_email_domains=tuple(d.lower().lstrip("@") for d in _split_csv(os.environ.get("ALLOWED_EMAIL_DOMAINS", ""))),
         self_registration=_bool("SELF_REGISTRATION", True),
+        unit_scoped_access=_bool("UNIT_SCOPED_ACCESS"),
         notification_stream_seconds=float(os.environ.get("NOTIFICATION_STREAM_SECONDS", "").strip() or 25),
     )
 

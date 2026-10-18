@@ -35,6 +35,8 @@ export const keys = {
   claims: ['insurance', 'claims'],
   insuranceReports: ['insurance', 'reports'],
   users: ['users'],
+  units: ['units'],
+  accessGrants: ['access-grants'],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -68,6 +70,10 @@ export const useOperations = (days = 30) =>
 export const useClaims = () => useQuery({ queryKey: keys.claims, queryFn: get('/insurance/claims') });
 export const useInsuranceReports = () => useQuery({ queryKey: keys.insuranceReports, queryFn: get('/insurance/reports') });
 export const useUsers = () => useQuery({ queryKey: keys.users, queryFn: get('/users') });
+export const useUnits = () => useQuery({ queryKey: keys.units, queryFn: get('/units'), staleTime: 300_000 });
+export const useAccessGrants = () => useQuery({ queryKey: keys.accessGrants, queryFn: get('/access-grants') });
+// A patient outside the user's units (403 with break_glass), as opposed to one that does not exist.
+export const isBreakGlassError = (error) => error?.response?.status === 403 && error?.response?.data?.break_glass === true;
 
 // After any change to discharge state: workflows, tasks, patients' statuses, notifications and dashboards all move.
 export const invalidateDischarge = () => Promise.all(

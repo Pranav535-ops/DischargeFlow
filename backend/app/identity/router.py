@@ -13,6 +13,7 @@ from app.core.security import (
     ACCESS_TOKEN_TTL,
     USER_ROLES,
     VALID_ROLES,
+    AuthUser,
     CurrentUser,
     SignedInIdentity,
     create_access_token,
@@ -21,7 +22,7 @@ from app.core.security import (
 )
 from app.core.tenancy import use_tenant
 from app.identity import integrations, sessions
-from app.identity.models import AuthSession, IntegrationClient, User
+from app.identity.models import AuthSession, IntegrationClient, Unit, User, UserUnit
 from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
 
@@ -32,6 +33,7 @@ EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/
 auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
 users_router = APIRouter(prefix="/users", tags=["Users"])
 integrations_router = APIRouter(prefix="/integrations/clients", tags=["Integrations"])
+units_router = APIRouter(prefix="/units", tags=["Units"])
 
 
 class RoleUpdate(BaseModel):
@@ -42,6 +44,15 @@ class UserInvite(BaseModel):
     email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     name: str = Field(default="", max_length=200)
     role: str
+
+
+class UnitCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_.-]+$")
+    name: str = Field(min_length=1, max_length=200)
+
+
+class UserUnitsUpdate(BaseModel):
+    unit_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 class IntegrationClientCreate(BaseModel):
@@ -61,13 +72,15 @@ async def fetch_oauth_profile(session_id: str) -> dict:
     return resp.json()
 
 
-def _token_response(response: Response, user: User, session: AuthSession, refresh_token: str) -> dict:
+async def _token_response(db, response: Response, user: User, session: AuthSession, refresh_token: str) -> dict:
     sessions.set_refresh_cookie(response, refresh_token)
+    unit_ids = sorted(await db.scalars(select(UserUnit.unit_id).where(UserUnit.user_id == user.user_id)))
     return {
         "success": True,
         "token": create_access_token(user.user_id, session.session_id, user.tenant_id),
         "expires_in": int(ACCESS_TOKEN_TTL.total_seconds()),
-        "user": user.to_dict(),
+        # unit_ids: the frontend defaults new patients to the user's first unit.
+        "user": {**user.to_dict(), "unit_ids": unit_ids},
     }
 
 
@@ -123,7 +136,7 @@ async def create_session(request: Request, response: Response, db: DB):
     if registered:
         await write_audit(db, _identity(user, session), "REQUEST_ACCESS", "user", user.user_id, "Pending approval",
                           request)
-    return _token_response(response, user, session, refresh_token)
+    return await _token_response(db, response, user, session, refresh_token)
 
 
 class DevLogin(BaseModel):
@@ -147,7 +160,7 @@ async def dev_login(body: DevLogin, request: Request, response: Response, db: DB
         db.add(user)
         await db.flush()
     session, refresh_token = await sessions.start_session(db, user, request)
-    return _token_response(response, user, session, refresh_token)
+    return await _token_response(db, response, user, session, refresh_token)
 
 
 @auth_router.post("/refresh")
@@ -159,7 +172,7 @@ async def refresh(request: Request, response: Response, db: DB):
         refused = JSONResponse(status_code=401, content={"detail": "Session expired"})
         sessions.clear_refresh_cookie(refused)
         return refused
-    return _token_response(response, result.user, result.session, result.token)
+    return await _token_response(db, response, result.user, result.session, result.token)
 
 
 @auth_router.get("/me")
@@ -176,7 +189,11 @@ async def logout(request: Request, response: Response, db: DB):
 
 @users_router.get("")
 async def get_users(db: DB, user: CurrentUser = Depends(requires("user:manage"))):
-    return [u.to_dict() for u in (await db.scalars(select(User).order_by(User.created_at)))]
+    memberships: dict[str, list[str]] = {}
+    for m in await db.scalars(select(UserUnit)):
+        memberships.setdefault(m.user_id, []).append(m.unit_id)
+    return [{**u.to_dict(), "unit_ids": sorted(memberships.get(u.user_id, []))}
+            for u in (await db.scalars(select(User).order_by(User.created_at)))]
 
 
 @users_router.post("")
@@ -212,6 +229,49 @@ async def update_user_role(
     invalidate_identity(user_id=user_id)
     await write_audit(db, user, "UPDATE_ROLE", "user", user_id, f"{previous} → {role_update.role}", request)
     return {"success": True, "role": role_update.role}
+
+
+@users_router.put("/{user_id}/units")
+async def update_user_units(
+    user_id: str, body: UserUnitsUpdate, request: Request, db: DB,
+    user: CurrentUser = Depends(requires("user:manage")),
+):
+    """Replace the user's unit memberships. With UNIT_SCOPED_ACCESS on, these decide which patients they see."""
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    wanted = sorted(set(body.unit_ids))
+    units = {u.unit_id: u for u in await db.scalars(select(Unit).where(Unit.unit_id.in_(wanted)))} if wanted else {}
+    if len(units) != len(wanted):
+        raise HTTPException(status_code=400, detail="Unknown unit")
+    for membership in await db.scalars(select(UserUnit).where(UserUnit.user_id == user_id)):
+        await db.delete(membership)
+    await db.flush()
+    db.add_all(UserUnit(user_id=user_id, unit_id=unit_id) for unit_id in wanted)
+    invalidate_identity(user_id=user_id)
+    codes = ", ".join(sorted(u.code for u in units.values())) or "none"
+    await write_audit(db, user, "UPDATE_USER_UNITS", "user", user_id, f"units: {codes}"[:500], request)
+    return {"success": True, "unit_ids": wanted}
+
+
+# ---------- units ----------
+
+@units_router.get("")
+async def list_units(db: DB, user: AuthUser):
+    return [u.to_dict() for u in await db.scalars(select(Unit).order_by(Unit.code))]
+
+
+@units_router.post("")
+async def create_unit(body: UnitCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("user:manage"))):
+    """A ward or department. `code` should match the point of care the ADT feed sends in PV1-3.1."""
+    code = body.code.strip().upper()
+    if await db.scalar(select(Unit.unit_id).where(Unit.code == code)):
+        raise HTTPException(status_code=409, detail="A unit with this code exists")
+    unit = Unit(code=code, name=body.name.strip())
+    db.add(unit)
+    await db.flush()
+    await write_audit(db, user, "CREATE_UNIT", "unit", unit.unit_id, code, request)
+    return unit.to_dict()
 
 
 # ---------- integration clients (API keys for hospital systems) ----------

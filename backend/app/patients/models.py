@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Index, LargeBinary, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, synonym
 
 from app.core import crypto
@@ -53,6 +53,8 @@ class Patient(TenantMixin, Base):
     mrn_index: Mapped[Optional[str]] = mapped_column(String(64))
     admission_date: Mapped[str] = mapped_column(String(40), index=True)
     room_number: Mapped[str] = mapped_column(String(40))
+    # The unit the patient is on. NULL means unassigned, which every user in the tenant can see (ADR-002 item 3).
+    unit_id: Mapped[Optional[str]] = mapped_column(ForeignKey("units.unit_id", ondelete="SET NULL"), index=True)
     attending_physician: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(30), default="admitted", index=True)
     gdpr_consent: Mapped[Optional[bool]] = mapped_column(Boolean)
@@ -126,3 +128,21 @@ class Patient(TenantMixin, Base):
         self.mrn_index = None
         self.mrn_authority = None
         self.gdpr_erased = True
+
+
+class AccessGrant(TenantMixin, Base):
+    """Break-glass: one user's time-limited access to one patient outside their units, with the reason they gave.
+
+    The reason is kept here rather than in the audit entry (free text may name the patient, and audit rows can't be
+    erased); erasure redacts it. Admins review grants at GET /api/access-grants.
+    """
+
+    __tablename__ = "access_grants"
+    __table_args__ = (Index("ix_access_grants_patient_user", "patient_id", "user_id"),)
+
+    grant_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("agr"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), index=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id", ondelete="CASCADE"))
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)

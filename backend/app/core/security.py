@@ -16,8 +16,8 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.db import DB, utcnow
 from app.core.observability import user_id_var
-from app.core.tenancy import use_tenant
-from app.identity.models import AuthSession, User
+from app.core.tenancy import use_access_scope, use_tenant
+from app.identity.models import AuthSession, User, UserUnit
 from app.identity.permissions import ASSIGNABLE_ROLES, PENDING_ROLE, ROLES, permissions_for
 
 ACCESS_TOKEN_TTL = timedelta(minutes=15)
@@ -36,6 +36,13 @@ class CurrentUser(BaseModel):
     tenant_id: str
     session_id: str
     created_at: datetime
+    # The units the user is a member of, and whether their patient access is limited to them (ADR-002 item 3).
+    unit_ids: list[str] = []
+    unit_scoped: bool = False
+
+
+def unit_scope_enabled() -> bool:
+    return settings.unit_scoped_access
 
 
 def create_access_token(user_id: str, session_id: str, tenant_id: str) -> str:
@@ -79,8 +86,11 @@ async def load_identity(db, user_id: str, session_id: str) -> Optional[CurrentUs
     user, session = row
     if session.revoked_at is not None or session.expires_at <= utcnow():
         return None
+    unit_ids = sorted(await db.scalars(select(UserUnit.unit_id).where(UserUnit.user_id == user.user_id)))
+    scoped = unit_scope_enabled() and "patient:read_all" not in await permissions_for(db, user.role)
     return CurrentUser(user_id=user.user_id, email=user.email, name=user.name, picture=user.picture, role=user.role,
-                       tenant_id=user.tenant_id, session_id=session.session_id, created_at=user.created_at)
+                       tenant_id=user.tenant_id, session_id=session.session_id, created_at=user.created_at,
+                       unit_ids=unit_ids, unit_scoped=scoped)
 
 
 async def get_signed_in_identity(request: Request, db: DB) -> CurrentUser:
@@ -96,11 +106,16 @@ async def get_signed_in_identity(request: Request, db: DB) -> CurrentUser:
     user_id_var.set(claims["sub"])  # for log correlation only; authorization still waits for the checks below
     cached = _identity_cache.get(claims["sid"])
     if cached and cached[0] > time.monotonic() and cached[1].user_id == claims["sub"]:
-        return cached[1]
-    identity = await load_identity(db, claims["sub"], claims["sid"])
-    if identity is None or identity.tenant_id != claims["tid"]:
-        raise HTTPException(status_code=401, detail="Session is no longer active")
-    _identity_cache[claims["sid"]] = (time.monotonic() + _IDENTITY_CACHE_TTL, identity)
+        identity = cached[1]
+    else:
+        loaded = await load_identity(db, claims["sub"], claims["sid"])
+        if loaded is None or loaded.tenant_id != claims["tid"]:
+            raise HTTPException(status_code=401, detail="Session is no longer active")
+        identity = loaded
+        _identity_cache[claims["sid"]] = (time.monotonic() + _IDENTITY_CACHE_TTL, identity)
+    if identity.unit_scoped:
+        # Before any endpoint reads a patient: the unit_scope RLS policies read these settings.
+        await use_access_scope(db, identity.user_id, identity.unit_ids)
     return identity
 
 

@@ -31,6 +31,16 @@ suspend someone.
 | `insights:read` | admin |
 | `adt:ingest` | interface |
 | `claim:manage` | nurse (create insurance claims, change their status) |
+| `patient:read_all` | interface (never unit-scoped; admin holds it too) |
+
+### Unit-scoped access
+
+With `UNIT_SCOPED_ACCESS=true` (default `false`), a user whose role lacks `patient:read_all` sees only patients on
+their own units, patients with no unit, and patients they opened with break-glass in the last 8 hours. Everything
+about a hidden patient is hidden too: workflows, tasks, summaries and claims, including in lists, FHIR and the
+assistant. PostgreSQL RLS enforces this (SQLite, for local development, does not). `GET /patients/{id}` for a hidden
+patient answers `403 {"detail": ..., "break_glass": true}`; other routes answer as if the patient did not exist.
+Notifications about a patient on a unit go only to members of that unit.
 
 ## Authentication
 
@@ -46,8 +56,11 @@ suspend someone.
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| GET | `/users` | `user:manage` | |
+| GET | `/users` | `user:manage` | Each with `unit_ids` |
 | POST | `/users` | `user:manage` | Invite: pre-creates a user by email with a role, which their first Google sign-in gets (regardless of the domain allow-list or `SELF_REGISTRATION`). 409 if the email exists; audited |
+| PUT | `/users/{user_id}/units` | `user:manage` | Body `{unit_ids}`: replaces the user's unit memberships; applies within seconds; audited |
+| GET | `/units` | signed in | Units (wards), by code |
+| POST | `/units` | `user:manage` | Body `{code, name}`. The code (stored upper-case, unique) should match the ADT point of care, PV1-3.1; audited |
 | PUT | `/users/{user_id}/role` | `user:manage` | Approve (`pending` → a role), change, or suspend (→ `pending`); applies within seconds; audited |
 | GET | `/integrations/clients` | `user:manage` | API-key clients for hospital systems; never returns key material |
 | POST | `/integrations/clients` | `user:manage` | Returns the API key once |
@@ -58,8 +71,10 @@ suspend someone.
 | Method | Path | Access | Notes |
 |---|---|---|---|
 | GET | `/patients` | signed in | Optional `?status=`; one `PHI_READ` audit entry per request (not per row) |
-| GET | `/patients/{patient_id}` | signed in | `PHI_READ` audited |
-| POST | `/patients` | `patient:write` | Audited (`CREATE_PATIENT`) |
+| GET | `/patients/{patient_id}` | signed in | `PHI_READ` audited; 403 with `break_glass: true` when unit scope hides the patient |
+| POST | `/patients/{patient_id}/break-glass` | signed in (unit-scoped users) | Body `{reason}` (10–500 characters). Opens one patient outside your units for 8 hours. The reason is stored on the grant, not in the audit entry; audited (`BREAK_GLASS`) and admins are notified. 400 if you are not unit-scoped, 409 if you can already see the patient |
+| GET | `/access-grants` | `audit:read` | Break-glass grants for review, newest first, with user name, reason and `active`; `?active_only=true` |
+| POST | `/patients` | `patient:write` | Optional `unit_id`; audited (`CREATE_PATIENT`) |
 | PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only; audited with the field names, never values |
 | POST | `/patients/{patient_id}/consent` | signed in | GDPR consent; audited |
 | DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key; audited |

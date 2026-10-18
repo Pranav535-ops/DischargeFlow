@@ -154,8 +154,12 @@ async def test_migrations_match_models_and_downgrade(migration_url):
         async with eng.connect() as conn:
             policies = set(await conn.scalars(text("SELECT tablename FROM pg_policies WHERE policyname = 'tenant_isolation'")))
             triggers = set(await conn.scalars(text("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal")))
+            scoped = dict((await conn.execute(text(
+                "SELECT tablename, permissive FROM pg_policies WHERE policyname = 'unit_scope'"))).all())
         await eng.dispose()
         assert policies == set(rls.TENANT_TABLES)  # migration and app agree on what is tenant-scoped
+        # ...and on what is unit-scoped; RESTRICTIVE, so the policy narrows tenant_isolation instead of widening it.
+        assert scoped == {table: "RESTRICTIVE" for table in rls.UNIT_SCOPED_TABLES}
         assert "audit_logs_append_only" in triggers
     _alembic("downgrade", "base", database_url=migration_url)
 

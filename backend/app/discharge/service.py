@@ -89,9 +89,11 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
     patient.status = "pending_discharge"
 
     await notify_role(db, "nurse", "New Discharge Initiated",
-                      f"Discharge workflow started for patient {patient.name}", f"/patients/{patient_id}")
+                      f"Discharge workflow started for patient {patient.name}", f"/patients/{patient_id}",
+                      unit_id=patient.unit_id)
     await notify_role(db, "pharmacist", "Medication Review Required",
-                      f"Medication review needed for {patient.name}'s discharge", f"/patients/{patient_id}")
+                      f"Medication review needed for {patient.name}'s discharge", f"/patients/{patient_id}",
+                      unit_id=patient.unit_id)
     await db.flush()
     await write_audit(db, user, "INITIATE_DISCHARGE", "patient", patient_id,
                       f"workflow={workflow.workflow_id} tasks={len(STANDARD_TASKS)}", request)
@@ -201,9 +203,10 @@ async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> 
     open_tasks = await open_task_count(db, workflow_id)
     if open_tasks == 0 and workflow.status == "in_progress":
         set_workflow_status(workflow, "pending_approval")
+        patient = await db.get(Patient, workflow.patient_id)
         await notify_role(db, "physician", "Discharge Ready for Approval",
                           "All tasks completed for patient. Ready for final discharge approval.",
-                          f"/workflows/{workflow_id}")
+                          f"/workflows/{workflow_id}", unit_id=patient.unit_id if patient else None)
     elif open_tasks > 0 and workflow.status == "pending_approval":
         set_workflow_status(workflow, "in_progress")
 

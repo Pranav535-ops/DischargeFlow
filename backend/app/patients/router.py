@@ -1,16 +1,19 @@
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.ai.models import DischargeSummary
 from app.audit.service import audit_phi_read, write_audit
-from app.core.db import DB
+from app.core.db import DB, utcnow
 from app.core.security import AuthUser, CurrentUser, requires
-from app.patients.models import Patient
+from app.identity.models import User
+from app.patients import service
+from app.patients.models import AccessGrant, Patient
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
+access_router = APIRouter(prefix="/access-grants", tags=["Patients"])
 
 
 class PatientCreate(BaseModel):
@@ -20,6 +23,7 @@ class PatientCreate(BaseModel):
     room_number: str
     diagnosis: str
     attending_physician: str
+    unit_id: Optional[str] = None
 
 
 class PatientUpdate(BaseModel):
@@ -31,11 +35,17 @@ class PatientUpdate(BaseModel):
     room_number: Optional[str] = None
     diagnosis: Optional[str] = None
     attending_physician: Optional[str] = None
+    unit_id: Optional[str] = None
     status: Optional[Literal["admitted", "pending_discharge", "discharged"]] = None
 
 
 class ConsentUpdate(BaseModel):
     gdpr_consent: bool
+
+
+class BreakGlassRequest(BaseModel):
+    # Long enough to be a real reason; reviewed by admins at GET /api/access-grants.
+    reason: str = Field(min_length=10, max_length=500)
 
 
 async def get_patient_or_404(db, patient_id: str) -> Patient:
@@ -58,7 +68,13 @@ async def get_patients(request: Request, db: DB, user: AuthUser, status: Optiona
 
 @router.get("/{patient_id}")
 async def get_patient(patient_id: str, request: Request, db: DB, user: AuthUser):
-    patient = await get_patient_or_404(db, patient_id)
+    patient = await db.get(Patient, patient_id)
+    if patient is None:
+        # Hidden by unit scope (Postgres RLS) is a 403 the UI turns into a break-glass prompt; otherwise 404.
+        restricted = await service.restricted_response(db, user, patient_id)
+        if restricted is not None:
+            return restricted
+        raise HTTPException(status_code=404, detail="Patient not found")
     await audit_phi_read(db, user, patient_id, "patient record", request)
     return patient.to_dict()
 
@@ -67,7 +83,10 @@ async def get_patient(patient_id: str, request: Request, db: DB, user: AuthUser)
 async def create_patient(
     patient_data: PatientCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("patient:write"))
 ):
-    patient = Patient(**patient_data.model_dump())
+    data = patient_data.model_dump()
+    data["unit_id"] = data["unit_id"] or None  # "" from a form means no unit
+    await service.ensure_unit(db, data["unit_id"])
+    patient = Patient(**data)
     db.add(patient)
     await db.flush()
     await write_audit(db, user, "CREATE_PATIENT", "patient", patient.patient_id, "Patient record created", request)
@@ -84,6 +103,7 @@ async def update_patient(
 ):
     patient = await get_patient_or_404(db, patient_id)
     changes = updates.model_dump(exclude_unset=True, exclude_none=True)
+    await service.ensure_unit(db, changes.get("unit_id"))
     for field, value in changes.items():
         setattr(patient, field, value)
     await db.flush()
@@ -114,5 +134,27 @@ async def delete_patient_data(
     patient.shred()
     for summary in await db.scalars(select(DischargeSummary).where(DischargeSummary.patient_id == patient_id)):
         summary.shred()
+    await service.redact_grant_reasons(db, patient_id)
     await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data key destroyed and identifiers erased", request)
     return {"message": "Patient data erased per GDPR right-to-be-forgotten"}
+
+
+@router.post("/{patient_id}/break-glass")
+async def break_glass(patient_id: str, body: BreakGlassRequest, request: Request, db: DB, user: AuthUser):
+    """Emergency access to a patient outside your units, for BREAK_GLASS_HOURS. Audited; admins are notified."""
+    grant = await service.break_glass(db, user, patient_id, body.reason, request)
+    return grant.to_dict()
+
+
+@access_router.get("")
+async def list_access_grants(
+    db: DB, active_only: bool = False, limit: int = 100, user: CurrentUser = Depends(requires("audit:read"))
+):
+    """Break-glass grants for review, newest first, with who used them and the reason they gave."""
+    stmt = (select(AccessGrant, User.name).join(User, User.user_id == AccessGrant.user_id)
+            .order_by(AccessGrant.created_at.desc()).limit(min(max(limit, 1), 500)))
+    if active_only:
+        stmt = stmt.where(AccessGrant.expires_at > utcnow())
+    now = utcnow()
+    return [{**grant.to_dict(), "user_name": name, "active": grant.expires_at > now}
+            for grant, name in (await db.execute(stmt)).all()]

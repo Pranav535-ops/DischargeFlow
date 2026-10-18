@@ -304,3 +304,13 @@ async def test_integration_tables_are_tenant_isolated(client, make_client, make_
     _, admin_b = await make_user("admin", tenant_id="hospital_b")
     assert (await client.get("/api/integrations/clients", headers=admin_b)).json() == []
     assert (await client.get("/api/patients", headers=admin_b)).json() == []
+
+
+async def test_a01_puts_the_patient_on_the_unit_named_in_pv1(client, db, make_client, send):
+    """PV1-3.1 (point of care) is matched against unit codes (ADR-002 item 3); no match leaves the patient unassigned."""
+    _, key, admin = await make_client()
+    unit = (await client.post("/api/units", json={"code": "4w", "name": "4 West"}, headers=admin)).json()
+    assert (await send(key, adt("A01", "U1")))["code"] == "AA"
+    assert (await send(key, adt("A01", "U2", mrn="MRN0043").replace("4W^412^B", "5E^501^A")))["code"] == "AA"
+    units = {p.mrn: p.unit_id for p in await db.scalars(select(Patient))}
+    assert units == {MRN: unit["unit_id"], "MRN0043": None}

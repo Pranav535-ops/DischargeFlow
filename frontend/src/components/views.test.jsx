@@ -144,3 +144,27 @@ describe('InsuranceView', () => {
     expect(screen.getByLabelText('Claim status')).toBeDisabled();
   });
 });
+
+describe('PatientDetails break-glass', () => {
+  it('offers break-glass for a patient outside the user\'s units and sends the reason', async () => {
+    const { default: PatientDetails } = await import('./PatientDetails');
+    const restricted = Object.assign(new Error('403'), {
+      response: { status: 403, data: { detail: 'This patient is outside your units.', break_glass: true } },
+    });
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/units') return { data: [] };
+      throw restricted;
+    });
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { grant_id: 'agr_1' } });
+    renderAt('/patients/pat_icu', '/patients/:patientId', <PatientDetails />);
+
+    expect(await screen.findByTestId('break-glass-panel')).toHaveTextContent('outside your units');
+    const submit = screen.getByTestId('break-glass-submit');
+    await userEvent.type(screen.getByTestId('break-glass-reason'), 'short');
+    expect(submit).toBeDisabled(); // under 10 characters
+    await userEvent.type(screen.getByTestId('break-glass-reason'), ' - covering ICU tonight');
+    await userEvent.click(submit);
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/patients/pat_icu/break-glass',
+      { reason: 'short - covering ICU tonight' }));
+  });
+});
