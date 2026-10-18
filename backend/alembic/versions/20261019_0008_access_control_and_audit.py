@@ -1,6 +1,6 @@
 """access control: task override/assign and claim permissions, task override columns
 
-ADR-001 Phase 7. Task status changes are limited to the assignee; `task:override` (physician, admin) lets someone
+ADR-002 Phase 7, item 1. Task status changes are limited to the assignee; `task:override` (physician, admin) lets someone
 else change one with a reason, stored in the new `tasks.override_reason` / `override_by`. Naming an assignee needs
 `task:assign` (physician, admin). Creating claims and changing their status needs `claim:manage` (nurse, admin).
 

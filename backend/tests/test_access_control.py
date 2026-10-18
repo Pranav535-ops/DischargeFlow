@@ -1,4 +1,4 @@
-"""ADR-001 Phase 7: approval-gated sign-up, task ownership, claim permissions, write and PHI-read audit coverage."""
+"""ADR-002 Phase 7, item 1: approval-gated sign-up, task ownership, claim permissions, write and PHI-read audit coverage."""
 import dataclasses
 
 import pytest
