@@ -5,10 +5,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.audit.service import write_audit
-from app.core.db import DB, utcnow
+from app.core.db import DB
 from app.core.security import AuthUser
+from app.insurance import service
 from app.insurance.models import InsuranceClaim
-from app.patients.models import Patient
 
 router = APIRouter(prefix="/insurance", tags=["Insurance"])
 
@@ -33,13 +33,7 @@ class ClaimStatusUpdate(BaseModel):
 
 @router.post("/claims")
 async def create_claim(claim_data: InsuranceClaimCreate, request: Request, db: DB, user: AuthUser):
-    if not await db.get(Patient, claim_data.patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
-    claim = InsuranceClaim(**claim_data.model_dump(), created_by=user.user_id, submitted_at=utcnow())
-    db.add(claim)
-    await db.flush()
-    await write_audit(db, user, "CREATE_CLAIM", "insurance_claim", claim.claim_id,
-                      f"Billed: ${claim_data.billed_amount}", request)
+    claim = await service.create_claim(db, user, **claim_data.model_dump(), request=request)
     return {"claim_id": claim.claim_id, "status": "pending", "message": "Claim submitted successfully"}
 
 

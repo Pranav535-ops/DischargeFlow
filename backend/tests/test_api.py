@@ -1,4 +1,4 @@
-"""Auth, RBAC, patients, insurance, chatbot, notifications, audit and health."""
+"""Auth, RBAC, patients, insurance, notifications, audit and health (the assistant is in test_assistant.py)."""
 import jwt
 import pytest
 
@@ -166,50 +166,6 @@ async def test_claims_lifecycle_and_reports(client, make_user, create_patient):
 
     actions = [e["action"] for e in (await client.get("/api/audit/logs?resource_type=insurance_claim", headers=admin)).json()]
     assert actions.count("CREATE_CLAIM") == 3 and actions.count("UPDATE_CLAIM_STATUS") == 2
-
-
-# ---------- chatbot ----------
-
-async def test_chatbot_intents(client, make_user):
-    _, nurse = await make_user("nurse")
-    _, admin = await make_user("admin")
-
-    async def say(message):
-        resp = await client.post("/api/chatbot/message", json={"message": message}, headers=nurse)
-        assert resp.status_code == 200, resp.text
-        return resp.json()
-
-    hint = await say("create patient")
-    assert hint["intent"] == "create_patient" and "structured format" in hint["response"]
-
-    made = await say("Create patient\nPatient Name: Ada Lovelace\nRoom: 7C\nDiagnosis: Fracture\nPhysician: Dr. Who")
-    assert made["data"]["patients"][0]["room_number"] == "7C"
-
-    task = await say("create a task for patient 1 to give meds")
-    assert task["intent"] == "create_task" and task["data"]["tasks"][0]["title"] == "Give meds"
-    assert task["data"]["tasks"][0]["priority"] == 2
-
-    claim = await say("Submit claim\nPatient: Ada\nInsurer Name: Acme\nPolicy Number: 42\nBilled Amount: $1,200.50\nICD: S52.5, S52.6")
-    assert claim["intent"] == "submit_claim"
-    assert claim["data"]["claims"][0]["billed_amount"] == 1200.5
-    assert claim["data"]["claims"][0]["diagnosis_codes"] == ["S52.5", "S52.6"]
-
-    assert (await say("list patients"))["data"]["count"] == 1
-    assert len((await say("my tasks"))["data"]["tasks"]) == 1
-    assert "1 insurance claims" in (await say("show stats"))["response"]
-    assert (await say("any billing updates?"))["intent"] == "list_claims"
-    assert (await say("help"))["intent"] == "help"
-    assert (await say("sing me a song"))["intent"] == "unknown"
-
-    chatbot_logs = (await client.get("/api/audit/logs?resource_type=chatbot&limit=100", headers=admin)).json()
-    assert len(chatbot_logs) == 10
-
-
-async def test_chatbot_claim_without_patients(client, make_user):
-    _, nurse = await make_user("nurse")
-    resp = await client.post("/api/chatbot/message", headers=nurse,
-                             json={"message": "Submit claim\nInsurer Name: Acme\nBilled Amount: 10"})
-    assert resp.json()["data"] is None and "no patients" in resp.json()["response"]
 
 
 # ---------- notifications / health ----------

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.models import DischargeSummary
+from app.ai.models import AIGeneration, DischargeSummary
 from app.core.db import utcnow
 from app.core.security import CurrentUser
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
@@ -42,6 +42,11 @@ async def workflow_detail(db: AsyncSession, workflow: Workflow) -> dict:
     out = workflow.to_dict()
     out["tasks"] = [t.to_dict() for t in tasks]
     out["discharge_summary"] = summary.to_dict() if summary else None
+    if summary and summary.generation_id:
+        gen = await db.get(AIGeneration, summary.generation_id)
+        out["discharge_summary"]["generation"] = {
+            k: getattr(gen, k) for k in ("provider", "model_id", "prompt_version", "grounding_warnings", "attempts")
+        } if gen else None
     return out
 
 
@@ -79,6 +84,43 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
                       f"Medication review needed for {patient.name}'s discharge", f"/patients/{patient_id}")
     await db.flush()
     return {"workflow": workflow.to_dict(), "tasks_created": len(STANDARD_TASKS)}
+
+
+async def create_task(db: AsyncSession, user: CurrentUser, *, patient_id: str, title: str, description: str,
+                      category: str, assigned_role: str, priority: int = 2) -> Task:
+    """A manual task, attached to the patient's active workflow if there is one."""
+    if not await db.get(Patient, patient_id):
+        raise HTTPException(status_code=404, detail="Patient not found")
+    workflow = await active_workflow_for(db, patient_id)
+    task = Task(patient_id=patient_id, title=title, description=description, category=category,
+                assigned_role=assigned_role, priority=priority,
+                workflow_id=workflow.workflow_id if workflow else None, created_by=user.user_id)
+    db.add(task)
+    await db.flush()
+    # A new open task sends a pending_approval workflow back to in_progress.
+    await sync_workflow_status(db, task.workflow_id)
+    return task
+
+
+async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, status: Optional[str] = None,
+                      assigned_to: Optional[str] = None) -> Task:
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if status:
+        task.status = status
+        if status == "completed":
+            task.completed_by = user.user_id
+            task.completed_at = utcnow()
+        else:
+            task.completed_by = None
+            task.completed_at = None
+    if assigned_to:
+        task.assigned_to = assigned_to
+    await sync_workflow_status(db, task.workflow_id)
+    await db.flush()
+    await db.refresh(task)
+    return task
 
 
 async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> None:

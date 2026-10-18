@@ -9,6 +9,9 @@ on:
 jobs:
   backend-test:
     runs-on: ubuntu-latest
+    env:
+      # Only the live-model eval step uses it; tests always run on the mock adapter.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -44,6 +47,19 @@ jobs:
       env:
         TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/dischargeflow_test
       run: python -m pytest
+    # Golden-set evals of discharge-summary generation. Fails on any hallucinated medication or diagnosis, any
+    # identifier sent to the model, or coverage below the threshold in app/ai/evals/golden_set.json.
+    - name: AI evals (mock adapter)
+      env:
+        APP_ENV: test
+      run: python -m app.ai.evals --provider mock
+    # The same gate against a real, cheap model, on pull requests when the repository has an ANTHROPIC_API_KEY
+    # secret (skipped otherwise, e.g. on forks).
+    - name: AI evals (Claude Haiku 5.5)
+      if: github.event_name == 'pull_request' && env.ANTHROPIC_API_KEY != ''
+      env:
+        APP_ENV: test
+      run: python -m app.ai.evals --provider anthropic --model claude-haiku-5-5 --report ai-evals.json
 
   frontend-build:
     runs-on: ubuntu-latest

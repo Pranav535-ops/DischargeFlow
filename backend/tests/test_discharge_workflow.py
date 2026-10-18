@@ -1,25 +1,18 @@
 """The discharge state machine end to end: initiate -> tasks -> summary approval -> complete."""
+import dataclasses
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.ai import service as ai_service
+from app.ai import llm
 from app.discharge.models import Workflow
 from app.notifications.models import Notification
 
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture
-def stub_llm(monkeypatch):
-    async def fake_generate(prompt: str, session_id: str) -> str:
-        assert "Jane Doe" in prompt
-        return "DISCHARGE SUMMARY\nHospital course: uneventful."
-
-    monkeypatch.setattr(ai_service, "generate_summary_text", fake_generate)
-
-
-async def test_full_discharge_happy_path(client, make_user, create_patient, stub_llm, db):
+async def test_full_discharge_happy_path(client, make_user, create_patient, db):
     _, physician = await make_user("physician")
     nurse_doc, nurse = await make_user("nurse")
     _, pharmacist = await make_user("pharmacist")
@@ -167,7 +160,8 @@ async def test_database_enforces_one_active_workflow_per_patient(db, make_user, 
     assert len((await db.scalars(select(Workflow))).all()) == 2
 
 
-async def test_summary_returns_503_when_ai_not_configured(client, make_user, create_patient):
+async def test_summary_returns_503_when_ai_not_configured(client, make_user, create_patient, monkeypatch):
+    monkeypatch.setattr(llm, "settings", dataclasses.replace(llm.settings, llm_provider="none"))
     _, physician = await make_user("physician")
     patient = await create_patient(physician)
     wf_id = (await client.post(f"/api/workflows/initiate/{patient['patient_id']}", headers=physician)).json()["workflow"]["workflow_id"]

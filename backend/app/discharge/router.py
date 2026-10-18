@@ -4,11 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 
-from app.core.db import DB, utcnow
+from app.core.db import DB
 from app.core.security import AuthUser, CurrentUser, requires
 from app.discharge import service
 from app.discharge.models import Task, Workflow
-from app.patients.models import Patient
 
 workflows_router = APIRouter(prefix="/workflows", tags=["Workflows"])
 tasks_router = APIRouter(prefix="/tasks", tags=["Tasks"])
@@ -75,18 +74,7 @@ async def create_task(
     task_data: TaskCreate, db: DB, user: CurrentUser = Depends(requires("task:create"))
 ):
     """Create a manual task, attached to the patient's active workflow if there is one."""
-    if not await db.get(Patient, task_data.patient_id):
-        raise HTTPException(status_code=404, detail="Patient not found")
-    workflow = await service.active_workflow_for(db, task_data.patient_id)
-    task = Task(
-        **task_data.model_dump(),
-        workflow_id=workflow.workflow_id if workflow else None,
-        created_by=user.user_id,
-    )
-    db.add(task)
-    await db.flush()
-    # A new open task sends a pending_approval workflow back to in_progress.
-    await service.sync_workflow_status(db, task.workflow_id)
+    task = await service.create_task(db, user, **task_data.model_dump())
     return task.to_dict()
 
 
@@ -113,24 +101,8 @@ async def get_tasks(db: DB, user: AuthUser, role: Optional[str] = None, status: 
 
 @tasks_router.put("/{task_id}")
 async def update_task(task_id: str, task_update: TaskUpdate, db: DB, user: AuthUser):
-    task = await db.get(Task, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    if task_update.status:
-        task.status = task_update.status
-        if task_update.status == "completed":
-            task.completed_by = user.user_id
-            task.completed_at = utcnow()
-        else:
-            task.completed_by = None
-            task.completed_at = None
-    if task_update.assigned_to:
-        task.assigned_to = task_update.assigned_to
-
-    await service.sync_workflow_status(db, task.workflow_id)
-    await db.flush()
-    await db.refresh(task)
+    task = await service.update_task(db, user, task_id, status=task_update.status,
+                                     assigned_to=task_update.assigned_to)
     return task.to_dict()
 
 
