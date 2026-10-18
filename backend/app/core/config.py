@@ -16,6 +16,8 @@ load_dotenv(BACKEND_DIR / ".env")
 
 logger = logging.getLogger(__name__)
 
+VERSION = "2.2.0"  # API version, reported by /api/health, OpenAPI and the FHIR CapabilityStatement
+
 DEV_ENVS = {"development", "test"}
 # Deterministic so a local SQLite database stays readable across restarts. Never used outside development/test.
 _DEV_PHI_KEK = hashlib.sha256(b"dischargeflow-development-only-phi-key").digest()
@@ -61,6 +63,9 @@ class Settings:
     log_level: str = "INFO"
     # Development/test only: POST /api/auth/dev-login signs in as any role without OAuth (Playwright E2E).
     enable_dev_login: bool = False
+    # How long one notification stream (GET /api/notifications/stream) stays open before the client reconnects.
+    # Kept under the serverless function limit on Vercel; a long-running host (ECS) can raise it.
+    notification_stream_seconds: float = 25.0
 
     @property
     def is_production(self) -> bool:
@@ -135,6 +140,7 @@ def load_settings() -> Settings:
         log_level=os.environ.get("LOG_LEVEL", "").strip().upper() or "INFO",
         # Never honoured outside development/test, whatever the variable says.
         enable_dev_login=is_dev and _bool("ENABLE_DEV_LOGIN"),
+        notification_stream_seconds=float(os.environ.get("NOTIFICATION_STREAM_SECONDS", "").strip() or 25),
     )
 
 

@@ -1,9 +1,9 @@
 import React from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Sparkles, Loader2, ShieldCheck, AlertCircle, BarChart3 } from 'lucide-react';
+import { Sparkles, Loader2, ShieldCheck, AlertCircle, BarChart3, Gauge } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
-import { useAggregates } from '@/lib/queries';
+import { useAggregates, useOperations } from '@/lib/queries';
 import { Button } from './ui/button';
 
 const ROLE_LABEL = { physician: 'Physician', nurse: 'Nurse', pharmacist: 'Pharmacist', admin: 'Admin' };
@@ -15,6 +15,66 @@ const Hours = ({ stats }) => (
     ? <span>{stats.avg_hours} h <span className="text-zinc-500">(median {stats.median_hours} h, n={stats.n})</span></span>
     : <span className="text-zinc-500">n={stats?.n ?? 0}, too few to average</span>
 );
+
+const PRIORITIES = ['high', 'medium', 'low'];
+
+// Throughput, approval wait and task SLA breaches over the last 30 days (GET /api/analytics/operations).
+const OperationsPanel = () => {
+  const { data: ops, isLoading } = useOperations(30);
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6" data-testid="operations-panel">
+      <h2 className="text-lg font-medium text-zinc-50 mb-4 flex items-center gap-2">
+        <Gauge className="w-5 h-5 text-blue-400" /> Operations, last {ops?.window_days ?? 30} days
+      </h2>
+      {isLoading || !ops ? (
+        <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+      ) : (
+        <div className="grid md:grid-cols-3 gap-6 text-sm">
+          <div>
+            <h3 className="text-zinc-400 mb-2">Throughput</h3>
+            <p className="text-zinc-200" data-testid="ops-throughput">
+              {ops.throughput.discharges_completed} completed · {ops.throughput.discharges_started} started
+            </p>
+            <p className="text-zinc-400 mt-1">Duration: <Hours stats={ops.throughput.discharge_duration} /></p>
+          </div>
+          <div>
+            <h3 className="text-zinc-400 mb-2">Waiting for physician approval</h3>
+            <p className="text-zinc-200"><Hours stats={ops.pending_approval.wait} /></p>
+            <p className="text-zinc-400 mt-1">
+              {ops.pending_approval.waiting_now} waiting now
+              {ops.pending_approval.oldest_waiting_hours != null && ` · oldest ${ops.pending_approval.oldest_waiting_hours} h`}
+            </p>
+            {ops.pending_approval.untracked_completed > 0 && (
+              <p className="text-xs text-zinc-500 mt-1">
+                {ops.pending_approval.untracked_completed} older discharge(s) not tracked
+              </p>
+            )}
+          </div>
+          <div>
+            <h3 className="text-zinc-400 mb-2">Task SLA</h3>
+            <p className="text-zinc-200">
+              {ops.task_sla.completed.breached}/{ops.task_sla.completed.n} completed tasks over target
+              {ops.task_sla.completed.breach_rate != null && ` (${Math.round(ops.task_sla.completed.breach_rate * 100)}%)`}
+            </p>
+            <p className="text-xs text-zinc-500 mt-1">
+              Targets: {PRIORITIES.map(p => `${p} ${ops.task_sla.targets_hours[p]} h`).join(', ')}
+            </p>
+            <table className="w-full mt-2"><tbody>
+              {Object.entries(ops.task_sla.open_breaching_by_role).map(([role, counts]) => (
+                <tr key={role} className="border-b border-zinc-800/60">
+                  <td className="py-1.5 text-zinc-300">{ROLE_LABEL[role] ?? role}</td>
+                  <td className="py-1.5 text-amber-400 text-right">
+                    {PRIORITIES.filter(p => counts[p]).map(p => `${counts[p]} ${p}`).join(', ')} open, overdue
+                  </td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const InsightsView = () => {
   const { data: aggregates, isLoading } = useAggregates();
@@ -80,6 +140,8 @@ const InsightsView = () => {
           )}
         </div>
       )}
+
+      <OperationsPanel />
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
         <h2 className="text-lg font-medium text-zinc-50 mb-4 flex items-center gap-2">

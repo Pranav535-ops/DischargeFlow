@@ -53,7 +53,7 @@ def reset_role_cache() -> None:
 async def use_tenant(db: AsyncSession, tenant_id: str) -> None:
     """Bind the current transaction (and new rows) to `tenant_id`."""
     current_tenant_id.set(tenant_id)
-    if db.bind.dialect.name != "postgresql":
+    if db.get_bind().dialect.name != "postgresql":
         return
     if await _role_available(db):
         await db.execute(text(f"SET LOCAL ROLE {APP_ROLE}"))

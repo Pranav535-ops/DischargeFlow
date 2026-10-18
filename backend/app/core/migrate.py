@@ -32,7 +32,10 @@ def alembic_config() -> Config:
 
 
 def head_revision() -> str:
-    return ScriptDirectory.from_config(alembic_config()).get_current_head()
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    if head is None:
+        raise RuntimeError("Alembic has no head revision")
+    return head
 
 
 async def current_revision() -> str | None:
@@ -104,6 +107,8 @@ async def rewrap_deks() -> dict:
                 await use_tenant(db, tenant_id)
                 stmt = select(Patient).where(Patient.tenant_id == tenant_id, Patient.phi_dek.is_not(None))
                 for patient in await db.scalars(stmt):
+                    if patient.phi_dek is None:  # filtered above; narrows the type
+                        continue
                     _, new_wrapped = key_provider().rewrap(patient.phi_dek)
                     if new_wrapped is None:
                         current += 1

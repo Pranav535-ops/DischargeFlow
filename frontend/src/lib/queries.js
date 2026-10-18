@@ -1,8 +1,10 @@
 // Server state for the whole app (TanStack Query). Views read through these hooks instead of keeping their own
 // copies in useState, so data is cached across navigation, refetched when stale, and refreshed everywhere after a
 // mutation by invalidating its key.
+import { useEffect } from 'react';
 import { QueryClient, useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { startNotificationStream, useStreamLive } from '@/lib/notificationStream';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,6 +31,7 @@ export const keys = {
   dashboard: ['analytics', 'dashboard'],
   tasksByRole: ['analytics', 'tasks-by-role'],
   aggregates: ['analytics', 'aggregates'],
+  operations: (days) => ['analytics', 'operations', days],
   claims: ['insurance', 'claims'],
   insuranceReports: ['insurance', 'reports'],
   users: ['users'],
@@ -41,11 +44,27 @@ export const usePatientWorkflow = (id) =>
 export const useWorkflow = (id) => useQuery({ queryKey: keys.workflow(id), queryFn: get(`/workflows/${id}`), enabled: !!id });
 export const useTasks = () => useQuery({ queryKey: keys.tasks, queryFn: get('/tasks') });
 export const useMyTasks = () => useQuery({ queryKey: keys.myTasks, queryFn: get('/tasks/my') });
-export const useNotifications = () =>
-  useQuery({ queryKey: keys.notifications, queryFn: get('/notifications'), refetchInterval: 30_000 });
+// Polls every 30 s only while the live stream (useNotificationStream) is down.
+export const useNotifications = () => {
+  const live = useStreamLive();
+  return useQuery({ queryKey: keys.notifications, queryFn: get('/notifications'), refetchInterval: live ? false : 30_000 });
+};
+
+// Mounted once in the signed-in layout: each stream event refetches the notification list.
+export const useNotificationStream = () => {
+  useEffect(() => startNotificationStream({
+    onEvent: (event) => {
+      if (event === 'ready' || event === 'notification') {
+        queryClient.invalidateQueries({ queryKey: keys.notifications });
+      }
+    },
+  }), []);
+};
 export const useDashboardAnalytics = () => useQuery({ queryKey: keys.dashboard, queryFn: get('/analytics/dashboard') });
 export const useTasksByRole = () => useQuery({ queryKey: keys.tasksByRole, queryFn: get('/analytics/tasks-by-role') });
 export const useAggregates = () => useQuery({ queryKey: keys.aggregates, queryFn: get('/analytics/aggregates') });
+export const useOperations = (days = 30) =>
+  useQuery({ queryKey: keys.operations(days), queryFn: get(`/analytics/operations?days=${days}`) });
 export const useClaims = () => useQuery({ queryKey: keys.claims, queryFn: get('/insurance/claims') });
 export const useInsuranceReports = () => useQuery({ queryKey: keys.insuranceReports, queryFn: get('/insurance/reports') });
 export const useUsers = () => useQuery({ queryKey: keys.users, queryFn: get('/users') });

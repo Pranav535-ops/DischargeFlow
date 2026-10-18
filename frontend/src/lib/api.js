@@ -6,12 +6,16 @@ import axios from 'axios';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || import.meta.env.REACT_APP_BACKEND_URL || '';
 
-export const api = axios.create({ baseURL: `${BACKEND}/api`, withCredentials: true });
+export const API_BASE = `${BACKEND}/api`;
+
+export const api = axios.create({ baseURL: API_BASE, withCredentials: true });
 
 let accessToken = null;
 let refreshInFlight = null;
 
 export const setAccessToken = (token) => { accessToken = token; };
+// For the few callers that can't go through axios (the notification stream reads a fetch body).
+export const getAccessToken = () => accessToken;
 
 const isAuthCall = (url = '') => ['/auth/refresh', '/auth/session', '/auth/logout', '/auth/dev-login']
   .some(path => url.includes(path));

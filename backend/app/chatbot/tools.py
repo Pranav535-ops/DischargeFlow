@@ -20,7 +20,6 @@ from app.ai.schemas import inline_refs
 from app.core.security import CurrentUser
 from app.discharge import service as discharge_service
 from app.discharge.models import Task, Workflow
-from app.discharge.router import visible_tasks_for
 from app.identity.permissions import ROLES
 from app.insurance import service as insurance_service
 from app.insurance.models import InsuranceClaim
@@ -127,7 +126,7 @@ async def get_patient(ctx: ToolContext, args: PatientRefArgs) -> ToolOutput:
 
 async def list_my_tasks(ctx: ToolContext, args: _Args) -> ToolOutput:
     tasks = list(await ctx.db.scalars(
-        visible_tasks_for(ctx.user).where(Task.status != "completed").order_by(Task.priority, Task.created_at).limit(20)))
+        discharge_service.visible_tasks_for(ctx.user).where(Task.status != "completed").order_by(Task.priority, Task.created_at).limit(20)))
     items = [{"task_id": t.task_id, "title": ctx.deid.redact(t.title), "status": t.status, "priority": t.priority,
               "patient": ctx.token_for(t.patient_id)} for t in tasks]
     return ToolOutput({"count": len(items), "items": items}, {"tasks": [t.to_dict() for t in tasks]})

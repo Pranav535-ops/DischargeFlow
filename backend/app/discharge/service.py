@@ -3,7 +3,7 @@ from datetime import timedelta
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,11 @@ STANDARD_TASKS = [
     {"title": "Remove IV and Equipment", "description": "Remove IV lines and return equipment", "category": "documentation", "assigned_role": "nurse", "priority": 2},
 ]
 SUMMARY_TASK_TITLE = STANDARD_TASKS[0]["title"]
+
+
+def visible_tasks_for(user: CurrentUser):
+    """Tasks assigned to the user directly or to their role (used by the assistant's tools)."""
+    return select(Task).where(or_(Task.assigned_to == user.user_id, Task.assigned_role == user.role))
 
 
 async def active_workflow_for(db: AsyncSession, patient_id: str) -> Optional[Workflow]:
@@ -51,9 +56,10 @@ async def workflow_detail(db: AsyncSession, workflow: Workflow) -> dict:
 
 
 async def open_task_count(db: AsyncSession, workflow_id: str) -> int:
-    return await db.scalar(
+    count = await db.scalar(
         select(func.count()).select_from(Task).where(Task.workflow_id == workflow_id, Task.status != "completed")
     )
+    return count or 0
 
 
 async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUser) -> dict:
@@ -123,6 +129,19 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
     return task
 
 
+def set_workflow_status(workflow: Workflow, status: str) -> None:
+    """Change status, accounting the time spent in pending_approval (read by analytics.operational_metrics)."""
+    now = utcnow()
+    if workflow.status == "pending_approval" and status != "pending_approval" and workflow.pending_approval_since:
+        if workflow.pending_approval_seconds is not None:
+            elapsed = int((now - workflow.pending_approval_since).total_seconds())
+            workflow.pending_approval_seconds += elapsed
+        workflow.pending_approval_since = None
+    elif status == "pending_approval" and workflow.status != "pending_approval":
+        workflow.pending_approval_since = now
+    workflow.status = status
+
+
 async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> None:
     """Move an active workflow between in_progress and pending_approval based on its open tasks."""
     if not workflow_id:
@@ -133,12 +152,12 @@ async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> 
     await db.flush()
     open_tasks = await open_task_count(db, workflow_id)
     if open_tasks == 0 and workflow.status == "in_progress":
-        workflow.status = "pending_approval"
+        set_workflow_status(workflow, "pending_approval")
         await notify_role(db, "physician", "Discharge Ready for Approval",
                           "All tasks completed for patient. Ready for final discharge approval.",
                           f"/workflows/{workflow_id}")
     elif open_tasks > 0 and workflow.status == "pending_approval":
-        workflow.status = "in_progress"
+        set_workflow_status(workflow, "in_progress")
 
 
 async def complete_discharge(db: AsyncSession, workflow_id: str) -> dict:
@@ -158,9 +177,8 @@ async def complete_discharge(db: AsyncSession, workflow_id: str) -> dict:
     if not approved:
         raise HTTPException(status_code=400, detail="Discharge summary not approved")
 
-    now = utcnow()
-    workflow.status = "completed"
-    workflow.completed_at = now
+    set_workflow_status(workflow, "completed")
+    workflow.completed_at = now = utcnow()
     patient = await db.get(Patient, workflow.patient_id)
     if patient:
         patient.status = "discharged"

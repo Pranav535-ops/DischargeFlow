@@ -1,9 +1,15 @@
-from fastapi import APIRouter
-from sqlalchemy import select, update
+from typing import Annotated
 
-from app.core.db import DB
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.core.config import settings
+from app.core.db import DB, get_session_factory
 from app.core.security import AuthUser
 from app.notifications.models import Notification
+from app.notifications.stream import notification_events
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
@@ -17,6 +23,23 @@ async def get_notifications(db: DB, user: AuthUser):
         .limit(100)
     )
     return [n.to_dict() for n in (await db.scalars(stmt))]
+
+
+@router.get("/stream")
+async def stream_notifications(
+    request: Request,
+    user: AuthUser,
+    session_factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+):
+    """Server-Sent Events: a `notification` event per new notification for the signed-in user.
+
+    Authenticated with the usual Bearer header (the frontend reads it with fetch, not EventSource, so the token
+    never goes into a URL). The stream ends after NOTIFICATION_STREAM_SECONDS and the client reconnects.
+    """
+    events = notification_events(user, session_factory, duration=settings.notification_stream_seconds,
+                                 is_disconnected=request.is_disconnected)
+    return StreamingResponse(events, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @router.put("/read-all")
