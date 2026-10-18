@@ -52,7 +52,12 @@ async def upgrade_schema() -> None:
 
 
 async def encrypt_legacy_phi() -> int:
-    """Encrypt patient identifiers still stored as plaintext. Idempotent; returns how many rows changed."""
+    """Encrypt patient identifiers and discharge summary text still stored as plaintext.
+
+    Idempotent; returns how many rows changed. Summaries use their patient's data key, so patients go first (a
+    summary of an erased patient is overwritten instead).
+    """
+    from app.ai.models import DischargeSummary
     from app.identity.models import Tenant
     from app.patients.models import Patient
 
@@ -67,6 +72,11 @@ async def encrypt_legacy_phi() -> int:
                 for patient in await db.scalars(select(Patient).where(Patient.tenant_id == tenant_id)):
                     if patient.needs_encryption:
                         patient.encrypt_legacy_fields()
+                        changed += 1
+                stmt = select(DischargeSummary).where(DischargeSummary.tenant_id == tenant_id)
+                for summary in await db.scalars(stmt):
+                    if summary.needs_encryption:
+                        summary.encrypt_legacy_fields()
                         changed += 1
                 await db.commit()
         finally:
