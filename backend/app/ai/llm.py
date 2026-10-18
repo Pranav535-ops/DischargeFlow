@@ -205,6 +205,8 @@ def _mock_describe(result: str) -> str:
         data = json.loads(result)
     except ValueError:
         return result
+    if isinstance(data, dict) and data.get("proposal") == "created":
+        return "I've prepared that change. Review it below and confirm to apply it; nothing has changed yet."
     if isinstance(data, dict) and "message" in data:
         return str(data["message"])
     if isinstance(data, dict) and "items" in data:

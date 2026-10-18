@@ -90,7 +90,7 @@ async def _run_tool(ctx: ToolContext, call, ui_data: dict, pending: list[dict]) 
         await write_audit(ctx.db, ctx.user, f"ASSISTANT_DENIED_{tool.name.upper()}", "chatbot", None,
                           json.dumps(call.input)[:500], ctx.request)
         return {"type": "tool_result", "tool_use_id": call.id, "is_error": True,
-                "content": "Permission denied: the signed-in user's role cannot do this. Tell the user."}
+                "content": "Permission denied: your role is not allowed to do this."}
     try:
         if tool.writes:
             arguments = prepare_write(ctx, tool, call.input)
