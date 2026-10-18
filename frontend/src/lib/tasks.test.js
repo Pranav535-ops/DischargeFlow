@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canChangeTaskStatus, isTaskAssignee, taskStatusBody } from './tasks';
+import { canChangeTaskStatus, isTaskAssignee, taskBackfillBody, taskStatusBody } from './tasks';
 
 const nurse = { user_id: 'user_n', role: 'nurse' };
 const physician = { user_id: 'user_p', role: 'physician' };
@@ -26,5 +26,19 @@ describe('task status permissions', () => {
     });
     expect(taskStatusBody(nurseTask, physician, 'completed', () => '   ')).toBeNull();
     expect(taskStatusBody(nurseTask, physician, 'completed', () => null)).toBeNull();
+  });
+});
+
+describe('back-entering paper work', () => {
+  it('sends the local time as UTC, and asks for a reason when overriding', () => {
+    const ask = vi.fn();
+    const iso = new Date('2026-10-19T09:15').toISOString();
+    expect(taskBackfillBody(nurseTask, nurse, '2026-10-19T09:15', ask)).toEqual({ completed_at: iso });
+    expect(ask).not.toHaveBeenCalled();
+    expect(taskBackfillBody(nurseTask, physician, '2026-10-19T09:15', () => 'Signed on the paper form'))
+      .toEqual({ completed_at: iso, reason: 'Signed on the paper form' });
+    expect(taskBackfillBody(nurseTask, physician, '2026-10-19T09:15', () => '')).toBeNull();
+    expect(taskBackfillBody(nurseTask, nurse, '', ask)).toBeNull();
+    expect(taskBackfillBody(nurseTask, nurse, 'not a time', ask)).toBeNull();
   });
 });

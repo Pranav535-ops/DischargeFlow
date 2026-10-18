@@ -9,6 +9,7 @@ Operational procedures for the AWS deployment (`infra/`, ADR-001 Phase 4). Each 
 | Data loss or corruption; restoring to a point in time | [restore-database.md](restore-database.md) |
 | Rotating `JWT_SECRET`, `PHI_KEK`, the database password or an API key; a suspected secret leak | [rotate-secrets.md](rotate-secrets.md) |
 | AI summaries failing, slow, or producing suspect output | [ai-incident.md](ai-incident.md) |
+| Planned maintenance or an outage: staff work on paper, then back-enter it | [downtime.md](downtime.md) |
 
 ## First steps for any alarm
 

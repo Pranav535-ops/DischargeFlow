@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
 import {
-  invalidateDischarge, isBreakGlassError, keys, queryClient, usePatient, usePatientWorkflow, useUnits,
+  invalidateDischarge, isBreakGlassError, keys, queryClient, usePatient, usePatientWorkflow, useReadOnly, useUnits,
 } from '@/lib/queries';
 import BreakGlassPanel from './BreakGlassPanel';
 import { 
@@ -27,6 +27,7 @@ const PatientDetails = () => {
   const { patientId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const readOnly = useReadOnly();
   const { data: localPatient, isLoading: patientLoading, isError, error } = usePatient(patientId);
   const { data: workflow, isLoading: loading } = usePatientWorkflow(patientId);
   const { data: units = [] } = useUnits();
@@ -131,6 +132,7 @@ const PatientDetails = () => {
                   <select
                     value={localPatient.status}
                     onChange={(e) => handleStatusChange(e.target.value)}
+                    disabled={readOnly}
                     className="bg-zinc-800 text-zinc-100 text-sm rounded border border-zinc-700 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
                     <option value="admitted">Admitted</option>
@@ -148,7 +150,7 @@ const PatientDetails = () => {
             <Button
               data-testid="initiate-discharge-btn"
               onClick={handleInitiateDischarge}
-              disabled={initiating}
+              disabled={initiating || readOnly}
               className="bg-blue-600 hover:bg-blue-500"
             >
               {initiating ? (

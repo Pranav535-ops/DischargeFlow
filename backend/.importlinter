@@ -31,6 +31,7 @@ forbidden_modules =
     app.audit
     app.chatbot
     app.discharge
+    app.downtime
     app.insurance
     app.interop
     app.notifications
@@ -68,6 +69,7 @@ source_modules =
     app.audit
     app.core
     app.discharge
+    app.downtime
     app.identity
     app.insurance
     app.notifications
@@ -86,6 +88,7 @@ source_modules =
     app.chatbot
     app.core
     app.discharge
+    app.downtime
     app.identity
     app.insurance
     app.interop
@@ -97,6 +100,7 @@ forbidden_modules =
     app.audit.router
     app.chatbot.router
     app.discharge.router
+    app.downtime.router
     app.identity.router
     app.insurance.router
     app.interop.router

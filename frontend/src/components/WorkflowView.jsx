@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
-import { invalidateDischarge, usePatient, useWorkflow } from '@/lib/queries';
-import { canChangeTaskStatus, taskStatusBody } from '@/lib/tasks';
+import { invalidateDischarge, useCanBackfill, usePatient, useReadOnly, useWorkflow } from '@/lib/queries';
+import { canChangeTaskStatus, taskBackfillBody, taskStatusBody } from '@/lib/tasks';
 import { 
   ArrowLeft, 
   Clock,
@@ -42,6 +42,11 @@ const WorkflowView = () => {
   const [clinicalNotes, setClinicalNotes] = useState('');
   const [editingSummary, setEditingSummary] = useState(false);
   const [editedContent, setEditedContent] = useState('');
+  // Downtime (ADR-002 item 6): no writes while read-only; afterwards, paper work is entered with the time it was done.
+  const readOnly = useReadOnly();
+  const canBackfill = useCanBackfill();
+  const [paperTimes, setPaperTimes] = useState({});
+  const [paperDischargeTime, setPaperDischargeTime] = useState('');
 
   const handleGenerateSummary = async () => {
     setGeneratingSummary(true);
@@ -92,10 +97,28 @@ const WorkflowView = () => {
     }
   };
 
+  const handleBackfillTask = async (task) => {
+    const body = taskBackfillBody(task, user, paperTimes[task.task_id]);
+    if (!body) return;
+    setUpdatingTask(task.task_id);
+    try {
+      await api.put(`/tasks/${task.task_id}/backfill`, body);
+      toast.success('Paper record entered', { description: `Completed at ${new Date(body.completed_at).toLocaleString()}` });
+      setPaperTimes(({ [task.task_id]: _, ...rest }) => rest);
+      await fetchData();
+    } catch (error) {
+      toast.error('Could not enter the paper record', { description: errorMessage(error) });
+    } finally {
+      setUpdatingTask(null);
+    }
+  };
+
   const handleCompleteWorkflow = async () => {
     setCompletingWorkflow(true);
     try {
-      await api.put(`/workflows/${workflow.workflow_id}/complete`, {});
+      const body = paperDischargeTime ? { completed_at: new Date(paperDischargeTime).toISOString() } : {};
+      await api.put(`/workflows/${workflow.workflow_id}/complete`, body);
+      setPaperDischargeTime('');
       toast.success('Patient discharged!', { description: 'Discharge workflow completed successfully.' });
       await fetchData();
     } catch (error) {
@@ -206,19 +229,33 @@ const WorkflowView = () => {
 
         {/* Complete workflow button */}
         {canApprove && allTasksComplete && summaryApproved && workflow.status !== 'completed' && (
+          <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button
             data-testid="complete-workflow-btn"
             onClick={handleCompleteWorkflow}
-            disabled={completingWorkflow}
-            className="mt-6 bg-emerald-600 hover:bg-emerald-500"
+            disabled={completingWorkflow || readOnly}
+            className="bg-emerald-600 hover:bg-emerald-500"
           >
             {completingWorkflow ? (
               <Loader2 className="w-4 h-4 animate-spin mr-2" />
             ) : (
               <CheckCircle2 className="w-4 h-4 mr-2" />
             )}
-            Complete Discharge
+            {paperDischargeTime ? 'Enter Paper Discharge' : 'Complete Discharge'}
           </Button>
+          {canBackfill && (
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              Discharged on paper during a downtime at
+              <input
+                type="datetime-local"
+                data-testid="paper-discharge-time"
+                value={paperDischargeTime}
+                onChange={e => setPaperDischargeTime(e.target.value)}
+                className="h-8 rounded bg-zinc-950 border border-zinc-700 px-2 text-zinc-200"
+              />
+            </label>
+          )}
+          </div>
         )}
       </div>
 
@@ -286,7 +323,7 @@ const WorkflowView = () => {
                       <Button
                         data-testid="approve-summary-btn"
                         onClick={handleApproveSummary}
-                        disabled={approvingSummary}
+                        disabled={approvingSummary || readOnly}
                         className="bg-emerald-600 hover:bg-emerald-500"
                       >
                         {approvingSummary ? (
@@ -299,6 +336,7 @@ const WorkflowView = () => {
                       <Button
                         data-testid="edit-summary-btn"
                         variant="outline"
+                        disabled={readOnly}
                         onClick={() => {
                           if (!editingSummary) setEditedContent(summary.content);
                           setEditingSummary(!editingSummary);
@@ -333,7 +371,7 @@ const WorkflowView = () => {
               <Button
                 data-testid="generate-summary-btn"
                 onClick={handleGenerateSummary}
-                disabled={generatingSummary}
+                disabled={generatingSummary || readOnly}
                 className="bg-blue-600 hover:bg-blue-500"
               >
                 {generatingSummary ? (
@@ -374,7 +412,7 @@ const WorkflowView = () => {
                     <Checkbox
                       data-testid={`task-checkbox-${task.task_id}`}
                       checked={task.status === 'completed'}
-                      disabled={isUpdating || task.status === 'completed'}
+                      disabled={isUpdating || readOnly || task.status === 'completed'}
                       onCheckedChange={(checked) => {
                         handleTaskUpdate(task, checked ? 'completed' : 'pending');
                       }}
@@ -414,9 +452,33 @@ const WorkflowView = () => {
                       {task.completed_at && (
                         <span className="text-zinc-600">
                           Completed: {new Date(task.completed_at).toLocaleString()}
+                          {task.backfilled_at && ' (on paper, entered after a downtime)'}
                         </span>
                       )}
                     </div>
+                    {canBackfill && canEdit && task.status !== 'completed' && (
+                      <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-zinc-400">
+                        Done on paper at
+                        <input
+                          type="datetime-local"
+                          aria-label={`Time "${task.title}" was done`}
+                          data-testid={`paper-time-${task.task_id}`}
+                          value={paperTimes[task.task_id] || ''}
+                          onChange={e => setPaperTimes({ ...paperTimes, [task.task_id]: e.target.value })}
+                          className="h-7 rounded bg-zinc-950 border border-zinc-700 px-2 text-zinc-200"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid={`paper-enter-${task.task_id}`}
+                          disabled={!paperTimes[task.task_id] || isUpdating}
+                          onClick={() => handleBackfillTask(task)}
+                          className="h-7 border-zinc-700 text-zinc-300"
+                        >
+                          Enter
+                        </Button>
+                      </div>
+                    )}
                   </div>
 
                   {isUpdating && (

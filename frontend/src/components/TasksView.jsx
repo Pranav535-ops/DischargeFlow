@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { api, errorMessage } from '@/lib/api';
-import { invalidateDischarge, useMyTasks, usePatients, useTasks } from '@/lib/queries';
+import { invalidateDischarge, useMyTasks, usePatients, useReadOnly, useTasks } from '@/lib/queries';
 import { canChangeTaskStatus, taskStatusBody } from '@/lib/tasks';
 import { 
   Loader2,
@@ -32,6 +32,7 @@ import { toast } from 'sonner';
 
 const TasksView = () => {
   const { user } = useAuth();
+  const readOnly = useReadOnly();
   const myTasks = useMyTasks();
   const everyTask = useTasks();
   const patients = usePatients();
@@ -153,6 +154,7 @@ const TasksView = () => {
               <DialogTrigger asChild>
                 <Button 
                   data-testid="add-task-btn"
+                  disabled={readOnly}
                   className="bg-blue-600 hover:bg-blue-500 text-white mr-2"
                 >
                   <Plus className="w-4 h-4 mr-2" />
@@ -361,7 +363,7 @@ const TasksView = () => {
                     {canEdit ? (
                       <button
                         data-testid={`task-check-${task.task_id}`}
-                        disabled={isUpdating || task.status === 'completed'}
+                        disabled={isUpdating || readOnly || task.status === 'completed'}
                         onClick={() => handleCheckboxChange(task)}
                         className="mt-1 flex-shrink-0 focus:outline-none"
                         aria-label="Toggle task status"

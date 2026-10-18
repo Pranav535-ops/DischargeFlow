@@ -40,8 +40,15 @@ export const refreshAccessToken = () => {
   return refreshInFlight;
 };
 
+// A write refused because DischargeFlow is in read-only (downtime) mode. queries.js listens for the event and refetches
+// the downtime status, so the banner appears and write controls disable even before the next poll.
+export const READ_ONLY_EVENT = 'df:read-only';
+export const isReadOnlyError = (error) =>
+  error?.response?.status === 503 && String(error?.response?.headers?.['x-read-only']) === 'true';
+
 // On a 401 from any API call, refresh once and retry the original request.
 api.interceptors.response.use(undefined, async error => {
+  if (isReadOnlyError(error)) window.dispatchEvent(new Event(READ_ONLY_EVENT));
   const original = error.config;
   if (error.response?.status === 401 && original && !original._retried && !isAuthCall(original.url)) {
     original._retried = true;
