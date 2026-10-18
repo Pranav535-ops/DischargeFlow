@@ -3,12 +3,12 @@ import logging
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.audit.service import write_audit
 from app.core.config import settings
-from app.core.db import DB
+from app.core.db import DB, utcnow
 from app.core.security import (
     ACCESS_TOKEN_TTL,
     VALID_ROLES,
@@ -19,8 +19,8 @@ from app.core.security import (
     requires,
 )
 from app.core.tenancy import use_tenant
-from app.identity import sessions
-from app.identity.models import AuthSession, User
+from app.identity import integrations, sessions
+from app.identity.models import AuthSession, IntegrationClient, User
 from app.notifications.service import notify_user
 
 logger = logging.getLogger(__name__)
@@ -29,10 +29,15 @@ EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/
 
 auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
 users_router = APIRouter(prefix="/users", tags=["Users"])
+integrations_router = APIRouter(prefix="/integrations/clients", tags=["Integrations"])
 
 
 class RoleUpdate(BaseModel):
     role: str
+
+
+class IntegrationClientCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
 
 
 async def fetch_oauth_profile(session_id: str) -> dict:
@@ -154,3 +159,34 @@ async def update_user_role(
     invalidate_identity(user_id=user_id)
     await write_audit(db, user, "UPDATE_ROLE", "user", user_id, f"{previous} → {role_update.role}", request)
     return {"success": True, "role": role_update.role}
+
+
+# ---------- integration clients (API keys for hospital systems) ----------
+
+@integrations_router.get("")
+async def list_integration_clients(db: DB, user: CurrentUser = Depends(requires("user:manage"))):
+    clients = await db.scalars(select(IntegrationClient).order_by(IntegrationClient.created_at))
+    return [c.to_dict() for c in clients]
+
+
+@integrations_router.post("")
+async def create_integration_client(
+    body: IntegrationClientCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("user:manage"))
+):
+    """Create a client and return its API key. The key is shown only in this response."""
+    client, api_key = await integrations.create_client(db, body.name, user.user_id)
+    await write_audit(db, user, "CREATE_INTEGRATION_CLIENT", "integration_client", client.client_id, body.name, request)
+    return {**client.to_dict(), "api_key": api_key}
+
+
+@integrations_router.delete("/{client_id}")
+async def revoke_integration_client(
+    client_id: str, request: Request, db: DB, user: CurrentUser = Depends(requires("user:manage"))
+):
+    client = await db.get(IntegrationClient, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Integration client not found")
+    if client.revoked_at is None:
+        client.revoked_at = utcnow()
+        await write_audit(db, user, "REVOKE_INTEGRATION_CLIENT", "integration_client", client_id, client.name, request)
+    return client.to_dict()

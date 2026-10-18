@@ -92,12 +92,14 @@ async def rewrap_deks() -> dict:
 
     Field ciphertext is untouched: only each row's small wrapped DEK changes. Idempotent and safe to re-run; rows
     already on the current KEK are skipped. Fails loudly if any DEK matches neither PHI_KEK nor PHI_KEK_PREVIOUS.
+    MRN blind indexes are keyed from the KEK too, so they are recomputed here; until then, lookups also try the
+    index under each retired KEK.
     """
     from app.core.crypto import key_provider
     from app.identity.models import Tenant
     from app.patients.models import Patient
 
-    rewrapped = current = 0
+    rewrapped = current = reindexed = 0
     async with SessionLocal() as db:
         tenant_ids = list(await db.scalars(select(Tenant.tenant_id)))
     for tenant_id in tenant_ids:
@@ -115,10 +117,12 @@ async def rewrap_deks() -> dict:
                     else:
                         patient.phi_dek = new_wrapped
                         rewrapped += 1
+                    if patient.reindex_mrn():
+                        reindexed += 1
                 await db.commit()
         finally:
             current_tenant_id.reset(token)
-    return {"rewrapped": rewrapped, "already_current": current}
+    return {"rewrapped": rewrapped, "already_current": current, "mrn_reindexed": reindexed}
 
 
 async def migrate_all() -> dict:

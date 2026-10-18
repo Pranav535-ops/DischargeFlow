@@ -39,8 +39,9 @@ backup within the retention window depends on it ([restore-database.md](restore-
    aws ecs run-task ... --overrides '{"containerOverrides":[{"name":"api","command":["python","-m","app.cli","rewrap-deks"]}]}'
    ```
 
-   It prints `{"rewrapped": N, "already_current": M}` and is safe to re-run. Field ciphertext is untouched; only each
-   row's small wrapped key changes.
+   It prints `{"rewrapped": N, "already_current": M, "mrn_reindexed": K}` and is safe to re-run. Field ciphertext is
+   untouched; only each row's small wrapped key changes. MRN blind indexes (HL7 patient matching) are keyed from the
+   KEK, so they are recomputed too; until then, lookups also match the index under the previous key.
 5. Run it again and confirm `"rewrapped": 0`. Then remove `PHI_KEK_PREVIOUS` from the task definition and deploy.
 6. Keep the old key offline for as long as backups from before step 4 are retained.
 
