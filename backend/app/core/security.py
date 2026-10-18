@@ -102,12 +102,17 @@ async def get_current_user(request: Request, db: DB) -> CurrentUser:
 AuthUser = Annotated[CurrentUser, Depends(get_current_user)]
 
 
+async def ensure_permission(db, user: CurrentUser, permission: Optional[str]) -> None:
+    """The check behind requires(), for callers that are not endpoints (the assistant's tools)."""
+    if permission and permission not in await permissions_for(db, user.role):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
 def requires(permission: str):
     """Dependency: the signed-in user's role must hold `permission`."""
 
     async def checker(user: AuthUser, db: DB) -> CurrentUser:
-        if permission not in await permissions_for(db, user.role):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        await ensure_permission(db, user, permission)
         return user
 
     return checker

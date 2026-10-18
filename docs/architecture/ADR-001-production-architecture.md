@@ -288,12 +288,12 @@ Sequenced as Agile increments of roughly two weeks each. Every phase ends deploy
 7. [x] Append-only, hash-chained `audit_logs` (the table name is kept; triggers block UPDATE/DELETE for every role, and the app role has INSERT/SELECT only), with `GET /api/audit/verify`. PHI (name, DOB, diagnosis) is encrypted per patient with AES-256-GCM, and erasure crypto-shreds the patient's key. **Deferred:** the KEK comes from app config (`PHI_KEK`) behind a `KeyProvider` interface, not from KMS, so wrapped keys in old backups remain decryptable until it moves to KMS.
 8. [x] `tenant_id` on every tenant-scoped table, enforced by Postgres RLS through a non-bypass `dischargeflow_app` role that each request switches to with `SET LOCAL ROLE`. Existing data was moved into a `default` tenant.
 
-**Phase 3: AI layer**
-9. [ ] `LLMClient` interface with Bedrock Claude + mock adapters, and a prompt registry with versioned templates.
-10. [ ] De-identification step. Structured JSON summary schema with validation.
-11. [ ] Outbox → SQS → worker for summaries. SSE notification stream.
-12. [ ] Golden-set evals in `ai/evals/` wired into CI. Approval diff capture.
-13. [ ] Tool-calling assistant over service functions, with confirmation for writes and audit for every tool call.
+**Phase 3: AI layer** (done 2026-10-18 except item 11, deferred as noted)
+9. [x] `LLMClient` interface (`ai/llm.py`) with a Claude adapter that runs on the Anthropic API or on Bedrock through the same SDK, plus a deterministic mock adapter for tests, CI and offline dev; selected by `LLM_PROVIDER`. Claude Sonnet 5.5 writes summaries and Claude Haiku 5.5 runs the assistant. Versioned prompt files (`ai/prompts/discharge_summary@v1.md`) whose hashes are pinned in tests, so a published version can't be edited in place. **Changed:** production uses the Anthropic API directly for now because the project has no AWS account yet; real patient data must wait for a BAA (Anthropic's, or Bedrock's under the AWS BAA by switching `LLM_PROVIDER=bedrock`).
+10. [x] De-identification (`ai/deid.py`): names become tokens, contact details and dates are scrubbed, only the fields the prompt needs are sent (age instead of DOB, length of stay instead of dates), and output is re-identified. The summary is JSON validated against `DischargeSummaryDoc`, retried once when invalid, and fails visibly after that. Per-generation provenance (`ai_generations`: model id, prompt version and hash, input hash, token counts, latency, grounding warnings).
+11. [ ] Outbox → SQS → worker for summaries. SSE notification stream. **Deferred** to the AWS phase: there is no queue on Vercel, and generation stays synchronous (under the 60 s function limit) until the worker exists.
+12. [x] Golden-set evals (`ai/evals/`, synthetic patients) run in CI on every push with the mock adapter, and against Claude Haiku 5.5 on pull requests when an `ANTHROPIC_API_KEY` secret is set. CI fails on any hallucinated medication or diagnosis, any identifier sent to the model, or coverage below threshold. Generation-time grounding warnings are shown to the approving physician. Approval stores the physician's edit diff and similarity, reported per prompt version at `GET /api/ai/metrics`.
+13. [x] Tool-calling assistant over the service functions. Each tool checks the same permission as its HTTP endpoint and is audited; write tools only create a proposal the user confirms (single use, expiring, permission re-checked); tool results are de-identified and wrapped as untrusted data. Without a configured provider the assistant falls back to the mock's rule-based routing over the same tools.
 
 **Phase 4: Platform + delivery**
 14. [ ] Terraform `infra/` for staging and prod. GitHub OIDC deploy role.

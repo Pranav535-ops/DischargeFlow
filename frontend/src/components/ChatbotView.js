@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Bot, Send, User, Sparkles, RefreshCw } from 'lucide-react';
+import { Bot, Send, User, Sparkles, RefreshCw, ShieldCheck, X, Check } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
@@ -28,12 +28,13 @@ const ChatbotView = () => {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: "Hello! I'm DischargeFlow AI, your clinical assistant. I can help you list patients, check your tasks, view analytics, and query insurance claims. Type a message or use a quick command below!",
+      content: "Hello! I'm DischargeFlow AI, your clinical operations assistant. I can look up patients, tasks, analytics and insurance claims, and prepare tasks, discharges and claims for you to confirm. Nothing changes until you confirm it.",
       timestamp: new Date(),
     }
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resolving, setResolving] = useState(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -44,14 +45,17 @@ const ChatbotView = () => {
     const userMessage = text || input.trim();
     if (!userMessage) return;
     setInput('');
+    // Recent turns give follow-up questions context; the server de-identifies them before the model sees them.
+    const history = messages.slice(1).slice(-10).map(m => ({ role: m.role, content: m.content.slice(0, 4000) }));
     setMessages(prev => [...prev, { role: 'user', content: userMessage, timestamp: new Date() }]);
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/chatbot/message`, { message: userMessage }, { withCredentials: true });
+      const res = await axios.post(`${API}/chatbot/message`, { message: userMessage, history }, { withCredentials: true });
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: res.data.response,
+        content: res.data.response || (res.data.pending_actions?.length ? 'Please review the proposed change below.' : ''),
         data: res.data.data,
+        actions: (res.data.pending_actions || []).map(a => ({ ...a, state: 'pending' })),
         timestamp: new Date(),
       }]);
     } catch (err) {
@@ -70,6 +74,29 @@ const ChatbotView = () => {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const setActionState = (actionId, state) => {
+    setMessages(prev => prev.map(m => m.actions
+      ? { ...m, actions: m.actions.map(a => (a.action_id === actionId ? { ...a, state } : a)) }
+      : m));
+  };
+
+  const resolveAction = async (action, decision) => {
+    setResolving(action.action_id);
+    try {
+      const res = await axios.post(`${API}/chatbot/actions/${action.action_id}/${decision}`, {}, { withCredentials: true });
+      setActionState(action.action_id, decision === 'confirm' ? 'confirmed' : 'cancelled');
+      if (decision === 'confirm') {
+        setMessages(prev => [...prev, { role: 'assistant', content: `Done: ${res.data.response}`, timestamp: new Date() }]);
+      }
+    } catch (err) {
+      const detail = err.response?.data?.detail || 'The action could not be completed.';
+      setActionState(action.action_id, 'failed');
+      setMessages(prev => [...prev, { role: 'assistant', content: detail, timestamp: new Date() }]);
+    } finally {
+      setResolving(null);
     }
   };
 
@@ -152,6 +179,37 @@ const ChatbotView = () => {
                   ))}
                 </div>
               )}
+              {msg.actions && msg.actions.map(action => (
+                <div key={action.action_id} data-testid="assistant-action-card"
+                  className="bg-zinc-900 border border-amber-500/30 rounded-xl p-3 text-xs w-full">
+                  <p className="flex items-center gap-1.5 text-amber-400 font-medium mb-1">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Needs your confirmation
+                  </p>
+                  <p className="text-zinc-200 text-sm mb-3">{action.summary}</p>
+                  {action.state === 'pending' ? (
+                    <div className="flex gap-2">
+                      <button
+                        data-testid="confirm-action-btn"
+                        onClick={() => resolveAction(action, 'confirm')}
+                        disabled={resolving === action.action_id}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50"
+                      >
+                        <Check className="w-3.5 h-3.5" /> Confirm
+                      </button>
+                      <button
+                        data-testid="cancel-action-btn"
+                        onClick={() => resolveAction(action, 'cancel')}
+                        disabled={resolving === action.action_id}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+                      >
+                        <X className="w-3.5 h-3.5" /> Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-zinc-500 capitalize">{action.state}</p>
+                  )}
+                </div>
+              ))}
               {msg.data?.tasks && msg.data.tasks.length > 0 && (
                 <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-3 text-xs space-y-1 w-full">
                   <p className="text-zinc-500 mb-2">Your tasks:</p>
@@ -191,7 +249,7 @@ const ChatbotView = () => {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask me anything — 'List patients', 'My tasks', 'Help'…"
+            placeholder="Ask me anything: 'List patients', 'My tasks', 'Create a task for…'"
             rows={1}
             className="w-full bg-transparent px-4 py-3 text-zinc-100 text-sm focus:outline-none resize-none placeholder-zinc-500"
           />
@@ -205,7 +263,7 @@ const ChatbotView = () => {
         </button>
       </div>
 
-      <p className="text-zinc-600 text-xs mt-2 text-center">All interactions are logged per HIPAA audit requirements</p>
+      <p className="text-zinc-600 text-xs mt-2 text-center">Patient identifiers are removed before the AI sees them. Every lookup and change is audited, and changes need your confirmation.</p>
     </div>
   );
 };

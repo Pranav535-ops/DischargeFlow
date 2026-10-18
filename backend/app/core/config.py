@@ -48,7 +48,12 @@ class Settings:
     default_tenant_id: str = "default"
     seed_on_startup: bool = False
     auto_migrate: bool = False
-    emergent_llm_key: str | None = None
+    # AI gateway (app/ai/llm.py). "mock" is deterministic and offline; "none" disables AI summaries.
+    llm_provider: str = "none"
+    anthropic_api_key: str | None = None
+    aws_region: str | None = None
+    summary_model: str = "claude-sonnet-5-5"
+    assistant_model: str = "claude-haiku-5-5"
 
     @property
     def is_production(self) -> bool:
@@ -94,7 +99,12 @@ def load_settings() -> Settings:
         default_tenant_id=os.environ.get("DEFAULT_TENANT_ID", "default").strip() or "default",
         seed_on_startup=_bool("SEED_ON_STARTUP"),
         auto_migrate=_bool("AUTO_MIGRATE"),
-        emergent_llm_key=os.environ.get("EMERGENT_LLM_KEY") or None,
+        # Development and tests default to the offline mock; production must choose a provider explicitly.
+        llm_provider=os.environ.get("LLM_PROVIDER", "").strip().lower() or ("mock" if is_dev else "none"),
+        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip() or None,
+        aws_region=os.environ.get("AWS_REGION", "").strip() or None,
+        summary_model=os.environ.get("LLM_SUMMARY_MODEL", "").strip() or "claude-sonnet-5-5",
+        assistant_model=os.environ.get("LLM_ASSISTANT_MODEL", "").strip() or "claude-haiku-5-5",
     )
 
 
