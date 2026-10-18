@@ -97,3 +97,8 @@ android-sdk/-e
 *.tfstate.*
 infra/**/backend.hcl
 infra/**/terraform.tfvars
+
+# Frontend test output
+frontend/build/
+frontend/test-results/
+frontend/playwright-report/

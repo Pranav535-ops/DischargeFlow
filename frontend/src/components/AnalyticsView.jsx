@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React from 'react';
+import { useDashboardAnalytics, useTasksByRole } from '@/lib/queries';
 import { 
   Loader2,
   Users,
@@ -12,8 +12,6 @@ import {
   BarChart2
 } from 'lucide-react';
 import {
-  AreaChart,
-  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -22,10 +20,8 @@ import {
   BarChart,
   Bar,
   Cell,
-  Legend,
 } from 'recharts';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
 // Simulated weekly discharge trend for chart
 const weeklyData = [
@@ -55,27 +51,11 @@ const CustomTooltip = ({ active, payload, label }) => {
 };
 
 const AnalyticsView = () => {
-  const [analytics, setAnalytics] = useState(null);
-  const [tasksByRole, setTasksByRole] = useState({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchAnalytics = async () => {
-      try {
-        const [dashRes, tasksRes] = await Promise.all([
-          axios.get(`${API}/analytics/dashboard`, { withCredentials: true }),
-          axios.get(`${API}/analytics/tasks-by-role`, { withCredentials: true })
-        ]);
-        setAnalytics(dashRes.data);
-        setTasksByRole(tasksRes.data);
-      } catch (error) {
-        console.error('Fetch analytics error:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchAnalytics();
-  }, []);
+  const dashboard = useDashboardAnalytics();
+  const byRole = useTasksByRole();
+  const analytics = dashboard.data ?? null;
+  const tasksByRole = byRole.data ?? {};
+  const loading = dashboard.isLoading || byRole.isLoading;
 
   if (loading) {
     return (

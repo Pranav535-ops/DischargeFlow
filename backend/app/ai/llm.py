@@ -22,7 +22,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-Purpose = Literal["summary", "assistant"]
+Purpose = Literal["summary", "assistant", "insights"]
 
 
 @dataclass
@@ -111,6 +111,7 @@ class ClaudeClient:
 # ---------- Mock (offline, deterministic) ----------
 
 FACTS_RE = re.compile(r"<patient_facts>\s*(\{.*?\})\s*</patient_facts>", re.S)
+AGGREGATES_RE = re.compile(r"<aggregates>\s*(\{.*\})\s*</aggregates>", re.S)
 NOTE_FIELDS = {"course": "course", "procedures": "procedures", "medications": "medications",
                "follow-up": "follow_up", "follow up": "follow_up", "warning signs": "warning_signs",
                "activity": "activity", "diet": "diet"}
@@ -226,6 +227,10 @@ class MockLLMClient:
     async def complete(self, *, system, messages, max_tokens, tools=None, json_schema=None) -> LLMResponse:
         last = messages[-1]
         content = last["content"]
+        if json_schema is not None and isinstance(content, str) and (agg := AGGREGATES_RE.search(content)):
+            from app.ai.insights import mock_insights
+
+            return self._reply(json.dumps(mock_insights(json.loads(agg.group(1)))), messages)
         if json_schema is not None:
             match = FACTS_RE.search(content if isinstance(content, str) else json.dumps(content))
             facts = json.loads(match.group(1)) if match else {}
@@ -274,8 +279,8 @@ def _bedrock_model(model_id: str) -> str:
 def get_llm_client(purpose: Purpose) -> LLMClient:
     """The configured client for `purpose`. Raises 503 when AI is disabled or misconfigured."""
     provider = settings.llm_provider
-    model = settings.summary_model if purpose == "summary" else settings.assistant_model
-    effort = "medium" if purpose == "summary" else "low"
+    model = settings.assistant_model if purpose == "assistant" else settings.summary_model
+    effort = "low" if purpose == "assistant" else "medium"
     if provider == "mock":
         return MockLLMClient()
     if provider == "anthropic":

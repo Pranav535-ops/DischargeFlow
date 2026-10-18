@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import { useDashboardAnalytics, useNotifications } from '@/lib/queries';
 import {
   Users,
   Clock,
   Activity,
   CheckCircle2,
-  AlertCircle,
   TrendingUp,
   TrendingDown,
   ArrowRight,
@@ -20,7 +20,6 @@ import {
 import { Button } from '../components/ui/button';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
 // Simulated discharge trend data for the chart
 const generateTrendData = () => {
@@ -77,30 +76,17 @@ const CustomTooltip = ({ active, payload, label }) => {
   return null;
 };
 
-const HomeView = ({ onNavigate }) => {
-  const { user } = useAuth();
-  const [analytics, setAnalytics] = useState(null);
-  const [notifications, setNotifications] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const trendData = generateTrendData();
+const ROUTES = { patients: '/patients', tasks: '/tasks', analytics: '/analytics' };
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [analyticsRes, notifsRes] = await Promise.all([
-          axios.get(`${API}/analytics/dashboard`, { withCredentials: true }),
-          axios.get(`${API}/notifications`, { withCredentials: true }),
-        ]);
-        setAnalytics(analyticsRes.data);
-        setNotifications(notifsRes.data.slice(0, 5));
-      } catch (err) {
-        console.error('HomeView fetch error:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, []);
+const HomeView = () => {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const onNavigate = (view) => navigate(ROUTES[view] || '/dashboard');
+  const { data: analytics, isLoading: analyticsLoading } = useDashboardAnalytics();
+  const { data: allNotifications = [], isLoading: notificationsLoading } = useNotifications();
+  const notifications = allNotifications.slice(0, 5);
+  const loading = analyticsLoading || notificationsLoading;
+  const trendData = generateTrendData();
 
   const canAddPatient = ['physician', 'nurse', 'admin'].includes(user?.role);
   const canViewAnalytics = ['physician', 'nurse', 'admin'].includes(user?.role);

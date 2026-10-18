@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import React, { useState } from 'react';
+import { toast } from 'sonner';
+import { api, errorMessage } from '@/lib/api';
+import { queryClient, useClaims, useInsuranceReports, usePatients } from '@/lib/queries';
 import {
   DollarSign, FileText, Plus, RefreshCw, TrendingUp,
   TrendingDown, Clock, CheckCircle, XCircle, AlertCircle,
   ChevronDown, ChevronUp
 } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer} from 'recharts';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
 const STATUS_COLORS = {
   pending:  { bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/20' },
@@ -32,10 +33,14 @@ const StatusBadge = ({ status }) => {
 };
 
 const InsuranceView = () => {
-  const [claims, setClaims]       = useState([]);
-  const [reports, setReports]     = useState(null);
-  const [patients, setPatients]   = useState([]);
-  const [loading, setLoading]     = useState(true);
+  const claimsQuery = useClaims();
+  const reportsQuery = useInsuranceReports();
+  const patientsQuery = usePatients();
+  const claims = claimsQuery.data ?? [];
+  const reports = reportsQuery.data ?? null;
+  const patients = patientsQuery.data ?? [];
+  const loading = claimsQuery.isLoading || reportsQuery.isLoading || patientsQuery.isLoading;
+  const fetchData = () => queryClient.invalidateQueries({ queryKey: ['insurance'] });
   const [showForm, setShowForm]   = useState(false);
   const [activeTab, setActiveTab] = useState('claims');
   const [expandedRow, setExpandedRow] = useState(null);
@@ -45,51 +50,32 @@ const InsuranceView = () => {
     billed_amount: '', diagnosis_codes: '', procedure_codes: ''
   });
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [claimsRes, reportsRes, patientsRes] = await Promise.all([
-        axios.get(`${API}/insurance/claims`, { withCredentials: true }),
-        axios.get(`${API}/insurance/reports`, { withCredentials: true }),
-        axios.get(`${API}/patients`, { withCredentials: true }),
-      ]);
-      setClaims(claimsRes.data);
-      setReports(reportsRes.data);
-      setPatients(patientsRes.data);
-    } catch (err) {
-      console.error('Insurance fetch error:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${API}/insurance/claims`, {
+      await api.post(`/insurance/claims`, {
         patient_id:     form.patient_id,
         insurer_name:   form.insurer_name,
         policy_number:  form.policy_number,
         billed_amount:  parseFloat(form.billed_amount),
         diagnosis_codes:  form.diagnosis_codes.split(',').map(s=>s.trim()).filter(Boolean),
         procedure_codes:  form.procedure_codes.split(',').map(s=>s.trim()).filter(Boolean),
-      }, { withCredentials: true });
+      });
       setShowForm(false);
       setForm({ patient_id:'',insurer_name:'',policy_number:'',billed_amount:'',diagnosis_codes:'',procedure_codes:'' });
       fetchData();
     } catch (err) {
-      console.error('Submit claim error:', err);
+      toast.error('Could not submit the claim', { description: errorMessage(err) });
     }
   };
 
   const updateStatus = async (claimId, status) => {
     setUpdating(claimId);
     try {
-      await axios.put(`${API}/insurance/claims/${claimId}/status`, { status }, { withCredentials: true });
+      await api.put(`/insurance/claims/${claimId}/status`, { status });
       fetchData();
     } catch (err) {
-      console.error('Update status error:', err);
+      toast.error('Could not update the claim', { description: errorMessage(err) });
     } finally {
       setUpdating(null);
     }

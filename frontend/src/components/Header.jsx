@@ -1,30 +1,36 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { Bell, Check, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Bell, Check} from 'lucide-react';
 import { Button } from '../components/ui/button';
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '../components/ui/popover';
-import axios from 'axios';
+import { api } from '@/lib/api';
+import { keys, queryClient, useNotifications } from '@/lib/queries';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
-const Header = ({ user, notifications, unreadCount, onNotificationRead }) => {
+const Header = ({ user }) => {
   const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  // Polled every 30 s by the query itself (lib/queries.js).
+  const { data: notifications = [] } = useNotifications();
+  const unreadCount = notifications.filter(n => !n.read).length;
+  const onNotificationRead = () => queryClient.invalidateQueries({ queryKey: keys.notifications });
 
-  // Auto-refresh notifications every 30 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      onNotificationRead();
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [onNotificationRead]);
+  // Notification links point at real routes (/patients/:id, /workflows/:id).
+  const openNotification = (notif) => {
+    if (!notif.read) markAsRead(notif.notification_id);
+    if (notif.link && /^\/(patients|workflows)\//.test(notif.link)) {
+      setOpen(false);
+      navigate(notif.link);
+    }
+  };
 
   const markAsRead = async (notificationId) => {
     try {
-      await axios.put(`${API}/notifications/${notificationId}/read`, {}, { withCredentials: true });
+      await api.put(`/notifications/${notificationId}/read`, {});
       onNotificationRead();
     } catch (error) {
       console.error('Mark as read error:', error);
@@ -33,7 +39,7 @@ const Header = ({ user, notifications, unreadCount, onNotificationRead }) => {
 
   const markAllAsRead = async () => {
     try {
-      await axios.put(`${API}/notifications/read-all`, {}, { withCredentials: true });
+      await api.put(`/notifications/read-all`, {});
       onNotificationRead();
     } catch (error) {
       console.error('Mark all as read error:', error);
@@ -118,7 +124,8 @@ const Header = ({ user, notifications, unreadCount, onNotificationRead }) => {
                 <div 
                   key={notif.notification_id}
                   data-testid={`notification-${notif.notification_id}`}
-                  className={`p-4 border-b border-zinc-800/50 hover:bg-zinc-800/50 transition-colors ${
+                  onClick={() => openNotification(notif)}
+                  className={`p-4 border-b border-zinc-800/50 hover:bg-zinc-800/50 transition-colors ${notif.link ? 'cursor-pointer' : ''} ${
                     !notif.read ? 'bg-zinc-800/30' : ''
                   }`}
                 >
@@ -133,7 +140,7 @@ const Header = ({ user, notifications, unreadCount, onNotificationRead }) => {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => markAsRead(notif.notification_id)}
+                        onClick={(e) => { e.stopPropagation(); markAsRead(notif.notification_id); }}
                         className="text-zinc-500 hover:text-zinc-300 h-6 w-6"
                       >
                         <Check className="w-3 h-3" />

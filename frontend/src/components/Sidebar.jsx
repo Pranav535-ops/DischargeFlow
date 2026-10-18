@@ -1,8 +1,8 @@
 import React from 'react';
+import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { 
   Users, 
-  ClipboardList, 
   BarChart3, 
   Settings,
   Activity,
@@ -10,21 +10,23 @@ import {
   CheckSquare,
   LayoutDashboard,
   DollarSign,
-  Bot
+  Bot,
+  Sparkles
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 
-const Sidebar = ({ activeView, setActiveView, user }) => {
+const Sidebar = ({ user }) => {
   const { logout } = useAuth();
 
   const navItems = [
-    { id: 'home',      label: 'Home',      icon: LayoutDashboard, roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
-    { id: 'patients',  label: 'Patients',  icon: Users,           roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
-    { id: 'tasks',     label: 'My Tasks',  icon: CheckSquare,     roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
-    { id: 'insurance', label: 'Insurance', icon: DollarSign,      roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
-    { id: 'chatbot',   label: 'AI Assistant', icon: Bot,          roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3,       roles: ['physician', 'nurse', 'admin'] },
-    { id: 'admin',     label: 'Admin',     icon: Settings,        roles: ['admin'] },
+    { id: 'home',      to: '/dashboard', label: 'Home',         icon: LayoutDashboard, roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'patients',  to: '/patients',  label: 'Patients',     icon: Users,           roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'tasks',     to: '/tasks',     label: 'My Tasks',     icon: CheckSquare,     roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'insurance', to: '/insurance', label: 'Insurance',    icon: DollarSign,      roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'chatbot',   to: '/assistant', label: 'AI Assistant', icon: Bot,             roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'analytics', to: '/analytics', label: 'Analytics',    icon: BarChart3,       roles: ['physician', 'nurse', 'admin'] },
+    { id: 'insights',  to: '/insights',  label: 'AI Insights',  icon: Sparkles,        roles: ['admin'] },
+    { id: 'admin',     to: '/admin',     label: 'Admin',        icon: Settings,        roles: ['admin'] },
   ];
 
   const filteredNavItems = navItems.filter(item => 
@@ -62,18 +64,20 @@ const Sidebar = ({ activeView, setActiveView, user }) => {
         <ul className="space-y-1">
           {filteredNavItems.map((item) => (
             <li key={item.id}>
-              <button
+              <NavLink
+                to={item.to}
                 data-testid={`nav-${item.id}`}
-                onClick={() => setActiveView(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  activeView === item.id
-                    ? 'bg-zinc-800 text-zinc-50'
-                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300'
-                }`}
+                // Patient and workflow pages belong to the Patients section.
+                className={({ isActive }) => {
+                  const active = isActive || (item.id === 'patients' && /^\/(patients|workflows)\//.test(window.location.pathname));
+                  return `w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                    active ? 'bg-zinc-800 text-zinc-50' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300'
+                  }`;
+                }}
               >
                 <item.icon className="w-5 h-5" strokeWidth={1.5} />
                 {item.label}
-              </button>
+              </NavLink>
             </li>
           ))}
         </ul>

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React, { useState } from 'react';
+import { api, errorMessage } from '@/lib/api';
+import { keys, queryClient, useUsers } from '@/lib/queries';
 import { 
   Loader2,
   Users,
@@ -17,29 +18,14 @@ import {
 } from '../components/ui/select';
 import { toast } from 'sonner';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
 const AdminView = () => {
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { data: users = [], isLoading: loading } = useUsers();
   const [updatingUser, setUpdatingUser] = useState(null);
   const [roleChanges, setRoleChanges] = useState({});
   const [savedUsers, setSavedUsers] = useState({});
 
-  const fetchUsers = async () => {
-    try {
-      const res = await axios.get(`${API}/users`, { withCredentials: true });
-      setUsers(res.data);
-    } catch (error) {
-      console.error('Fetch users error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchUsers();
-  }, []);
+  const fetchUsers = () => queryClient.invalidateQueries({ queryKey: keys.users });
 
   const handleRoleChange = (userId, newRole) => {
     setRoleChanges({ ...roleChanges, [userId]: newRole });
@@ -52,14 +38,13 @@ const AdminView = () => {
 
     setUpdatingUser(userId);
     try {
-      await axios.put(`${API}/users/${userId}/role`, { role: newRole }, { withCredentials: true });
+      await api.put(`/users/${userId}/role`, { role: newRole });
       toast.success('Role updated', { description: `User role has been updated to ${newRole}.` });
       setSavedUsers({ ...savedUsers, [userId]: true });
       fetchUsers();
       setRoleChanges({ ...roleChanges, [userId]: undefined });
     } catch (error) {
-      console.error('Update role error:', error);
-      toast.error('Failed to update role', { description: error.response?.data?.detail || 'An error occurred.' });
+      toast.error('Failed to update role', { description: errorMessage(error) });
     } finally {
       setUpdatingUser(null);
     }

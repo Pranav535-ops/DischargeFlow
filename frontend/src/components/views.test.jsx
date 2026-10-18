@@ -1,0 +1,108 @@
+import React from 'react';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { api } from '@/lib/api';
+
+vi.mock('@/context/AuthContext', () => ({ useAuth: () => ({ user: { role: 'physician', name: 'Dr Test' } }) }));
+vi.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: { role: 'physician', name: 'Dr Test' } }) }));
+
+const renderAt = (path, routePath, element) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path={routePath} element={element} />
+          <Route path="*" element={<p>elsewhere</p>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+};
+
+beforeEach(() => vi.restoreAllMocks());
+
+describe('WorkflowView (route /workflows/:workflowId)', () => {
+  it('loads the workflow from the URL and shows grounding warnings on the draft', async () => {
+    const { default: WorkflowView } = await import('./WorkflowView');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/workflows/wf_1') {
+        return { data: {
+          workflow_id: 'wf_1', patient_id: 'pat_1', status: 'in_progress', started_at: '2026-10-18T10:00:00Z',
+          tasks: [],
+          discharge_summary: {
+            summary_id: 'sum_1', approved: false, content: 'DISCHARGE SUMMARY', generated_by: 'ai',
+            generation: { provider: 'anthropic', model_id: 'claude-sonnet-5-5', prompt_version: 'discharge_summary@v1',
+              grounding_warnings: [{ type: 'medication', value: 'warfarin' }] },
+          },
+        } };
+      }
+      if (url === '/patients/pat_1') return { data: { patient_id: 'pat_1', name: 'Jane Doe', room_number: '12A' } };
+      throw new Error(`unexpected ${url}`);
+    });
+    renderAt('/workflows/wf_1', '/workflows/:workflowId', <WorkflowView />);
+
+    expect(await screen.findByText(/Jane Doe - Room 12A/)).toBeInTheDocument();
+    expect(screen.getByTestId('grounding-warnings')).toHaveTextContent('medication: warfarin');
+    expect(screen.getByTestId('summary-provenance')).toHaveTextContent('claude-sonnet-5-5');
+  });
+
+  it('sends the physician edits when approving an edited draft', async () => {
+    const { default: WorkflowView } = await import('./WorkflowView');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => ({ data: url.startsWith('/workflows') ? {
+      workflow_id: 'wf_1', patient_id: 'pat_1', status: 'in_progress', started_at: '2026-10-18T10:00:00Z', tasks: [],
+      discharge_summary: { summary_id: 'sum_1', approved: false, content: 'Original draft' },
+    } : { patient_id: 'pat_1', name: 'Jane Doe', room_number: '1' } }));
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: {} });
+    renderAt('/workflows/wf_1', '/workflows/:workflowId', <WorkflowView />);
+
+    await userEvent.click(await screen.findByTestId('edit-summary-btn'));
+    const editor = screen.getByTestId('summary-editor');
+    await userEvent.clear(editor);
+    await userEvent.type(editor, 'Edited by physician');
+    await userEvent.click(screen.getByTestId('approve-summary-btn'));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/ai/approve-summary/sum_1', { content: 'Edited by physician' }));
+  });
+});
+
+describe('PatientDetails (route /patients/:patientId)', () => {
+  it('shows a not-found state for an unknown patient id', async () => {
+    const { default: PatientDetails } = await import('./PatientDetails');
+    vi.spyOn(api, 'get').mockRejectedValue(Object.assign(new Error('404'), { response: { status: 404 } }));
+    renderAt('/patients/pat_missing', '/patients/:patientId', <PatientDetails />);
+    expect(await screen.findByText('Patient not found.')).toBeInTheDocument();
+  });
+});
+
+describe('InsightsView', () => {
+  it('shows the aggregates and the findings with their cited metrics', async () => {
+    const { default: InsightsView } = await import('./InsightsView');
+    const aggregates = {
+      task_completion_time_by_role: { pharmacist: { n: 6, avg_hours: 20, median_hours: 19 }, nurse: { n: 1 } },
+      open_tasks_by_role: { nurse: { n: 4, oldest_hours: 30 } },
+      discharge_duration: { n: 0 },
+      ai_summaries: { generated: 2, approved: 1, avg_edit_similarity: 0.9, failed_generations: 0 },
+    };
+    vi.spyOn(api, 'get').mockResolvedValue({ data: aggregates });
+    vi.spyOn(api, 'post').mockResolvedValue({ data: {
+      aggregates,
+      insights: { headline: 'Pharmacist tasks take longest', findings: [
+        { title: 'Pharmacist delay', detail: 'd', suggestion: 's', metric: 'task_completion_time_by_role.pharmacist.avg_hours' },
+      ] },
+      rejected_citations: ['readmission_rate'],
+      generation: { provider: 'mock', model_id: 'mock-1', prompt_version: 'insights@v1' },
+    } });
+    renderAt('/insights', '/insights', <InsightsView />);
+
+    expect(await screen.findAllByText(/too few to average/)).toHaveLength(2); // nurse n=1, discharges n=0
+    await userEvent.click(screen.getByTestId('generate-insights-btn'));
+    const panel = await screen.findByTestId('insights-panel');
+    expect(panel).toHaveTextContent('Pharmacist tasks take longest');
+    expect(panel).toHaveTextContent('Based on task_completion_time_by_role.pharmacist.avg_hours');
+    expect(panel).toHaveTextContent('1 finding(s) removed');
+    expect(panel).toHaveTextContent('offline mock');
+  });
+});

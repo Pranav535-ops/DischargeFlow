@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import { api, errorMessage } from '@/lib/api';
+import { invalidateDischarge, keys, queryClient, usePatient, usePatientWorkflow } from '@/lib/queries';
 import { 
   ArrowLeft, 
   User, 
@@ -15,44 +18,25 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
-const PatientDetails = ({ patient, onBack, onWorkflowSelect, onRefreshNotifications }) => {
+// Route: /patients/:patientId
+const PatientDetails = () => {
+  const { patientId } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
-  const [localPatient, setLocalPatient] = useState(patient);
-  const [workflow, setWorkflow] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { data: localPatient, isLoading: patientLoading, isError } = usePatient(patientId);
+  const { data: workflow, isLoading: loading } = usePatientWorkflow(patientId);
   const [initiating, setInitiating] = useState(false);
-
-  useEffect(() => {
-    setLocalPatient(patient);
-  }, [patient]);
-
-  const fetchWorkflow = async () => {
-    try {
-      const res = await axios.get(`${API}/workflows/patient/${patient.patient_id}`, { withCredentials: true });
-      setWorkflow(res.data);
-    } catch (error) {
-      console.error('Fetch workflow error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchWorkflow();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [patient.patient_id]);
+  const onBack = () => navigate('/patients');
 
   const handleInitiateDischarge = async () => {
     setInitiating(true);
     try {
-      const res = await axios.post(`${API}/workflows/initiate/${localPatient.patient_id}`, {}, { withCredentials: true });
-      setWorkflow(res.data.workflow);
-      onRefreshNotifications();
+      await api.post(`/workflows/initiate/${patientId}`, {});
+      toast.success('Discharge workflow started');
+      await invalidateDischarge();
     } catch (error) {
-      console.error('Initiate discharge error:', error);
-      alert(error.response?.data?.detail || 'Failed to initiate discharge');
+      toast.error('Failed to initiate discharge', { description: errorMessage(error) });
     } finally {
       setInitiating(false);
     }
@@ -77,17 +61,33 @@ const PatientDetails = ({ patient, onBack, onWorkflowSelect, onRefreshNotificati
   };
 
   const handleStatusChange = async (newStatus) => {
-    const backup = localPatient.status;
+    // Optimistic: show the new status now, put the old one back if the server refuses.
+    const backup = localPatient;
+    queryClient.setQueryData(keys.patient(patientId), { ...localPatient, status: newStatus });
     try {
-      setLocalPatient({ ...localPatient, status: newStatus });
-      await axios.put(`${API}/patients/${localPatient.patient_id}`, { status: newStatus }, { withCredentials: true });
-      onRefreshNotifications();
+      await api.put(`/patients/${patientId}`, { status: newStatus });
+      await queryClient.invalidateQueries({ queryKey: keys.patients });
     } catch (error) {
-      console.error('Update status error:', error);
-      setLocalPatient({ ...localPatient, status: backup });
-      alert('Failed to update status');
+      queryClient.setQueryData(keys.patient(patientId), backup);
+      toast.error('Failed to update status', { description: errorMessage(error) });
     }
   };
+
+  if (patientLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+  if (isError || !localPatient) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-zinc-400 mb-4">Patient not found.</p>
+        <Button variant="outline" onClick={onBack}>Back to patients</Button>
+      </div>
+    );
+  }
 
   const canEditStatus = ['physician', 'nurse', 'admin'].includes(user?.role);
   const canInitiateDischarge = ['physician', 'admin'].includes(user?.role) && localPatient.status === 'admitted';
@@ -158,28 +158,28 @@ const PatientDetails = ({ patient, onBack, onWorkflowSelect, onRefreshNotificati
             <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Room</p>
             <div className="flex items-center gap-2 text-zinc-200">
               <MapPin className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
-              {patient.room_number}
+              {localPatient.room_number}
             </div>
           </div>
           <div>
             <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Date of Birth</p>
             <div className="flex items-center gap-2 text-zinc-200">
               <Calendar className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
-              {new Date(patient.date_of_birth).toLocaleDateString()}
+              {new Date(localPatient.date_of_birth).toLocaleDateString()}
             </div>
           </div>
           <div>
             <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Admission Date</p>
             <div className="flex items-center gap-2 text-zinc-200">
               <Calendar className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
-              {new Date(patient.admission_date).toLocaleDateString()}
+              {new Date(localPatient.admission_date).toLocaleDateString()}
             </div>
           </div>
           <div>
             <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Attending Physician</p>
             <div className="flex items-center gap-2 text-zinc-200">
               <Stethoscope className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
-              {patient.attending_physician}
+              {localPatient.attending_physician}
             </div>
           </div>
         </div>
@@ -188,7 +188,7 @@ const PatientDetails = ({ patient, onBack, onWorkflowSelect, onRefreshNotificati
           <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Diagnosis</p>
           <div className="flex items-center gap-2 text-zinc-200">
             <Activity className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
-            {patient.diagnosis}
+            {localPatient.diagnosis}
           </div>
         </div>
       </div>
@@ -255,7 +255,7 @@ const PatientDetails = ({ patient, onBack, onWorkflowSelect, onRefreshNotificati
 
           <Button
             data-testid="view-workflow-btn"
-            onClick={() => onWorkflowSelect(workflow)}
+            onClick={() => navigate(`/workflows/${workflow.workflow_id}`)}
             className="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
           >
             <ClipboardList className="w-4 h-4 mr-2" />

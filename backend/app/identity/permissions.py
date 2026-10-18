@@ -22,6 +22,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "user:manage": (),
     "audit:read": (),
     "audit:read_patient": ("physician",),
+    "insights:read": (),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

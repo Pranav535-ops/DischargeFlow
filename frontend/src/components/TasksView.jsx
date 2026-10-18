@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import React, { useMemo, useState } from 'react';
+import { api, errorMessage } from '@/lib/api';
+import { invalidateDischarge, useMyTasks, usePatients, useTasks } from '@/lib/queries';
 import { 
   Loader2,
   CheckCircle2,
@@ -12,7 +13,6 @@ import {
   GraduationCap,
   FileCheck,
   User,
-  ArrowRight,
   Plus
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -25,18 +25,21 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '../components/ui/dialog';
-import { Checkbox } from '../components/ui/checkbox';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
-const TasksView = ({ onRefreshNotifications }) => {
+const TasksView = () => {
   const { user } = useAuth();
-  const [tasks, setTasks] = useState([]);
-  const [allTasks, setAllTasks] = useState([]);
-  const [patientMap, setPatientMap] = useState({});
-  const [loading, setLoading] = useState(true);
+  const myTasks = useMyTasks();
+  const everyTask = useTasks();
+  const patients = usePatients();
+  const tasks = myTasks.data ?? [];
+  const allTasks = everyTask.data ?? [];
+  const patientMap = useMemo(
+    () => Object.fromEntries((patients.data ?? []).map(p => [p.patient_id, p.name])), [patients.data]);
+  const loading = myTasks.isLoading || everyTask.isLoading || patients.isLoading;
+  const fetchTasks = invalidateDischarge;
   const [viewMode, setViewMode] = useState('my'); // 'my' or 'all'
   const [updatingTask, setUpdatingTask] = useState(null);
 
@@ -51,44 +54,18 @@ const TasksView = ({ onRefreshNotifications }) => {
     priority: 2
   });
 
-  const fetchTasks = useCallback(async () => {
-    try {
-      const [myRes, allRes, patientsRes] = await Promise.all([
-        axios.get(`${API}/tasks/my`, { withCredentials: true }),
-        axios.get(`${API}/tasks`, { withCredentials: true }),
-        axios.get(`${API}/patients`, { withCredentials: true }),
-      ]);
-      setTasks(myRes.data);
-      setAllTasks(allRes.data);
-      // Build patient id → name lookup
-      const map = {};
-      patientsRes.data.forEach(p => { map[p.patient_id] = p.name; });
-      setPatientMap(map);
-    } catch (error) {
-      console.error('Fetch tasks error:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchTasks();
-  }, [fetchTasks]);
-
   const handleTaskUpdate = async (taskId, newStatus) => {
     setUpdatingTask(taskId);
     try {
-      await axios.put(`${API}/tasks/${taskId}`, { status: newStatus }, { withCredentials: true });
+      await api.put(`/tasks/${taskId}`, { status: newStatus });
       if (newStatus === 'completed') {
         toast.success('Task completed', { description: 'Task has been marked as complete.' });
       } else if (newStatus === 'in_progress') {
         toast.info('Task in progress', { description: 'Task is now in progress.' });
       }
-      fetchTasks();
-      onRefreshNotifications();
+      await fetchTasks();
     } catch (error) {
-      console.error('Update task error:', error);
-      toast.error('Failed to update task');
+      toast.error('Failed to update task', { description: errorMessage(error) });
     } finally {
       setUpdatingTask(null);
     }
@@ -101,7 +78,7 @@ const TasksView = ({ onRefreshNotifications }) => {
     }
     setAddingTask(true);
     try {
-      await axios.post(`${API}/tasks`, newTask, { withCredentials: true });
+      await api.post(`/tasks`, newTask);
       setShowAddDialog(false);
       setNewTask({
         patient_id: '',
@@ -111,11 +88,10 @@ const TasksView = ({ onRefreshNotifications }) => {
         assigned_role: 'nurse',
         priority: 2
       });
-      fetchTasks();
+      await fetchTasks();
       toast.success('Task created successfully');
     } catch (error) {
-      console.error('Add task error:', error);
-      toast.error('Failed to add task');
+      toast.error('Failed to add task', { description: errorMessage(error) });
     } finally {
       setAddingTask(false);
     }

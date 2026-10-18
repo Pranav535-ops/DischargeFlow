@@ -1,56 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import axios from 'axios';
+import { api, refreshAccessToken, setAccessToken } from '@/lib/api';
 
 const AuthContext = createContext(null);
-
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
-
-// The access token lives only in memory (never localStorage), so injected scripts can't lift a long-lived
-// credential. The refresh token is an httpOnly cookie the browser sends to /api/auth/refresh on its own.
-let accessToken = null;
-let refreshInFlight = null;
-
-const isAuthCall = (url = '') => url.includes('/auth/refresh') || url.includes('/auth/session') || url.includes('/auth/logout');
-
-axios.interceptors.request.use(config => {
-  if (accessToken && !isAuthCall(config.url)) {
-    if (config.headers && typeof config.headers.set === 'function') {
-      config.headers.set('Authorization', `Bearer ${accessToken}`);
-    } else {
-      config.headers = { ...config.headers, Authorization: `Bearer ${accessToken}` };
-    }
-  }
-  return config;
-});
-
-// Single-flight refresh: concurrent 401s share one /auth/refresh call.
-const refreshAccessToken = () => {
-  if (!refreshInFlight) {
-    refreshInFlight = axios.post(`${API}/auth/refresh`, {}, { withCredentials: true })
-      .then(res => {
-        accessToken = res.data.token;
-        return res.data;
-      })
-      .finally(() => { refreshInFlight = null; });
-  }
-  return refreshInFlight;
-};
-
-// On a 401 from any API call, refresh once and retry the original request.
-axios.interceptors.response.use(undefined, async error => {
-  const original = error.config;
-  if (error.response?.status === 401 && original && !original._retried && !isAuthCall(original.url)) {
-    original._retried = true;
-    try {
-      await refreshAccessToken();
-      return axios(original);
-    } catch (refreshError) {
-      accessToken = null;
-      window.dispatchEvent(new Event('df:session-expired'));
-    }
-  }
-  return Promise.reject(error);
-});
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -67,14 +18,14 @@ export const AuthProvider = ({ children }) => {
         setUser(data.user);
         scheduleRefresh(data.expires_in);
       } catch (e) {
-        accessToken = null;
+        setAccessToken(null);
         setUser(null);
       }
     }, delayMs);
   }, []);
 
   const applySession = useCallback((data) => {
-    accessToken = data.token;
+    setAccessToken(data.token);
     setUser(data.user);
     scheduleRefresh(data.expires_in);
     return data.user;
@@ -84,7 +35,7 @@ export const AuthProvider = ({ children }) => {
     try {
       return applySession(await refreshAccessToken());
     } catch (error) {
-      accessToken = null;
+      setAccessToken(null);
       setUser(null);
       return null;
     } finally {
@@ -120,22 +71,19 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     try {
-      await axios.post(`${API}/auth/logout`, {}, { withCredentials: true });
+      await api.post('/auth/logout');
     } catch (error) {
       console.error('Logout error:', error);
     }
     clearTimeout(refreshTimer.current);
-    accessToken = null;
+    setAccessToken(null);
     setUser(null);
     window.location.href = '/login';
   };
 
   const exchangeSession = async (sessionId) => {
     try {
-      const response = await axios.post(`${API}/auth/session`,
-        { session_id: sessionId },
-        { withCredentials: true }
-      );
+      const response = await api.post('/auth/session', { session_id: sessionId });
       return applySession(response.data);
     } catch (error) {
       console.error('Session exchange error:', error);

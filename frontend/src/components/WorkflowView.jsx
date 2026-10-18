@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import { api, errorMessage } from '@/lib/api';
+import { invalidateDischarge, usePatient, useWorkflow } from '@/lib/queries';
 import { 
   ArrowLeft, 
   Clock,
@@ -21,13 +23,17 @@ import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
-const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotifications }) => {
+// Route: /workflows/:workflowId
+const WorkflowView = () => {
+  const { workflowId } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
-  const [workflow, setWorkflow] = useState(initialWorkflow);
-  const [patient, setPatient] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { data: workflow, isLoading: loading, isError } = useWorkflow(workflowId);
+  const { data: patient } = usePatient(workflow?.patient_id);
+  // Every change here moves workflow, task, patient and notification state, so refresh all of it.
+  const fetchData = invalidateDischarge;
+  const onBack = () => navigate(workflow ? `/patients/${workflow.patient_id}` : '/patients');
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [approvingSummary, setApprovingSummary] = useState(false);
   const [completingWorkflow, setCompletingWorkflow] = useState(false);
@@ -36,40 +42,19 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
   const [editingSummary, setEditingSummary] = useState(false);
   const [editedContent, setEditedContent] = useState('');
 
-  const fetchData = async () => {
-    try {
-      const [wfRes, patRes] = await Promise.all([
-        axios.get(`${API}/workflows/${workflow.workflow_id}`, { withCredentials: true }),
-        axios.get(`${API}/patients/${workflow.patient_id}`, { withCredentials: true })
-      ]);
-      setWorkflow(wfRes.data);
-      setPatient(patRes.data);
-    } catch (error) {
-      console.error('Fetch data error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflow.workflow_id]);
-
   const handleGenerateSummary = async () => {
     setGeneratingSummary(true);
     try {
-      await axios.post(`${API}/ai/generate-summary`, {
+      await api.post(`/ai/generate-summary`, {
         patient_id: workflow.patient_id,
         workflow_id: workflow.workflow_id,
         clinical_notes: clinicalNotes
-      }, { withCredentials: true });
+      });
       setClinicalNotes('');
       toast.success('AI draft generated', { description: 'Review and edit the draft before approving it.' });
-      fetchData();
+      await fetchData();
     } catch (error) {
-      console.error('Generate summary error:', error);
-      toast.error('Failed to generate summary', { description: error.response?.data?.detail || 'An error occurred.' });
+      toast.error('Failed to generate summary', { description: errorMessage(error) });
     } finally {
       setGeneratingSummary(false);
     }
@@ -80,14 +65,12 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
     setApprovingSummary(true);
     try {
       const body = editingSummary ? { content: editedContent } : {};
-      await axios.put(`${API}/ai/approve-summary/${workflow.discharge_summary.summary_id}`, body, { withCredentials: true });
+      await api.put(`/ai/approve-summary/${workflow.discharge_summary.summary_id}`, body);
       setEditingSummary(false);
       toast.success('Summary approved', { description: 'Discharge summary has been approved.' });
-      fetchData();
-      onRefreshNotifications();
+      await fetchData();
     } catch (error) {
-      console.error('Approve summary error:', error);
-      toast.error('Failed to approve summary');
+      toast.error('Failed to approve summary', { description: errorMessage(error) });
     } finally {
       setApprovingSummary(false);
     }
@@ -96,13 +79,11 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
   const handleTaskUpdate = async (taskId, newStatus) => {
     setUpdatingTask(taskId);
     try {
-      await axios.put(`${API}/tasks/${taskId}`, { status: newStatus }, { withCredentials: true });
+      await api.put(`/tasks/${taskId}`, { status: newStatus });
       if (newStatus === 'completed') toast.success('Task completed!');
-      fetchData();
-      onRefreshNotifications();
+      await fetchData();
     } catch (error) {
-      console.error('Update task error:', error);
-      toast.error('Failed to update task');
+      toast.error('Failed to update task', { description: errorMessage(error) });
     } finally {
       setUpdatingTask(null);
     }
@@ -111,13 +92,11 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
   const handleCompleteWorkflow = async () => {
     setCompletingWorkflow(true);
     try {
-      await axios.put(`${API}/workflows/${workflow.workflow_id}/complete`, {}, { withCredentials: true });
+      await api.put(`/workflows/${workflow.workflow_id}/complete`, {});
       toast.success('Patient discharged!', { description: 'Discharge workflow completed successfully.' });
-      fetchData();
-      onRefreshNotifications();
+      await fetchData();
     } catch (error) {
-      console.error('Complete workflow error:', error);
-      toast.error('Cannot complete discharge', { description: error.response?.data?.detail || 'An error occurred.' });
+      toast.error('Cannot complete discharge', { description: errorMessage(error) });
     } finally {
       setCompletingWorkflow(false);
     }
@@ -142,10 +121,6 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
     return task.assigned_role === user?.role || user?.role === 'admin';
   };
 
-  const canApprove = ['physician', 'admin'].includes(user?.role);
-  const allTasksComplete = workflow.tasks?.every(t => t.status === 'completed');
-  const summaryApproved = workflow.discharge_summary?.approved;
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -153,6 +128,18 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
       </div>
     );
   }
+  if (isError || !workflow) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-zinc-400 mb-4">Discharge workflow not found.</p>
+        <Button variant="outline" onClick={() => navigate('/patients')}>Back to patients</Button>
+      </div>
+    );
+  }
+
+  const canApprove = ['physician', 'admin'].includes(user?.role);
+  const allTasksComplete = workflow.tasks?.every(t => t.status === 'completed');
+  const summaryApproved = workflow.discharge_summary?.approved;
 
   return (
     <div className="space-y-6">
@@ -164,7 +151,7 @@ const WorkflowView = ({ workflow: initialWorkflow, onBack, onRefreshNotification
         className="text-zinc-400 hover:text-zinc-200"
       >
         <ArrowLeft className="w-4 h-4 mr-2" />
-        Back to Patients
+        Back to Patient
       </Button>
 
       {/* Workflow Header */}
