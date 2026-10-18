@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.audit.service import write_audit
+from app.core.config import settings
 from app.core.db import DB
 from app.core.security import (
     ACCESS_TOKEN_TTL,
@@ -81,6 +82,30 @@ async def create_session(request: Request, response: Response, db: DB):
                     "Your account has been created. Contact an administrator to update your role.")
     await db.flush()
 
+    session, refresh_token = await sessions.start_session(db, user, request)
+    return _token_response(response, user, session, refresh_token)
+
+
+class DevLogin(BaseModel):
+    role: str
+    name: str = ""
+
+
+@auth_router.post("/dev-login", include_in_schema=False)
+async def dev_login(body: DevLogin, request: Request, response: Response, db: DB):
+    """Sign in as a test user of any role, for end-to-end tests. 404 unless ENABLE_DEV_LOGIN is set in a
+    development/test environment; production settings force it off."""
+    if not settings.enable_dev_login:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if body.role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    await use_tenant(db, sessions.default_tenant())
+    email = f"e2e.{body.role}@dischargeflow.test"
+    user = await db.scalar(select(User).where(User.email == email))
+    if user is None:
+        user = User(email=email, name=body.name or f"E2E {body.role.capitalize()}", role=body.role)
+        db.add(user)
+        await db.flush()
     session, refresh_token = await sessions.start_session(db, user, request)
     return _token_response(response, user, session, refresh_token)
 

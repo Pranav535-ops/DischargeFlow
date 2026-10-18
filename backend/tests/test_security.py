@@ -270,3 +270,32 @@ async def test_audit_log_is_insert_only_for_app_role(session_factory):
                 await session.execute(text("TRUNCATE audit_logs"))
     finally:
         current_tenant_id.reset(token)
+
+
+# ---------- dev login (E2E only) ----------
+
+async def test_dev_login_is_off_by_default(client):
+    assert (await client.post("/api/auth/dev-login", json={"role": "physician"})).status_code == 404
+
+
+async def test_dev_login_signs_in_when_enabled(client, monkeypatch):
+    import dataclasses
+
+    from app.identity import router as identity_router
+
+    monkeypatch.setattr(identity_router, "settings", dataclasses.replace(identity_router.settings, enable_dev_login=True))
+    resp = await client.post("/api/auth/dev-login", json={"role": "physician"})
+    assert resp.status_code == 200 and resp.json()["user"]["role"] == "physician"
+    assert "df_refresh" in resp.headers.get("set-cookie", "")
+    me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {resp.json()['token']}"})
+    assert me.json()["email"] == "e2e.physician@dischargeflow.test"
+
+
+def test_dev_login_cannot_be_enabled_in_production(monkeypatch):
+    from app.core.config import load_settings
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db/x")
+    monkeypatch.setenv("PHI_KEK", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+    monkeypatch.setenv("ENABLE_DEV_LOGIN", "true")
+    assert load_settings().enable_dev_login is False

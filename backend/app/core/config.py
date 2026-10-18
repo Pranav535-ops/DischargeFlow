@@ -59,6 +59,8 @@ class Settings:
     assistant_model: str = "claude-haiku-5-5"
     log_format: str = "text"  # "json" in production: one object per line for CloudWatch
     log_level: str = "INFO"
+    # Development/test only: POST /api/auth/dev-login signs in as any role without OAuth (Playwright E2E).
+    enable_dev_login: bool = False
 
     @property
     def is_production(self) -> bool:
@@ -131,6 +133,8 @@ def load_settings() -> Settings:
         assistant_model=os.environ.get("LLM_ASSISTANT_MODEL", "").strip() or "claude-haiku-5-5",
         log_format=os.environ.get("LOG_FORMAT", "").strip().lower() or ("text" if is_dev else "json"),
         log_level=os.environ.get("LOG_LEVEL", "").strip().upper() or "INFO",
+        # Never honoured outside development/test, whatever the variable says.
+        enable_dev_login=is_dev and _bool("ENABLE_DEV_LOGIN"),
     )
 
 

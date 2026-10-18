@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
+import { api } from '@/lib/api';
+import { invalidateDischarge } from '@/lib/queries';
 import { Bot, Send, User, Sparkles, RefreshCw, ShieldCheck, X, Check } from 'lucide-react';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
 const QUICK_COMMANDS = [
   'List patients',
@@ -50,7 +50,7 @@ const ChatbotView = () => {
     setMessages(prev => [...prev, { role: 'user', content: userMessage, timestamp: new Date() }]);
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/chatbot/message`, { message: userMessage, history }, { withCredentials: true });
+      const res = await api.post(`/chatbot/message`, { message: userMessage, history });
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: res.data.response || (res.data.pending_actions?.length ? 'Please review the proposed change below.' : ''),
@@ -86,9 +86,10 @@ const ChatbotView = () => {
   const resolveAction = async (action, decision) => {
     setResolving(action.action_id);
     try {
-      const res = await axios.post(`${API}/chatbot/actions/${action.action_id}/${decision}`, {}, { withCredentials: true });
+      const res = await api.post(`/chatbot/actions/${action.action_id}/${decision}`, {});
       setActionState(action.action_id, decision === 'confirm' ? 'confirmed' : 'cancelled');
       if (decision === 'confirm') {
+        invalidateDischarge();
         setMessages(prev => [...prev, { role: 'assistant', content: `Done: ${res.data.response}`, timestamp: new Date() }]);
       }
     } catch (err) {

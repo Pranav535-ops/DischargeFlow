@@ -1,8 +1,13 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 
+from app.ai import insights as ai_insights
+from app.ai.llm import get_llm_client
+from app.ai.models import AIGeneration
+from app.analytics import service as analytics_service
+from app.audit.service import write_audit
 from app.core.db import DB, utcnow
-from app.core.security import AuthUser
+from app.core.security import AuthUser, CurrentUser, requires
 from app.discharge.models import Task, Workflow
 from app.patients.models import Patient
 
@@ -60,3 +65,35 @@ async def get_tasks_by_role(db: DB, user: AuthUser):
         select(Task.assigned_role, func.count()).where(Task.status != "completed").group_by(Task.assigned_role)
     )
     return {role: count for role, count in rows if role}
+
+
+@router.get("/aggregates")
+async def get_aggregates(db: DB, user: CurrentUser = Depends(requires("insights:read"))):
+    """The aggregate metrics the AI insights are based on (no patient-level data)."""
+    return await analytics_service.discharge_aggregates(db)
+
+
+@router.post("/insights")
+async def generate_insights(request: Request, db: DB, user: CurrentUser = Depends(requires("insights:read"))):
+    """Narrative insights from aggregates only. Returns the numbers even when AI is unavailable."""
+    aggregates = await analytics_service.discharge_aggregates(db)
+    try:
+        client = get_llm_client("insights")
+    except HTTPException as e:
+        return {"aggregates": aggregates, "insights": None, "unavailable": e.detail}
+
+    prov, doc, rejected = await ai_insights.generate_insights(client, aggregates)
+    generation = AIGeneration(purpose="insights", user_id=user.user_id, **prov)
+    db.add(generation)
+    await db.flush()
+    await write_audit(db, user, "AI_INSIGHTS_GENERATED", "analytics", generation.generation_id,
+                      f"{prov['prompt_version']} {prov['model_id']} status={prov['status']} rejected={len(rejected)}",
+                      request)
+    return {
+        "aggregates": aggregates,
+        "insights": doc.model_dump() if doc else None,
+        "rejected_citations": rejected,
+        "generation": {k: getattr(generation, k) for k in
+                       ("generation_id", "provider", "model_id", "prompt_version", "status", "latency_ms")},
+        "unavailable": None if doc else "Insight generation failed; the metrics above are still current.",
+    }

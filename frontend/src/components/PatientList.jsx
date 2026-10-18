@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import { api, errorMessage } from '@/lib/api';
+import { keys, queryClient, usePatients } from '@/lib/queries';
 import { 
   Search, 
   Plus, 
@@ -23,12 +26,11 @@ import {
 } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 
-const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
-const PatientList = ({ onPatientSelect, onWorkflowSelect }) => {
+const PatientList = () => {
   const { user } = useAuth();
-  const [patients, setPatients] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const { data: patients = [], isLoading: loading } = usePatients();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -42,25 +44,10 @@ const PatientList = ({ onPatientSelect, onWorkflowSelect }) => {
     attending_physician: ''
   });
 
-  const fetchPatients = async () => {
-    try {
-      const res = await axios.get(`${API}/patients`, { withCredentials: true });
-      setPatients(res.data);
-    } catch (error) {
-      console.error('Fetch patients error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchPatients();
-  }, []);
-
   const handleAddPatient = async () => {
     setAddingPatient(true);
     try {
-      await axios.post(`${API}/patients`, newPatient, { withCredentials: true });
+      await api.post(`/patients`, newPatient);
       setShowAddDialog(false);
       setNewPatient({
         name: '',
@@ -70,9 +57,9 @@ const PatientList = ({ onPatientSelect, onWorkflowSelect }) => {
         diagnosis: '',
         attending_physician: ''
       });
-      fetchPatients();
+      await queryClient.invalidateQueries({ queryKey: keys.patients });
     } catch (error) {
-      console.error('Add patient error:', error);
+      toast.error('Could not add the patient', { description: errorMessage(error) });
     } finally {
       setAddingPatient(false);
     }
@@ -280,7 +267,7 @@ const PatientList = ({ onPatientSelect, onWorkflowSelect }) => {
             key={patient.patient_id}
             data-testid={`patient-card-${patient.patient_id}`}
             className="bg-zinc-900 border border-zinc-800 rounded-lg p-5 hover:border-zinc-700 transition-colors cursor-pointer"
-            onClick={() => onPatientSelect(patient)}
+            onClick={() => navigate(`/patients/${patient.patient_id}`)}
           >
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3">
