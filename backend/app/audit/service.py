@@ -74,6 +74,19 @@ async def write_audit(
     head.last_hash = entry.hash
 
 
+async def audit_phi_read(
+    db: AsyncSession,
+    user: CurrentUser,
+    patient_id: Optional[str],
+    what: str,
+    request: Optional[Request] = None,
+) -> None:
+    """One `PHI_READ` entry per request that returned patient-level data: who, which patient (None for a list) and
+    what was read (`what` names the resource and a count, never field values). It joins the request's transaction
+    like every audit entry. Resource type `patient` puts reads in the patient's trail (GET /api/audit/patients/{id})."""
+    await write_audit(db, user, "PHI_READ", "patient", patient_id, what[:500], request)
+
+
 async def verify_chain(db: AsyncSession, tenant_id: str) -> dict:
     """Recompute the tenant's chain. Returns the first broken sequence number, if any."""
     expected_prev, expected_seq, count = GENESIS_HASH, 1, 0

@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RETURN_TO_KEY, useAuth } from '../context/AuthContext';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { errorMessage } from '@/lib/api';
 
 // A same-origin path saved by login(), used once; anything else lands on the dashboard.
 const takeReturnPath = () => {
@@ -51,6 +53,8 @@ const AuthCallback = () => {
         navigate(target, { state: { user }, replace: true });
       } catch (error) {
         console.error('Auth failed:', error);
+        // 403: the account is not invited or its email domain is not allowed (identity/router.registration_refusal).
+        if (error?.response?.status === 403) toast.error('Sign-in refused', { description: errorMessage(error) });
         navigate('/login');
       }
     };

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.ai.models import DischargeSummary
-from app.audit.service import write_audit
+from app.audit.service import audit_phi_read, write_audit
 from app.core.db import DB
 from app.core.security import AuthUser, CurrentUser, requires
 from app.patients.models import Patient
@@ -46,25 +46,31 @@ async def get_patient_or_404(db, patient_id: str) -> Patient:
 
 
 @router.get("")
-async def get_patients(db: DB, user: AuthUser, status: Optional[str] = None):
+async def get_patients(request: Request, db: DB, user: AuthUser, status: Optional[str] = None):
     stmt = select(Patient).order_by(Patient.admission_date.desc())
     if status:
         stmt = stmt.where(Patient.status == status)
-    return [p.to_dict() for p in (await db.scalars(stmt))]
+    patients = [p.to_dict() for p in (await db.scalars(stmt))]
+    # One entry for the whole list, not one per row.
+    await audit_phi_read(db, user, None, f"patient list ({len(patients)} records)", request)
+    return patients
 
 
 @router.get("/{patient_id}")
-async def get_patient(patient_id: str, db: DB, user: AuthUser):
-    return (await get_patient_or_404(db, patient_id)).to_dict()
+async def get_patient(patient_id: str, request: Request, db: DB, user: AuthUser):
+    patient = await get_patient_or_404(db, patient_id)
+    await audit_phi_read(db, user, patient_id, "patient record", request)
+    return patient.to_dict()
 
 
 @router.post("")
 async def create_patient(
-    patient_data: PatientCreate, db: DB, user: CurrentUser = Depends(requires("patient:write"))
+    patient_data: PatientCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("patient:write"))
 ):
     patient = Patient(**patient_data.model_dump())
     db.add(patient)
     await db.flush()
+    await write_audit(db, user, "CREATE_PATIENT", "patient", patient.patient_id, "Patient record created", request)
     return patient.to_dict()
 
 
@@ -72,13 +78,18 @@ async def create_patient(
 async def update_patient(
     patient_id: str,
     updates: PatientUpdate,
+    request: Request,
     db: DB,
     user: CurrentUser = Depends(requires("patient:write")),
 ):
     patient = await get_patient_or_404(db, patient_id)
-    for field, value in updates.model_dump(exclude_unset=True, exclude_none=True).items():
+    changes = updates.model_dump(exclude_unset=True, exclude_none=True)
+    for field, value in changes.items():
         setattr(patient, field, value)
     await db.flush()
+    # Field names only: the values are PHI, and audit rows can't be erased.
+    await write_audit(db, user, "UPDATE_PATIENT", "patient", patient_id,
+                      f"fields: {', '.join(sorted(changes)) or 'none'}", request)
     await db.refresh(patient)
     return patient.to_dict()
 

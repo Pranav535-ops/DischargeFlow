@@ -171,9 +171,10 @@ async def test_audit_chain_verifies_and_is_append_only(client, make_user, create
         await client.post(f"/api/patients/{pid}/consent", json={"gdpr_consent": flag}, headers=admin)
 
     report = (await client.get("/api/audit/verify", headers=admin)).json()
-    assert report == {"valid": True, "entries": 3, "broken_at_seq": None}
+    # CREATE_PATIENT plus three consent changes.
+    assert report == {"valid": True, "entries": 4, "broken_at_seq": None}
     logs = (await client.get("/api/audit/logs", headers=admin)).json()
-    assert [entry["seq"] for entry in logs] == [3, 2, 1]
+    assert [entry["seq"] for entry in logs] == [4, 3, 2, 1]
     assert logs[1]["prev_hash"] == logs[2]["hash"]
 
     with pytest.raises((DBAPIError, IntegrityError)):

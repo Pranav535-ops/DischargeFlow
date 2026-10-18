@@ -8,6 +8,7 @@ import LoginPage from './pages/LoginPage';
 import AuthCallback from './pages/AuthCallback';
 import { LockGate } from './pages/LockScreen';
 import AppLayout from './pages/AppLayout';
+import PendingApproval from './pages/PendingApproval';
 import { Loader2 } from 'lucide-react';
 
 // Each screen is its own chunk, loaded on first visit.
@@ -29,12 +30,14 @@ export const Spinner = ({ full = false }) => (
 );
 
 // Protected Route Component
-const ProtectedRoute = ({ children }) => {
+export const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
   // No shortcut via router state: it survives reloads, and rendering before the session refresh finishes
   // makes the first API calls fail with 401.
   if (loading) return <Spinner full />;
   if (!user) return <Navigate to="/login" replace />;
+  // Signed in but not yet approved: the API refuses every screen's data, so show the waiting screen instead.
+  if (user.role === 'pending') return <PendingApproval />;
   return children;
 };
 

@@ -1,4 +1,6 @@
 """SQLAlchemy engine, session factory and declarative base."""
+import asyncio
+import contextlib
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -121,15 +123,22 @@ engine = make_engine(settings.database_url)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
+# SQLite ignores `SELECT ... FOR UPDATE`, so two concurrent requests could both read the audit chain head and append
+# the same sequence number (every PHI read appends one). Local SQLite is a single-process development database, so its
+# request transactions simply run one at a time. Postgres relies on the row lock instead.
+_sqlite_request_lock = asyncio.Lock() if engine.dialect.name == "sqlite" else None
+
+
 async def get_db() -> AsyncIterator[AsyncSession]:
     """One transaction per request: commit on success, roll back on any exception."""
-    async with SessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+    async with _sqlite_request_lock or contextlib.nullcontext():
+        async with SessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:

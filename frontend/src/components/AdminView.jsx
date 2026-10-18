@@ -6,9 +6,12 @@ import {
   Users,
   Shield,
   Save,
-  CheckCircle2
+  CheckCircle2,
+  UserPlus,
+  Clock
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import {
   Select,
   SelectContent,
@@ -24,6 +27,9 @@ const AdminView = () => {
   const [updatingUser, setUpdatingUser] = useState(null);
   const [roleChanges, setRoleChanges] = useState({});
   const [savedUsers, setSavedUsers] = useState({});
+  const [invite, setInvite] = useState({ email: '', name: '', role: 'nurse' });
+  const [inviting, setInviting] = useState(false);
+  const pendingCount = users.filter(u => u.role === 'pending').length;
 
   const fetchUsers = () => queryClient.invalidateQueries({ queryKey: keys.users });
 
@@ -50,12 +56,29 @@ const AdminView = () => {
     }
   };
 
+  // Invited people get this role on their first Google sign-in, even when self-registration is off.
+  const sendInvite = async (e) => {
+    e.preventDefault();
+    setInviting(true);
+    try {
+      await api.post('/users', invite);
+      toast.success('User invited', { description: `${invite.email} can now sign in as ${invite.role}.` });
+      setInvite({ email: '', name: '', role: invite.role });
+      await fetchUsers();
+    } catch (error) {
+      toast.error('Failed to invite user', { description: errorMessage(error) });
+    } finally {
+      setInviting(false);
+    }
+  };
+
   const getRoleBadgeColor = (role) => {
     const colors = {
       physician: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
       nurse: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
       pharmacist: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
       admin: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+      pending: 'bg-zinc-500/10 text-zinc-300 border-zinc-500/30',
     };
     return colors[role] || colors.nurse;
   };
@@ -117,6 +140,43 @@ const AdminView = () => {
         ))}
       </div>
 
+      {pendingCount > 0 && (
+        <div data-testid="pending-users-notice" className="flex items-center gap-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 text-sm text-amber-300">
+          <Clock className="w-4 h-4" />
+          {pendingCount} {pendingCount === 1 ? 'person is' : 'people are'} waiting for approval. Give them a role below;
+          until then they cannot see any patient data.
+        </div>
+      )}
+
+      {/* Invite */}
+      <form onSubmit={sendInvite} className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-wrap items-end gap-3">
+        <div className="flex-1 min-w-[220px]">
+          <label htmlFor="invite-email" className="text-xs text-zinc-500">Invite by email</label>
+          <Input id="invite-email" data-testid="invite-email" type="email" required value={invite.email}
+                 onChange={(e) => setInvite({ ...invite, email: e.target.value })}
+                 placeholder="name@hospital.org" className="bg-zinc-800 border-zinc-700 mt-1" />
+        </div>
+        <div className="min-w-[160px]">
+          <label htmlFor="invite-name" className="text-xs text-zinc-500">Name (optional)</label>
+          <Input id="invite-name" value={invite.name} onChange={(e) => setInvite({ ...invite, name: e.target.value })}
+                 className="bg-zinc-800 border-zinc-700 mt-1" />
+        </div>
+        <Select value={invite.role} onValueChange={(role) => setInvite({ ...invite, role })}>
+          <SelectTrigger data-testid="invite-role" className="w-36 bg-zinc-800 border-zinc-700">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-zinc-800 border-zinc-700">
+            <SelectItem value="physician">Physician</SelectItem>
+            <SelectItem value="nurse">Nurse</SelectItem>
+            <SelectItem value="pharmacist">Pharmacist</SelectItem>
+            <SelectItem value="admin">Admin</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button type="submit" data-testid="invite-submit" disabled={inviting} className="bg-blue-600 hover:bg-blue-500">
+          {inviting ? <Loader2 className="w-4 h-4 animate-spin" /> : <><UserPlus className="w-4 h-4 mr-1" />Invite</>}
+        </Button>
+      </form>
+
       {/* Users Table */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
         <div className="p-4 border-b border-zinc-800">
@@ -171,6 +231,7 @@ const AdminView = () => {
                         <SelectItem value="nurse">Nurse</SelectItem>
                         <SelectItem value="pharmacist">Pharmacist</SelectItem>
                         <SelectItem value="admin">Admin</SelectItem>
+                        <SelectItem value="pending">Pending (no access)</SelectItem>
                       </SelectContent>
                     </Select>
                   </td>

@@ -5,16 +5,17 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.audit.service import write_audit
 from app.core.config import settings
 from app.core.db import DB, utcnow
 from app.core.security import (
     ACCESS_TOKEN_TTL,
+    USER_ROLES,
     VALID_ROLES,
-    AuthUser,
     CurrentUser,
+    SignedInIdentity,
     create_access_token,
     invalidate_identity,
     requires,
@@ -22,7 +23,8 @@ from app.core.security import (
 from app.core.tenancy import use_tenant
 from app.identity import integrations, sessions
 from app.identity.models import AuthSession, IntegrationClient, User
-from app.notifications.service import notify_user
+from app.identity.permissions import PENDING_ROLE
+from app.notifications.service import notify_role
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,12 @@ class RoleUpdate(BaseModel):
 class Logout(BaseModel):
     # "idle" when the browser locked itself after IDLE_LOCK_MINUTES without input; kept as the revocation reason.
     reason: Literal["user", "idle"] = "user"
+
+
+class UserInvite(BaseModel):
+    email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
+    name: str = Field(default="", max_length=200)
+    role: str
 
 
 class IntegrationClientCreate(BaseModel):
@@ -70,31 +78,58 @@ def _token_response(response: Response, user: User, session: AuthSession, refres
     }
 
 
+def registration_refusal(email: str) -> str | None:
+    """Why a Google account with no user row may not request access, or None if it may (as `pending`)."""
+    if not settings.self_registration:
+        return "This account has not been invited. Ask an administrator for access."
+    domain = email.rsplit("@", 1)[-1].lower()
+    if settings.allowed_email_domains and domain not in settings.allowed_email_domains:
+        return "Sign-in is limited to the hospital's email domains."
+    return None
+
+
+def _identity(user: User, session: AuthSession) -> CurrentUser:
+    return CurrentUser(user_id=user.user_id, email=user.email, name=user.name, picture=user.picture, role=user.role,
+                       tenant_id=user.tenant_id, session_id=session.session_id, created_at=user.created_at)
+
+
 @auth_router.post("/session")
 async def create_session(request: Request, response: Response, db: DB):
-    """Exchange an OAuth session_id for an access token (body) and a refresh session (httpOnly cookie)."""
+    """Exchange an OAuth session_id for an access token (body) and a refresh session (httpOnly cookie).
+
+    Known users (including ones an admin invited) sign in with the role on their row. An unknown account gets the
+    no-access role `pending` if self-registration and the domain allow-list let it, and waits for an admin.
+    """
     body = await request.json()
     session_id = body.get("session_id")
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
 
     profile = await fetch_oauth_profile(session_id)
+    email = profile["email"].strip()
     # Single-hospital deployment: new users join the default tenant. SSO per hospital decides this later.
     await use_tenant(db, sessions.default_tenant())
 
-    user = await db.scalar(select(User).where(User.email == profile["email"]))
+    user = await db.scalar(select(User).where(func.lower(User.email) == email.lower()))
+    registered = user is None
     if user:
         user.name = profile["name"]
         user.picture = profile.get("picture")
     else:
-        user = User(email=profile["email"], name=profile["name"], picture=profile.get("picture"), role="nurse")
+        refusal = registration_refusal(email)
+        if refusal:
+            raise HTTPException(status_code=403, detail=refusal)
+        user = User(email=email, name=profile["name"], picture=profile.get("picture"), role=PENDING_ROLE)
         db.add(user)
         await db.flush()
-        notify_user(db, user.user_id, "Welcome to DischargeFlow",
-                    "Your account has been created. Contact an administrator to update your role.")
+        await notify_role(db, "admin", "Access Request",
+                          f"{user.name} ({user.email}) signed in and is waiting for approval.", "/admin")
     await db.flush()
 
     session, refresh_token = await sessions.start_session(db, user, request)
+    if registered:
+        await write_audit(db, _identity(user, session), "REQUEST_ACCESS", "user", user.user_id, "Pending approval",
+                          request)
     return _token_response(response, user, session, refresh_token)
 
 
@@ -135,7 +170,7 @@ async def refresh(request: Request, response: Response, db: DB):
 
 
 @auth_router.get("/me")
-async def get_me(user: AuthUser):
+async def get_me(user: SignedInIdentity):
     return user.model_dump(mode="json")
 
 
@@ -152,13 +187,31 @@ async def get_users(db: DB, user: CurrentUser = Depends(requires("user:manage"))
     return [u.to_dict() for u in (await db.scalars(select(User).order_by(User.created_at)))]
 
 
+@users_router.post("")
+async def invite_user(
+    body: UserInvite, request: Request, db: DB, user: CurrentUser = Depends(requires("user:manage"))
+):
+    """Pre-create a user by email with a role. Their first Google sign-in with that email gets this role directly,
+    even when self-registration is off or their domain is not on the allow-list."""
+    if body.role not in USER_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {list(USER_ROLES)}")
+    email = body.email.strip()
+    if await db.scalar(select(User.user_id).where(func.lower(User.email) == email.lower())):
+        raise HTTPException(status_code=409, detail="A user with this email already exists")
+    invited = User(email=email, name=body.name.strip() or email.split("@")[0], role=body.role)
+    db.add(invited)
+    await db.flush()
+    await write_audit(db, user, "INVITE_USER", "user", invited.user_id, f"role={body.role}", request)
+    return invited.to_dict()
+
+
 @users_router.put("/{user_id}/role")
 async def update_user_role(
     user_id: str, role_update: RoleUpdate, request: Request, db: DB,
     user: CurrentUser = Depends(requires("user:manage")),
 ):
-    if role_update.role not in VALID_ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {list(VALID_ROLES)}")
+    if role_update.role not in USER_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {list(USER_ROLES)}")
     target = await db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")

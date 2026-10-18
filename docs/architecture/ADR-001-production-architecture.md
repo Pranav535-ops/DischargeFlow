@@ -321,6 +321,9 @@ Still deferred to the AWS phase, because each needs an AWS account (and, for rea
 
     Every message is audited, and `hl7_messages` stores each client's MSH-10 control id with the ACK it got (never the message), so a resent message gets its original ACK back instead of being applied twice. Unsupported message types, events (anything but A01/A03) and non-production processing ids get AR. **Limits:** HTTP only; there is no MLLP listener (serverless hosts can't hold one), so an interface engine must bridge MLLP to HTTPS. Patients created in the UI have no MRN and can't be linked to one yet. Only A01 and A03 are handled (no A02 transfers, A08 updates or A11/A13 cancellations), and admitting creates no discharge workflow. There is no admin screen for integration clients yet; they are managed through the API. Tested against SQLite and Postgres 16 (RLS), and in production on 2026-10-18 with synthetic messages through a temporary, since-revoked client (AA, replay, AE 204/205/207 and AR cases all as designed; MRN confirmed encrypted at rest). Not yet tested against a real ADT feed.
 
+**Phases 7–9** continue in [ADR-002](ADR-002-hospital-readiness.md), which validates this design against use at a real
+hospital and sets the next phases.
+
 ---
 
 ## Appendix: How this design maps to the Optum TDP job description
