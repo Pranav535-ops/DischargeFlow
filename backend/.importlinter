@@ -100,5 +100,6 @@ forbidden_modules =
     app.identity.router
     app.insurance.router
     app.interop.router
+    app.interop.hl7_router
     app.notifications.router
     app.patients.router

@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.identity.models import RolePermission
 
 ROLES = ("physician", "nurse", "pharmacist", "admin")
+# The role integration clients (hospital systems with an API key) act as. Not in ROLES: no person can be given it.
+INTEGRATION_ROLE = "interface"
 
 # Source of truth for migrations' seed data. Admin implicitly holds every permission.
 DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -23,6 +25,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "audit:read": (),
     "audit:read_patient": ("physician",),
     "insights:read": (),
+    "adt:ingest": (INTEGRATION_ROLE,),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

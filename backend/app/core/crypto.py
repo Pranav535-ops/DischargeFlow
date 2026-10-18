@@ -9,12 +9,16 @@ config, copies of the wrapped DEK in older database backups remain decryptable; 
 deletion (ADR-001, AWS phase) closes that gap. `KeyProvider` is the seam for that change.
 """
 import base64
+import hashlib
+import hmac
 import os
 from functools import lru_cache
 from typing import Protocol
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from app.core.config import settings
 
@@ -97,3 +101,36 @@ def decrypt_field(wrapped_dek: bytes, token: str, aad: str) -> str:
     raw = base64.b64decode(token[len(PREFIX):])
     dek = key_provider().unwrap(wrapped_dek)
     return AESGCM(dek).decrypt(raw[:_NONCE], raw[_NONCE:], aad.encode("utf-8")).decode("utf-8")
+
+
+# ---------- blind indexes ----------
+# Encrypted fields can't be queried, so a field that must be looked up by value (the MRN that HL7 messages carry)
+# also stores a keyed HMAC of its normalized value. The HMAC key is derived from the KEK with HKDF, so no extra
+# secret is needed; without the KEK the index can't be recomputed or brute-forced from a dictionary of MRNs.
+
+
+def _index_key(kek: bytes, purpose: str) -> bytes:
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                info=f"dischargeflow-blind-index:{purpose}".encode()).derive(kek)
+
+
+@lru_cache(maxsize=16)
+def _index_keys(purpose: str) -> tuple[bytes, ...]:
+    """The current KEK's index key first, then those of retired KEKs (PHI_KEK_PREVIOUS)."""
+    return tuple(_index_key(k, purpose) for k in (settings.phi_kek, *settings.phi_kek_previous))
+
+
+def _index(key: bytes, parts: tuple[str, ...]) -> str:
+    message = "\x1f".join(parts).encode("utf-8")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def blind_index(purpose: str, *parts: str) -> str:
+    """HMAC-SHA256 of `parts` under the current KEK's index key, as stored on new rows."""
+    return _index(_index_keys(purpose)[0], parts)
+
+
+def blind_index_candidates(purpose: str, *parts: str) -> list[str]:
+    """Every index value `parts` may be stored under: rows written before a KEK rotation keep the old one until
+    `app.cli rewrap-deks` recomputes them, so lookups match on any of these."""
+    return [_index(key, parts) for key in _index_keys(purpose)]

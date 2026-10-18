@@ -59,3 +59,22 @@ class RolePermission(Base):
 
     role: Mapped[str] = mapped_column(String(20), primary_key=True)
     permission: Mapped[str] = mapped_column(String(60), primary_key=True)
+
+
+class IntegrationClient(TenantMixin, Base):
+    """A hospital system that calls the API with an API key instead of a person signing in (the HL7 ADT feed).
+
+    It acts as the non-human role `interface` (identity/integrations.py). Only the SHA-256 of the key's secret is
+    stored; the key itself is shown once, when an admin creates the client.
+    """
+
+    __tablename__ = "integration_clients"
+    __api_exclude__ = frozenset({"secret_hash"})
+
+    client_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("intc", 16))
+    name: Mapped[str] = mapped_column(String(200))
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)

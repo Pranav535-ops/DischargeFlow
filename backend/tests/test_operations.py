@@ -72,13 +72,16 @@ async def test_kek_rotation_rewraps_every_dek(engine, db, monkeypatch):
 
     def use_keys(current, previous=()):
         monkeypatch.setattr(crypto, "key_provider", lambda: crypto.RotatingKeyProvider(current, previous))
+        monkeypatch.setattr(crypto, "_index_keys",
+                            lambda purpose: tuple(crypto._index_key(k, purpose) for k in (current, *previous)))
 
     use_keys(old_kek)
     patient = Patient(name="Rota Tion", date_of_birth="1960-01-01", admission_date="2026-10-01", room_number="1",
                       diagnosis="Gout", attending_physician="Dr K")
+    patient.set_mrn("default", "HOSP", "MRN-ROT-1")
     db.add(patient)
     await db.commit()
-    old_wrapped, patient_id = patient.phi_dek, patient.patient_id
+    old_wrapped, old_index, patient_id = patient.phi_dek, patient.mrn_index, patient.patient_id
 
     # The new key alone can't read rows wrapped by the old one...
     use_keys(new_kek)
@@ -87,13 +90,16 @@ async def test_kek_rotation_rewraps_every_dek(engine, db, monkeypatch):
 
     # ...so rotation runs with the old key listed as previous, re-wraps, and then the old key can go.
     use_keys(new_kek, (old_kek,))
-    assert await migrate.rewrap_deks() == {"rewrapped": 1, "already_current": 0}
-    assert await migrate.rewrap_deks() == {"rewrapped": 0, "already_current": 1}
+    assert await migrate.rewrap_deks() == {"rewrapped": 1, "already_current": 0, "mrn_reindexed": 1}
+    assert await migrate.rewrap_deks() == {"rewrapped": 0, "already_current": 1, "mrn_reindexed": 0}
 
     use_keys(new_kek)
     db.expire_all()
     rotated = await db.get(Patient, patient_id)
     assert rotated.phi_dek != old_wrapped and rotated.name == "Rota Tion"
+    # The MRN blind index is keyed from the KEK too: it was recomputed, so lookups work without the old key.
+    assert rotated.mrn_index != old_index
+    assert rotated.mrn_index == crypto.blind_index("mrn", "default", "HOSP", "MRN-ROT-1")
 
 
 def test_previous_keks_are_parsed_from_env(monkeypatch):
