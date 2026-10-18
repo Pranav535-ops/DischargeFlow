@@ -12,8 +12,15 @@ export const api = axios.create({ baseURL: API_BASE, withCredentials: true });
 
 let accessToken = null;
 let refreshInFlight = null;
+// Set while the idle lock screen is up: only sign-in calls leave the browser, so no refetch or retry-after-401 can
+// bring patient data or a fresh token back behind the lock.
+let locked = false;
 
 export const setAccessToken = (token) => { accessToken = token; };
+export const setClientLocked = (value) => {
+  locked = value;
+  if (value) accessToken = null;
+};
 // For the few callers that can't go through axios (the notification stream reads a fetch body).
 export const getAccessToken = () => accessToken;
 
@@ -21,6 +28,9 @@ const isAuthCall = (url = '') => ['/auth/refresh', '/auth/session', '/auth/logou
   .some(path => url.includes(path));
 
 api.interceptors.request.use(config => {
+  if (locked && !isAuthCall(config.url)) {
+    return Promise.reject(new axios.CanceledError('Session locked'));
+  }
   if (accessToken && !isAuthCall(config.url)) {
     config.headers.set('Authorization', `Bearer ${accessToken}`);
   }
@@ -29,6 +39,7 @@ api.interceptors.request.use(config => {
 
 // Single-flight refresh: concurrent 401s share one /auth/refresh call. Resolves to { token, expires_in, user }.
 export const refreshAccessToken = () => {
+  if (locked) return Promise.reject(new axios.CanceledError('Session locked'));
   if (!refreshInFlight) {
     refreshInFlight = api.post('/auth/refresh')
       .then(res => {

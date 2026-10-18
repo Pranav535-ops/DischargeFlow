@@ -30,9 +30,9 @@ permission. `interface` is the role of integration clients (API keys), not a rol
 | Method | Path | Access | Notes |
 |---|---|---|---|
 | POST | `/auth/session` | public | Exchanges the Emergent OAuth `session_id` for an access token; sets the refresh cookie |
-| POST | `/auth/refresh` | refresh cookie | Rotates the refresh cookie and returns a new 15-minute access token |
+| POST | `/auth/refresh` | refresh cookie | Rotates the refresh cookie and returns a new 15-minute access token. 401 (and the session is revoked) if it wasn't refreshed for `SESSION_IDLE_MINUTES` |
 | GET | `/auth/me` | signed in | The current user, role and tenant |
-| POST | `/auth/logout` | refresh cookie | Revokes the session |
+| POST | `/auth/logout` | refresh cookie | Revokes the session. Optional body `{"reason": "idle"}` when the browser locked itself for inactivity (stored as `idle_lock`) |
 | POST | `/auth/dev-login` | development/test only | Enabled by `ENABLE_DEV_LOGIN`; used by Playwright |
 
 ## Users and integration clients

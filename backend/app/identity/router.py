@@ -1,4 +1,5 @@
 import logging
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -36,6 +37,11 @@ class RoleUpdate(BaseModel):
     role: str
 
 
+class Logout(BaseModel):
+    # "idle" when the browser locked itself after IDLE_LOCK_MINUTES without input; kept as the revocation reason.
+    reason: Literal["user", "idle"] = "user"
+
+
 class IntegrationClientCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
@@ -59,6 +65,7 @@ def _token_response(response: Response, user: User, session: AuthSession, refres
         "success": True,
         "token": create_access_token(user.user_id, session.session_id, user.tenant_id),
         "expires_in": int(ACCESS_TOKEN_TTL.total_seconds()),
+        "idle_lock_seconds": int(settings.idle_lock_minutes * 60),
         "user": user.to_dict(),
     }
 
@@ -133,8 +140,9 @@ async def get_me(user: AuthUser):
 
 
 @auth_router.post("/logout")
-async def logout(request: Request, response: Response, db: DB):
-    await sessions.revoke_by_token(db, request.cookies.get(sessions.REFRESH_COOKIE))
+async def logout(request: Request, response: Response, db: DB, body: Logout | None = None):
+    reason = "idle_lock" if body and body.reason == "idle" else "logout"
+    await sessions.revoke_by_token(db, request.cookies.get(sessions.REFRESH_COOKIE), reason)
     sessions.clear_refresh_cookie(response)
     return {"success": True}
 

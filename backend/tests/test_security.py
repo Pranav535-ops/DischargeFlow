@@ -93,6 +93,50 @@ async def test_logout_revokes_session_and_access_token(client, oauth):
     assert (await client.post("/api/auth/refresh")).status_code == 401
 
 
+async def test_session_idle_past_the_server_limit_is_revoked(client, oauth, db):
+    # A tab closed before it could lock leaves a refresh cookie behind; the next person must not resume it.
+    signed = await sign_in(client)
+    assert signed["idle_lock_seconds"] == 300
+    session = await db.scalar(select(AuthSession).where(AuthSession.user_id == signed["user"]["user_id"]))
+    session.last_used_at = utcnow() - timedelta(minutes=21)
+    await db.commit()
+
+    assert (await client.post("/api/auth/refresh")).status_code == 401
+    await db.refresh(session)
+    assert session.revoked_reason == "idle_timeout"
+    assert (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {signed['token']}"})).status_code == 401
+
+
+async def test_session_refreshed_within_the_idle_limit_survives(client, oauth, db):
+    signed = await sign_in(client)
+    session = await db.scalar(select(AuthSession).where(AuthSession.user_id == signed["user"]["user_id"]))
+    session.last_used_at = utcnow() - timedelta(minutes=15)  # an open tab refreshes about every 14 minutes
+    await db.commit()
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+
+
+async def test_idle_lock_logout_records_its_reason(client, oauth, db):
+    signed = await sign_in(client)
+    assert (await client.post("/api/auth/logout", json={"reason": "idle"})).status_code == 200
+    session = await db.scalar(select(AuthSession).where(AuthSession.user_id == signed["user"]["user_id"]))
+    await db.refresh(session)
+    assert session.revoked_reason == "idle_lock"
+    assert (await client.post("/api/auth/refresh")).status_code == 401
+    assert (await client.post("/api/auth/logout", json={"reason": "other"})).status_code == 422
+
+
+def test_idle_settings_are_validated(monkeypatch):
+    from app.core.config import load_settings
+
+    assert load_settings().session_idle_minutes == 20
+    monkeypatch.setenv("SESSION_IDLE_MINUTES", "10")
+    with pytest.raises(RuntimeError, match="SESSION_IDLE_MINUTES"):
+        load_settings()
+    monkeypatch.setenv("SESSION_IDLE_MINUTES", "30")
+    monkeypatch.setenv("IDLE_LOCK_MINUTES", "2.5")
+    assert (load_settings().idle_lock_minutes, load_settings().session_idle_minutes) == (2.5, 30)
+
+
 async def test_expired_access_token_is_rejected(client, make_user, monkeypatch):
     from app.core import security
 
