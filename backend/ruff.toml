@@ -1,0 +1,6 @@
+# Lint gate in CI: real errors only (syntax, undefined names, unused imports/variables). Style is not enforced.
+target-version = "py312"
+extend-exclude = ["venv"]
+
+[lint]
+select = ["E9", "F"]

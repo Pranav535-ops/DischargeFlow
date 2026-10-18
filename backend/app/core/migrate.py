@@ -74,6 +74,38 @@ async def encrypt_legacy_phi() -> int:
     return changed
 
 
+async def rewrap_deks() -> dict:
+    """Re-wrap every patient data key with the current PHI_KEK (step 2 of KEK rotation, docs/runbooks).
+
+    Field ciphertext is untouched: only each row's small wrapped DEK changes. Idempotent and safe to re-run; rows
+    already on the current KEK are skipped. Fails loudly if any DEK matches neither PHI_KEK nor PHI_KEK_PREVIOUS.
+    """
+    from app.core.crypto import key_provider
+    from app.identity.models import Tenant
+    from app.patients.models import Patient
+
+    rewrapped = current = 0
+    async with SessionLocal() as db:
+        tenant_ids = list(await db.scalars(select(Tenant.tenant_id)))
+    for tenant_id in tenant_ids:
+        token = current_tenant_id.set(tenant_id)
+        try:
+            async with SessionLocal() as db:
+                await use_tenant(db, tenant_id)
+                stmt = select(Patient).where(Patient.tenant_id == tenant_id, Patient.phi_dek.is_not(None))
+                for patient in await db.scalars(stmt):
+                    _, new_wrapped = key_provider().rewrap(patient.phi_dek)
+                    if new_wrapped is None:
+                        current += 1
+                    else:
+                        patient.phi_dek = new_wrapped
+                        rewrapped += 1
+                await db.commit()
+        finally:
+            current_tenant_id.reset(token)
+    return {"rewrapped": rewrapped, "already_current": current}
+
+
 async def migrate_all() -> dict:
     await upgrade_schema()
     encrypted = await encrypt_legacy_phi()

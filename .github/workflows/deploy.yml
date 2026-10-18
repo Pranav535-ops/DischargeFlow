@@ -1,0 +1,142 @@
+name: Deploy (AWS)
+
+# main -> CI -> build one image -> staging (migrate, roll out, smoke test) -> manual approval -> prod.
+#
+# Dormant until AWS exists: every job is skipped unless the repository variable AWS_DEPLOY_ENABLED is "true".
+# Setup (infra/README.md): apply infra/envs/{staging,prod}, create GitHub environments "staging" and "prod" (prod
+# with required reviewers), and copy each stack's `terraform output github_environment_variables` into the
+# matching environment's variables. Authentication is GitHub OIDC; there are no AWS keys in GitHub.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    if: vars.AWS_DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # Builds the API image once. Staging and prod push these exact bytes to their own registries, so prod runs
+  # the image that passed staging, without either environment's role reaching into the other's account.
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build the API image
+      run: |
+        docker build -t "dischargeflow-api:${GITHUB_SHA}" ./backend
+        docker save "dischargeflow-api:${GITHUB_SHA}" | gzip > api-image.tar.gz
+    - uses: actions/upload-artifact@v4
+      with:
+        name: api-image
+        path: api-image.tar.gz
+        retention-days: 7
+
+  staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.APP_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        name: frontend-build
+        path: frontend-build
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: api-image
+    - uses: aws-actions/amazon-ecr-login@v2
+    - name: Push the image (tagged with the commit)
+      id: push
+      run: |
+        image="${{ vars.ECR_REPOSITORY_URL }}:${GITHUB_SHA}"
+        gunzip -c api-image.tar.gz | docker load
+        docker tag "dischargeflow-api:${GITHUB_SHA}" "$image"
+        docker push "$image"
+        echo "image=$image" >> "$GITHUB_OUTPUT"
+    - name: Migrate and roll out the API
+      env:
+        ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+        ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+        ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        ECS_CONTAINER: ${{ vars.ECS_CONTAINER }}
+        ECS_SUBNETS: ${{ vars.ECS_SUBNETS }}
+        ECS_SECURITY_GROUP: ${{ vars.ECS_SECURITY_GROUP }}
+      run: scripts/deploy/ecs_deploy.sh "${{ steps.push.outputs.image }}"
+    - name: Publish the frontend
+      run: |
+        aws s3 sync frontend-build "s3://${{ vars.SITE_BUCKET }}" --delete --exclude index.html \
+          --cache-control "public,max-age=31536000,immutable"
+        aws s3 cp frontend-build/index.html "s3://${{ vars.SITE_BUCKET }}/index.html" --cache-control "no-cache"
+        aws cloudfront create-invalidation --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION }}" --paths "/index.html"
+    - name: Smoke test
+      run: python3 scripts/smoke_test.py "${{ vars.APP_URL }}"
+
+  prod:
+    needs: [ build, staging ]
+    runs-on: ubuntu-latest
+    # Required reviewers on the "prod" environment make this the manual production gate.
+    environment:
+      name: prod
+      url: ${{ vars.APP_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        name: frontend-build
+        path: frontend-build
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: api-image
+    - uses: aws-actions/amazon-ecr-login@v2
+    - name: Push the image (tagged with the commit)
+      id: push
+      run: |
+        image="${{ vars.ECR_REPOSITORY_URL }}:${GITHUB_SHA}"
+        gunzip -c api-image.tar.gz | docker load
+        docker tag "dischargeflow-api:${GITHUB_SHA}" "$image"
+        docker push "$image"
+        echo "image=$image" >> "$GITHUB_OUTPUT"
+    - name: Migrate and roll out the API
+      env:
+        ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+        ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+        ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        ECS_CONTAINER: ${{ vars.ECS_CONTAINER }}
+        ECS_SUBNETS: ${{ vars.ECS_SUBNETS }}
+        ECS_SECURITY_GROUP: ${{ vars.ECS_SECURITY_GROUP }}
+      run: scripts/deploy/ecs_deploy.sh "${{ steps.push.outputs.image }}"
+    - name: Publish the frontend
+      run: |
+        aws s3 sync frontend-build "s3://${{ vars.SITE_BUCKET }}" --delete --exclude index.html \
+          --cache-control "public,max-age=31536000,immutable"
+        aws s3 cp frontend-build/index.html "s3://${{ vars.SITE_BUCKET }}/index.html" --cache-control "no-cache"
+        aws cloudfront create-invalidation --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION }}" --paths "/index.html"
+    - name: Smoke test
+      run: python3 scripts/smoke_test.py "${{ vars.APP_URL }}"

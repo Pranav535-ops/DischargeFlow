@@ -7,6 +7,7 @@ import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -45,6 +46,8 @@ class Settings:
     phi_kek: bytes
     jwt_secret: str | None
     cors_origins: list[str] = field(default_factory=list)
+    # Retired KEKs, still accepted for unwrapping until `app.cli rewrap-deks` has moved every row to phi_kek.
+    phi_kek_previous: tuple[bytes, ...] = ()
     default_tenant_id: str = "default"
     seed_on_startup: bool = False
     auto_migrate: bool = False
@@ -54,6 +57,8 @@ class Settings:
     aws_region: str | None = None
     summary_model: str = "claude-sonnet-5-5"
     assistant_model: str = "claude-haiku-5-5"
+    log_format: str = "text"  # "json" in production: one object per line for CloudWatch
+    log_level: str = "INFO"
 
     @property
     def is_production(self) -> bool:
@@ -66,11 +71,27 @@ class Settings:
         return self.jwt_secret
 
 
+def _database_url_from_parts() -> str:
+    """postgres URL from DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD.
+
+    On AWS the password lives in the RDS-managed Secrets Manager secret and ECS injects it as DB_PASSWORD, so no
+    full connection string (with the password inside) has to be stored anywhere.
+    """
+    host = os.environ.get("DB_HOST", "").strip()
+    if not host:
+        return ""
+    user = quote(os.environ.get("DB_USER", "postgres"), safe="")
+    password = quote(os.environ.get("DB_PASSWORD", ""), safe="")
+    port = os.environ.get("DB_PORT", "5432").strip() or "5432"
+    name = os.environ.get("DB_NAME", "dischargeflow").strip() or "dischargeflow"
+    return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode=require"
+
+
 def load_settings() -> Settings:
     app_env = os.environ.get("APP_ENV", "development").strip().lower()
     is_dev = app_env in DEV_ENVS
 
-    database_url = os.environ.get("DATABASE_URL", "").strip()
+    database_url = os.environ.get("DATABASE_URL", "").strip() or _database_url_from_parts()
     if not database_url:
         if not is_dev:
             raise RuntimeError("DATABASE_URL must be set when APP_ENV is not development/test")
@@ -84,6 +105,8 @@ def load_settings() -> Settings:
     else:
         raise RuntimeError("PHI_KEK must be set when APP_ENV is not development/test")
 
+    phi_kek_previous = tuple(_decode_kek(k) for k in _split_csv(os.environ.get("PHI_KEK_PREVIOUS", "")))
+
     jwt_secret = os.environ.get("JWT_SECRET", "").strip() or None
     if not jwt_secret and is_dev:
         # Ephemeral per-process secret: dev sessions are invalidated on restart, which is fine locally.
@@ -94,6 +117,7 @@ def load_settings() -> Settings:
         app_env=app_env,
         database_url=database_url,
         phi_kek=phi_kek,
+        phi_kek_previous=phi_kek_previous,
         jwt_secret=jwt_secret,
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS", "http://localhost:3000")),
         default_tenant_id=os.environ.get("DEFAULT_TENANT_ID", "default").strip() or "default",
@@ -105,6 +129,8 @@ def load_settings() -> Settings:
         aws_region=os.environ.get("AWS_REGION", "").strip() or None,
         summary_model=os.environ.get("LLM_SUMMARY_MODEL", "").strip() or "claude-sonnet-5-5",
         assistant_model=os.environ.get("LLM_ASSISTANT_MODEL", "").strip() or "claude-haiku-5-5",
+        log_format=os.environ.get("LOG_FORMAT", "").strip().lower() or ("text" if is_dev else "json"),
+        log_level=os.environ.get("LOG_LEVEL", "").strip().upper() or "INFO",
     )
 
 

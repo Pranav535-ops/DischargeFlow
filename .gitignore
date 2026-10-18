@@ -90,3 +90,10 @@ android-sdk/-e
 
 # Local SQLite databases (backend dev default)
 *.db
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+infra/**/backend.hcl
+infra/**/terraform.tfvars

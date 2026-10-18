@@ -13,6 +13,7 @@ from app.chatbot.router import router as chatbot_router
 from app.core.config import settings
 from app.core.db import DB, SessionLocal, engine, utcnow
 from app.core.migrate import ensure_migrated
+from app.core.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from app.discharge.router import tasks_router, workflows_router
 from app.identity.router import auth_router, users_router
 from app.insurance.router import router as insurance_router
@@ -20,7 +21,7 @@ from app.notifications.router import router as notifications_router
 from app.patients.router import router as patients_router
 from app.seed import seed_demo_data
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+configure_logging(settings.log_format, settings.log_level)
 logger = logging.getLogger(__name__)
 
 VERSION = "2.2.0"
@@ -94,6 +95,9 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(api)
+    # Added last so it is outermost: every response, including errors from other middleware, gets a request id.
+    app.add_middleware(RequestContextMiddleware)
+    setup_tracing(app, engine)
     return app
 
 

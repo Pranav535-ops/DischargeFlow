@@ -1,0 +1,6 @@
+# Copy to backend.hcl (not committed). The bucket and lock table are created once by hand; see infra/README.md.
+bucket         = "<your-terraform-state-bucket>"
+key            = "dischargeflow/staging.tfstate"
+region         = "us-east-1"
+dynamodb_table = "<your-terraform-lock-table>"
+encrypt        = true

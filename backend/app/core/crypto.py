@@ -13,6 +13,7 @@ import os
 from functools import lru_cache
 from typing import Protocol
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core.config import settings
@@ -40,9 +41,41 @@ class LocalKeyProvider:
         return self._aead.decrypt(wrapped[:_NONCE], wrapped[_NONCE:], b"dischargeflow-dek")
 
 
+class RotatingKeyProvider:
+    """Wraps with the current KEK; unwraps with the current one or any retired one (PHI_KEK_PREVIOUS).
+
+    AES-GCM authentication tells the keys apart, so wrapped DEKs need no key id. `rewrap` reports whether a DEK
+    was wrapped by a retired key and returns it wrapped by the current one (used by `app.cli rewrap-deks`).
+    """
+
+    def __init__(self, current: bytes, previous: tuple[bytes, ...] = ()):
+        self._current = LocalKeyProvider(current)
+        self._previous = [LocalKeyProvider(k) for k in previous]
+
+    def wrap(self, dek: bytes) -> bytes:
+        return self._current.wrap(dek)
+
+    def unwrap(self, wrapped: bytes) -> bytes:
+        return self.rewrap(wrapped)[0]
+
+    def rewrap(self, wrapped: bytes) -> tuple[bytes, bytes | None]:
+        """(dek, newly wrapped DEK or None when it is already wrapped by the current KEK)."""
+        try:
+            return self._current.unwrap(wrapped), None
+        except InvalidTag:
+            pass
+        for old in self._previous:
+            try:
+                dek = old.unwrap(wrapped)
+            except InvalidTag:
+                continue
+            return dek, self._current.wrap(dek)
+        raise InvalidTag("DEK is not wrapped by PHI_KEK or any key in PHI_KEK_PREVIOUS")
+
+
 @lru_cache(maxsize=1)
-def key_provider() -> KeyProvider:
-    return LocalKeyProvider(settings.phi_kek)
+def key_provider() -> RotatingKeyProvider:
+    return RotatingKeyProvider(settings.phi_kek, settings.phi_kek_previous)
 
 
 def new_wrapped_dek() -> bytes:

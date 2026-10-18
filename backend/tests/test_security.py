@@ -5,7 +5,6 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from app.audit.models import AuditLog
 from app.core import crypto
 from app.core.db import utcnow
 from app.core.migrate import encrypt_legacy_phi
