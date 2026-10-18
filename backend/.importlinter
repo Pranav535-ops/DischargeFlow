@@ -1,0 +1,105 @@
+# Module-boundary contracts (ADR-001 Phase 6, item 23). Run from backend/: `lint-imports`.
+#
+# These encode the boundaries the code keeps today. The ADR's stricter goal, "modules call each other only through
+# service.py", is not enforced yet: several modules still read each other's models directly (e.g. analytics ->
+# discharge.models), and ai <-> patients / ai <-> discharge import each other.
+
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:llm-gateway]
+name = Provider SDKs are imported only by the AI gateway (app.ai.llm)
+type = forbidden
+source_modules =
+    app
+forbidden_modules =
+    anthropic
+    boto3
+    botocore
+ignore_imports =
+    app.ai.llm -> anthropic
+
+[importlinter:contract:core-foundation]
+name = app.core is the foundation and depends on no feature module except identity (auth)
+type = forbidden
+source_modules =
+    app.core
+forbidden_modules =
+    app.ai
+    app.analytics
+    app.audit
+    app.chatbot
+    app.discharge
+    app.insurance
+    app.interop
+    app.notifications
+    app.patients
+    app.main
+    app.models
+    app.seed
+    app.cli
+# The migration runner backfills and re-wraps encrypted PHI after `alembic upgrade`, so it reads those two tables.
+ignore_imports =
+    app.core.migrate -> app.ai.models
+    app.core.migrate -> app.patients.models
+
+[importlinter:contract:leaf-modules]
+name = audit and notifications are leaves and never call into workflow, AI or interop modules
+type = forbidden
+source_modules =
+    app.audit
+    app.notifications
+forbidden_modules =
+    app.ai
+    app.analytics
+    app.chatbot
+    app.discharge
+    app.insurance
+    app.interop
+    app.patients
+
+[importlinter:contract:consumers]
+name = interop (FHIR) and chatbot only consume other modules; nothing imports them
+type = forbidden
+source_modules =
+    app.ai
+    app.analytics
+    app.audit
+    app.core
+    app.discharge
+    app.identity
+    app.insurance
+    app.notifications
+    app.patients
+forbidden_modules =
+    app.chatbot
+    app.interop
+
+[importlinter:contract:routers-private]
+name = HTTP routers are private: only app.main mounts them
+type = forbidden
+source_modules =
+    app.ai
+    app.analytics
+    app.audit
+    app.chatbot
+    app.core
+    app.discharge
+    app.identity
+    app.insurance
+    app.interop
+    app.notifications
+    app.patients
+forbidden_modules =
+    app.ai.router
+    app.analytics.router
+    app.audit.router
+    app.chatbot.router
+    app.discharge.router
+    app.identity.router
+    app.insurance.router
+    app.interop.router
+    app.interop.hl7_router
+    app.notifications.router
+    app.patients.router

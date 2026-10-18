@@ -32,7 +32,10 @@ def alembic_config() -> Config:
 
 
 def head_revision() -> str:
-    return ScriptDirectory.from_config(alembic_config()).get_current_head()
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    if head is None:
+        raise RuntimeError("Alembic has no head revision")
+    return head
 
 
 async def current_revision() -> str | None:
@@ -89,12 +92,14 @@ async def rewrap_deks() -> dict:
 
     Field ciphertext is untouched: only each row's small wrapped DEK changes. Idempotent and safe to re-run; rows
     already on the current KEK are skipped. Fails loudly if any DEK matches neither PHI_KEK nor PHI_KEK_PREVIOUS.
+    MRN blind indexes are keyed from the KEK too, so they are recomputed here; until then, lookups also try the
+    index under each retired KEK.
     """
     from app.core.crypto import key_provider
     from app.identity.models import Tenant
     from app.patients.models import Patient
 
-    rewrapped = current = 0
+    rewrapped = current = reindexed = 0
     async with SessionLocal() as db:
         tenant_ids = list(await db.scalars(select(Tenant.tenant_id)))
     for tenant_id in tenant_ids:
@@ -104,16 +109,20 @@ async def rewrap_deks() -> dict:
                 await use_tenant(db, tenant_id)
                 stmt = select(Patient).where(Patient.tenant_id == tenant_id, Patient.phi_dek.is_not(None))
                 for patient in await db.scalars(stmt):
+                    if patient.phi_dek is None:  # filtered above; narrows the type
+                        continue
                     _, new_wrapped = key_provider().rewrap(patient.phi_dek)
                     if new_wrapped is None:
                         current += 1
                     else:
                         patient.phi_dek = new_wrapped
                         rewrapped += 1
+                    if patient.reindex_mrn():
+                        reindexed += 1
                 await db.commit()
         finally:
             current_tenant_id.reset(token)
-    return {"rewrapped": rewrapped, "already_current": current}
+    return {"rewrapped": rewrapped, "already_current": current, "mrn_reindexed": reindexed}
 
 
 async def migrate_all() -> dict:

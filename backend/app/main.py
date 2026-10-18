@@ -10,13 +10,14 @@ from app.ai.router import router as ai_router
 from app.analytics.router import router as analytics_router
 from app.audit.router import router as audit_router
 from app.chatbot.router import router as chatbot_router
-from app.core.config import settings
+from app.core.config import VERSION, settings
 from app.core.db import DB, SessionLocal, engine, utcnow
 from app.core.migrate import ensure_migrated
 from app.core.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from app.discharge.router import tasks_router, workflows_router
-from app.identity.router import auth_router, users_router
+from app.identity.router import auth_router, integrations_router, users_router
 from app.insurance.router import router as insurance_router
+from app.interop.hl7_router import router as hl7_router
 from app.interop.router import router as fhir_router
 from app.notifications.router import router as notifications_router
 from app.patients.router import router as patients_router
@@ -24,8 +25,6 @@ from app.seed import seed_demo_data
 
 configure_logging(settings.log_format, settings.log_level)
 logger = logging.getLogger(__name__)
-
-VERSION = "2.2.0"
 
 
 @asynccontextmanager
@@ -77,6 +76,7 @@ def create_app() -> FastAPI:
     for router in (
         auth_router, users_router, patients_router, workflows_router, tasks_router, notifications_router,
         analytics_router, ai_router, insurance_router, chatbot_router, audit_router, fhir_router,
+        integrations_router, hl7_router,
     ):
         api.include_router(router)
 

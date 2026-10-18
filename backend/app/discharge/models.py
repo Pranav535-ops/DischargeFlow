@@ -32,6 +32,10 @@ class Workflow(TenantMixin, Base):
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     estimated_discharge_time: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    # Time waiting for physician approval (operational metrics). `pending_approval_seconds` accumulates every stay in
+    # pending_approval; NULL means the workflow predates tracking (migration 0006), not zero.
+    pending_approval_since: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    pending_approval_seconds: Mapped[Optional[int]] = mapped_column(Integer, default=0)
 
 
 class Task(TenantMixin, Base):

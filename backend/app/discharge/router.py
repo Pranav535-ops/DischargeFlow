@@ -2,7 +2,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.core.db import DB
 from app.core.security import AuthUser, CurrentUser, requires
@@ -106,6 +106,3 @@ async def update_task(task_id: str, task_update: TaskUpdate, db: DB, user: AuthU
     return task.to_dict()
 
 
-def visible_tasks_for(user: CurrentUser):
-    """Tasks assigned to the user directly or to their role (used by the chatbot)."""
-    return select(Task).where(or_(Task.assigned_to == user.user_id, Task.assigned_role == user.role))

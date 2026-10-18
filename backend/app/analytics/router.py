@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 
 from app.ai import insights as ai_insights
@@ -39,7 +39,7 @@ async def get_dashboard_analytics(db: DB, user: AuthUser):
         .order_by(Workflow.completed_at.desc())
         .limit(100)
     )
-    durations = [(done - started).total_seconds() / 3600 for started, done in recent]
+    durations = [(done - started).total_seconds() / 3600 for started, done in recent if started and done]
     avg_hours = round(sum(durations) / len(durations), 1) if durations else None
 
     return {
@@ -71,6 +71,13 @@ async def get_tasks_by_role(db: DB, user: AuthUser):
 async def get_aggregates(db: DB, user: CurrentUser = Depends(requires("insights:read"))):
     """The aggregate metrics the AI insights are based on (no patient-level data)."""
     return await analytics_service.discharge_aggregates(db)
+
+
+@router.get("/operations")
+async def get_operational_metrics(db: DB, days: int = Query(30, ge=1, le=365),
+                                  user: CurrentUser = Depends(requires("insights:read"))):
+    """Throughput, approval wait and task SLA breaches (aggregate only, same rules as /aggregates)."""
+    return await analytics_service.operational_metrics(db, days)
 
 
 @router.post("/insights")

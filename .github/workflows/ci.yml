@@ -45,9 +45,15 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt -r requirements-otel.txt ruff==0.17.1 pip-audit==2.10.1
+        pip install -r requirements.txt -r requirements-otel.txt ruff==0.17.1 pip-audit==2.10.1 import-linter==2.15 mypy==1.20.1
     - name: Lint (ruff)
       run: ruff check .
+    # Module boundaries (backend/.importlinter): provider SDKs only in the AI gateway, core and leaf modules stay
+    # independent, routers stay private.
+    - name: Module boundaries (import-linter)
+      run: lint-imports
+    - name: Type check (mypy, modules listed in mypy.ini)
+      run: mypy
     - name: Tests (SQLite)
       run: python -m pytest
     - name: Tests + migrations (PostgreSQL)

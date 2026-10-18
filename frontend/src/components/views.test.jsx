@@ -86,7 +86,18 @@ describe('InsightsView', () => {
       discharge_duration: { n: 0 },
       ai_summaries: { generated: 2, approved: 1, avg_edit_similarity: 0.9, failed_generations: 0 },
     };
-    vi.spyOn(api, 'get').mockResolvedValue({ data: aggregates });
+    const operations = {
+      window_days: 30,
+      throughput: { discharges_started: 5, discharges_completed: 4, completed_per_day: {},
+        discharge_duration: { n: 4, avg_hours: 30, median_hours: 28 } },
+      pending_approval: { wait: { n: 3, avg_hours: 4, median_hours: 4 }, untracked_completed: 1, waiting_now: 2,
+        oldest_waiting_hours: null },
+      task_sla: { targets_hours: { high: 4, medium: 12, low: 24 }, open_tasks: 3,
+        open_breaching_by_role: { pharmacist: { high: 1 } }, completed: { n: 10, breached: 2, breach_rate: 0.2 },
+        completed_by_role: {} },
+    };
+    vi.spyOn(api, 'get').mockImplementation(async (url) => (
+      { data: url.startsWith('/analytics/operations') ? operations : aggregates }));
     vi.spyOn(api, 'post').mockResolvedValue({ data: {
       aggregates,
       insights: { headline: 'Pharmacist tasks take longest', findings: [
@@ -98,6 +109,11 @@ describe('InsightsView', () => {
     renderAt('/insights', '/insights', <InsightsView />);
 
     expect(await screen.findAllByText(/too few to average/)).toHaveLength(2); // nurse n=1, discharges n=0
+    const ops = await screen.findByTestId('operations-panel');
+    expect(ops).toHaveTextContent('4 completed · 5 started');
+    expect(ops).toHaveTextContent('2/10 completed tasks over target (20%)');
+    expect(ops).toHaveTextContent('1 older discharge(s) not tracked');
+    expect(ops).toHaveTextContent('1 high open, overdue');
     await userEvent.click(screen.getByTestId('generate-insights-btn'));
     const panel = await screen.findByTestId('insights-panel');
     expect(panel).toHaveTextContent('Pharmacist tasks take longest');

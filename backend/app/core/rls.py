@@ -19,6 +19,8 @@ TENANT_TABLES = (
     "audit_chain_heads",
     "ai_generations",
     "assistant_actions",
+    "integration_clients",
+    "hl7_messages",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
