@@ -1,12 +1,12 @@
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.audit.service import write_audit
 from app.core.db import DB
-from app.core.security import AuthUser
+from app.core.security import AuthUser, CurrentUser, requires
 from app.insurance import service
 from app.insurance.models import InsuranceClaim
 
@@ -32,7 +32,9 @@ class ClaimStatusUpdate(BaseModel):
 
 
 @router.post("/claims")
-async def create_claim(claim_data: InsuranceClaimCreate, request: Request, db: DB, user: AuthUser):
+async def create_claim(
+    claim_data: InsuranceClaimCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("claim:manage"))
+):
     claim = await service.create_claim(db, user, **claim_data.model_dump(), request=request)
     return {"claim_id": claim.claim_id, "status": "pending", "message": "Claim submitted successfully"}
 
@@ -56,7 +58,10 @@ async def get_claim(claim_id: str, db: DB, user: AuthUser):
 
 
 @router.put("/claims/{claim_id}/status")
-async def update_claim_status(claim_id: str, update: ClaimStatusUpdate, request: Request, db: DB, user: AuthUser):
+async def update_claim_status(
+    claim_id: str, update: ClaimStatusUpdate, request: Request, db: DB,
+    user: CurrentUser = Depends(requires("claim:manage")),
+):
     claim = await db.get(InsuranceClaim, claim_id)
     if not claim:
         raise HTTPException(status_code=404, detail="Claim not found")

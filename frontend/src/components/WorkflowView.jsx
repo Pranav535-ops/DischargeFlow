@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
 import { invalidateDischarge, usePatient, useWorkflow } from '@/lib/queries';
+import { canChangeTaskStatus, taskStatusBody } from '@/lib/tasks';
 import { 
   ArrowLeft, 
   Clock,
@@ -76,10 +77,12 @@ const WorkflowView = () => {
     }
   };
 
-  const handleTaskUpdate = async (taskId, newStatus) => {
-    setUpdatingTask(taskId);
+  const handleTaskUpdate = async (task, newStatus) => {
+    const body = taskStatusBody(task, user, newStatus);
+    if (!body) return;
+    setUpdatingTask(task.task_id);
     try {
-      await api.put(`/tasks/${taskId}`, { status: newStatus });
+      await api.put(`/tasks/${task.task_id}`, body);
       if (newStatus === 'completed') toast.success('Task completed!');
       await fetchData();
     } catch (error) {
@@ -117,9 +120,7 @@ const WorkflowView = () => {
     return priority === 1 ? 'priority-high' : priority === 2 ? 'priority-medium' : 'priority-low';
   };
 
-  const canUpdateTask = (task) => {
-    return task.assigned_role === user?.role || user?.role === 'admin';
-  };
+  const canUpdateTask = (task) => canChangeTaskStatus(task, user);
 
   if (loading) {
     return (
@@ -375,7 +376,7 @@ const WorkflowView = () => {
                       checked={task.status === 'completed'}
                       disabled={isUpdating || task.status === 'completed'}
                       onCheckedChange={(checked) => {
-                        handleTaskUpdate(task.task_id, checked ? 'completed' : 'pending');
+                        handleTaskUpdate(task, checked ? 'completed' : 'pending');
                       }}
                       className="mt-1"
                     />

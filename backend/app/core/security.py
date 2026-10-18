@@ -18,10 +18,12 @@ from app.core.db import DB, utcnow
 from app.core.observability import user_id_var
 from app.core.tenancy import use_tenant
 from app.identity.models import AuthSession, User
-from app.identity.permissions import ROLES, permissions_for
+from app.identity.permissions import ASSIGNABLE_ROLES, PENDING_ROLE, ROLES, permissions_for
 
 ACCESS_TOKEN_TTL = timedelta(minutes=15)
 VALID_ROLES = ROLES
+# What an admin may set with PUT /api/users/{id}/role (or an invite): the working roles plus `pending` (suspend).
+USER_ROLES = ASSIGNABLE_ROLES
 _IDENTITY_CACHE_TTL = 30.0
 
 
@@ -81,7 +83,8 @@ async def load_identity(db, user_id: str, session_id: str) -> Optional[CurrentUs
                        tenant_id=user.tenant_id, session_id=session.session_id, created_at=user.created_at)
 
 
-async def get_current_user(request: Request, db: DB) -> CurrentUser:
+async def get_signed_in_identity(request: Request, db: DB) -> CurrentUser:
+    """The bearer token's identity, including accounts still waiting for approval. Only /api/auth/me uses this."""
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -101,7 +104,19 @@ async def get_current_user(request: Request, db: DB) -> CurrentUser:
     return identity
 
 
+async def get_current_user(identity: Annotated[CurrentUser, Depends(get_signed_in_identity)]) -> CurrentUser:
+    """The signed-in user, refused while their account waits for an admin's approval (role `pending`).
+
+    Many reads need no permission (the patient list, for one), so a role with no permissions is not enough to keep a
+    pending account away from patient data: it is refused here, before any endpoint runs.
+    """
+    if identity.role == PENDING_ROLE:
+        raise HTTPException(status_code=403, detail="Account pending approval")
+    return identity
+
+
 AuthUser = Annotated[CurrentUser, Depends(get_current_user)]
+SignedInIdentity = Annotated[CurrentUser, Depends(get_signed_in_identity)]
 
 
 async def ensure_permission(db, user: CurrentUser, permission: Optional[str]) -> None:

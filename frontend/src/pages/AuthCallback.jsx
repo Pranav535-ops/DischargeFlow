@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { errorMessage } from '@/lib/api';
 
 const AuthCallback = () => {
   const navigate = useNavigate();
@@ -38,6 +40,8 @@ const AuthCallback = () => {
         navigate('/dashboard', { state: { user }, replace: true });
       } catch (error) {
         console.error('Auth failed:', error);
+        // 403: the account is not invited or its email domain is not allowed (identity/router.registration_refusal).
+        if (error?.response?.status === 403) toast.error('Sign-in refused', { description: errorMessage(error) });
         navigate('/login');
       }
     };

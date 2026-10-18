@@ -13,6 +13,10 @@ from app.identity.models import RolePermission
 ROLES = ("physician", "nurse", "pharmacist", "admin")
 # The role integration clients (hospital systems with an API key) act as. Not in ROLES: no person can be given it.
 INTEGRATION_ROLE = "interface"
+# New sign-ins that no admin has approved or invited yet. Holds no permissions, and `get_current_user` refuses it on
+# every endpoint except /api/auth/me, so it cannot read patient data either. Admins can also set it to suspend someone.
+PENDING_ROLE = "pending"
+ASSIGNABLE_ROLES = ROLES + (PENDING_ROLE,)
 
 # Source of truth for migrations' seed data. Admin implicitly holds every permission.
 DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -21,11 +25,16 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "workflow:manage": ("physician",),
     "summary:manage": ("physician",),
     "task:create": ("physician", "nurse"),
+    # Change the status of a task assigned to another user or role (a reason is required and stored).
+    "task:override": ("physician",),
+    # Assign a task to a named user other than yourself.
+    "task:assign": ("physician",),
     "user:manage": (),
     "audit:read": (),
     "audit:read_patient": ("physician",),
     "insights:read": (),
     "adt:ingest": (INTEGRATION_ROLE,),
+    "claim:manage": ("nurse",),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

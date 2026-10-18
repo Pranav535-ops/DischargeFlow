@@ -135,6 +135,24 @@ async def test_writes_need_the_same_permission_as_http(client, make_user, create
     assert wf is not None and wf.status == "in_progress"
 
 
+async def test_task_status_tool_only_changes_the_users_own_tasks(client, make_user, create_patient, db, scripted):
+    """update_task_status declares no permission; the discharge service enforces ownership on confirm."""
+    _, nurse = await make_user("nurse")
+    _, physician = await make_user("physician")
+    patient = await create_patient(nurse, name="Ada Lovelace")
+    await client.post(f"/api/workflows/initiate/{patient['patient_id']}", headers=physician)
+    tasks = {t.title: t.task_id for t in (await db.scalars(select(Task))).all()}
+
+    for title, allowed in (("Final Medication Review", False), ("Final Vitals Check", True)):
+        task_id = tasks[title]
+        scripted([[ToolCall("t1", "update_task_status", {"task_id": task_id, "status": "completed"})]])
+        [proposal] = (await _say(client, nurse, "mark it done"))["pending_actions"]
+        resp = await client.post(f"/api/chatbot/actions/{proposal['action_id']}/confirm", headers=nurse)
+        assert resp.status_code == (200 if allowed else 403), resp.text
+        status = await db.scalar(select(Task.status).where(Task.task_id == task_id))
+        assert status == ("completed" if allowed else "pending")
+
+
 async def test_expired_and_cancelled_proposals_do_nothing(client, make_user, create_patient, db, scripted):
     _, nurse = await make_user("nurse")
     await create_patient(nurse, name="Ada Lovelace")
