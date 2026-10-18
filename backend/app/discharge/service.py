@@ -2,15 +2,18 @@
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.models import AIGeneration, DischargeSummary
+from app.audit.service import write_audit
 from app.core.db import utcnow
-from app.core.security import CurrentUser
+from app.core.security import CurrentUser, ensure_permission
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
+from app.identity.models import User
+from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
 from app.patients.models import Patient
 
@@ -62,7 +65,8 @@ async def open_task_count(db: AsyncSession, workflow_id: str) -> int:
     return count or 0
 
 
-async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUser) -> dict:
+async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUser,
+                             request: Optional[Request] = None) -> dict:
     patient = await db.get(Patient, patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -89,6 +93,8 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
     await notify_role(db, "pharmacist", "Medication Review Required",
                       f"Medication review needed for {patient.name}'s discharge", f"/patients/{patient_id}")
     await db.flush()
+    await write_audit(db, user, "INITIATE_DISCHARGE", "patient", patient_id,
+                      f"workflow={workflow.workflow_id} tasks={len(STANDARD_TASKS)}", request)
     return {"workflow": workflow.to_dict(), "tasks_created": len(STANDARD_TASKS)}
 
 
@@ -103,17 +109,51 @@ async def create_task(db: AsyncSession, user: CurrentUser, *, patient_id: str, t
                 workflow_id=workflow.workflow_id if workflow else None, created_by=user.user_id)
     db.add(task)
     await db.flush()
+    await write_audit(db, user, "CREATE_TASK", "task", task.task_id, f"patient={patient_id} role={assigned_role}")
     # A new open task sends a pending_approval workflow back to in_progress.
     await sync_workflow_status(db, task.workflow_id)
     return task
 
 
+def is_assignee(user: CurrentUser, task: Task) -> bool:
+    """The task is assigned to this user by name, or to their role."""
+    return task.assigned_to == user.user_id or task.assigned_role == user.role
+
+
 async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, status: Optional[str] = None,
-                      assigned_to: Optional[str] = None) -> Task:
+                      assigned_to: Optional[str] = None, reason: Optional[str] = None,
+                      request: Optional[Request] = None) -> Task:
+    """Change a task's status and/or named assignee.
+
+    Only the assignee (the named user or anyone in the assigned role) changes the status. Someone holding
+    `task:override` (physicians, admins) may change another role's task, but must give a reason, which is stored on
+    the task. Assigning the task to a named user needs `task:assign`, except members of the assigned role claiming
+    it for themselves. Every change is audited.
+    """
     task = await db.get(Task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if status:
+    reason = (reason or "").strip() or None
+
+    status_changes = bool(status) and status != task.status
+    override = status_changes and not is_assignee(user, task)
+    if override:
+        await ensure_permission(db, user, "task:override")
+        if not reason:
+            raise HTTPException(status_code=400, detail="A reason is required to change a task assigned to another role")
+    if assigned_to and assigned_to != task.assigned_to:
+        claiming = assigned_to == user.user_id and task.assigned_role == user.role
+        if not claiming:
+            await ensure_permission(db, user, "task:assign")
+        assignee = await db.get(User, assigned_to)
+        if assignee is None or assignee.role == PENDING_ROLE:
+            raise HTTPException(status_code=400, detail="Assignee is not an active user")
+        previous_assignee = task.assigned_to or f"role {task.assigned_role}"
+        task.assigned_to = assigned_to
+        await write_audit(db, user, "REASSIGN_TASK", "task", task_id, f"{previous_assignee} → {assigned_to}", request)
+
+    if status and status_changes:
+        previous = task.status
         task.status = status
         if status == "completed":
             task.completed_by = user.user_id
@@ -121,8 +161,16 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
         else:
             task.completed_by = None
             task.completed_at = None
-    if assigned_to:
-        task.assigned_to = assigned_to
+        if override:
+            # The reason stays on the task row, not in the audit entry: audit rows are immutable and survive erasure,
+            # and free text may name the patient.
+            task.override_reason = reason
+            task.override_by = user.user_id
+            await write_audit(db, user, "OVERRIDE_TASK_STATUS", "task", task_id,
+                              f"{previous} → {status} (assigned role {task.assigned_role}; reason stored on task)",
+                              request)
+        else:
+            await write_audit(db, user, "UPDATE_TASK_STATUS", "task", task_id, f"{previous} → {status}", request)
     await sync_workflow_status(db, task.workflow_id)
     await db.flush()
     await db.refresh(task)
@@ -160,7 +208,8 @@ async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> 
         set_workflow_status(workflow, "in_progress")
 
 
-async def complete_discharge(db: AsyncSession, workflow_id: str) -> dict:
+async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUser,
+                            request: Optional[Request] = None) -> dict:
     workflow = await db.get(Workflow, workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -182,4 +231,5 @@ async def complete_discharge(db: AsyncSession, workflow_id: str) -> dict:
     patient = await db.get(Patient, workflow.patient_id)
     if patient:
         patient.status = "discharged"
+    await write_audit(db, user, "COMPLETE_DISCHARGE", "patient", workflow.patient_id, f"workflow={workflow_id}", request)
     return {"success": True, "completed_at": now.isoformat()}

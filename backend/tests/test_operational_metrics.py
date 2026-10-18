@@ -20,7 +20,7 @@ async def _discharge(client, physician, patient_id) -> str:
     await client.put(f"/api/ai/approve-summary/{summary['summary_id']}", headers=physician)
     for task in (await client.get(f"/api/workflows/{wf_id}", headers=physician)).json()["tasks"]:
         if task["status"] != "completed":
-            await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed"}, headers=physician)
+            await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed", "reason": "Physician override in test"}, headers=physician)
     return wf_id
 
 

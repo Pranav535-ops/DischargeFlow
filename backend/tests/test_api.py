@@ -72,7 +72,8 @@ async def test_session_exchange_creates_user_once(client, monkeypatch):
     first = await client.post("/api/auth/session", json={"session_id": "abc"})
     assert first.status_code == 200, first.text
     body = first.json()
-    assert body["user"]["role"] == "nurse" and body["expires_in"] == 900
+    # Unknown accounts start with no access until an admin approves them (tests/test_access_control.py).
+    assert body["user"]["role"] == "pending" and body["expires_in"] == 900
     cookie = first.headers.get("set-cookie", "")
     assert "df_refresh=" in cookie and "HttpOnly" in cookie and "SameSite=strict" in cookie
     assert "Path=/api/auth" in cookie
@@ -80,8 +81,9 @@ async def test_session_exchange_creates_user_once(client, monkeypatch):
     second = (await client.post("/api/auth/session", json={"session_id": "def"})).json()
     assert second["user"]["user_id"] == body["user"]["user_id"]
 
-    notes = (await client.get("/api/notifications", headers={"Authorization": f"Bearer {body['token']}"})).json()
-    assert [n["title"] for n in notes] == ["Welcome to DischargeFlow"]
+    bearer = {"Authorization": f"Bearer {body['token']}"}
+    assert (await client.get("/api/auth/me", headers=bearer)).json()["role"] == "pending"
+    assert (await client.get("/api/notifications", headers=bearer)).status_code == 403
     assert (await client.post("/api/auth/session", json={})).status_code == 400
 
 
@@ -119,7 +121,7 @@ async def test_consent_and_erasure_are_audited(client, make_user, create_patient
     assert erased["name"] == "[REDACTED]" and erased["gdpr_erased"] is True and erased["gdpr_consent"] is True
 
     trail = (await client.get(f"/api/audit/patients/{pid}", headers=admin)).json()
-    assert {e["action"] for e in trail} == {"UPDATE_CONSENT", "GDPR_ERASURE"}
+    assert {e["action"] for e in trail} == {"CREATE_PATIENT", "UPDATE_CONSENT", "GDPR_ERASURE", "PHI_READ"}
     assert all(e["ip_address"] for e in trail)
 
 

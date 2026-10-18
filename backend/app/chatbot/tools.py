@@ -183,13 +183,14 @@ class UpdateTaskArgs(_Args):
 
 
 async def update_task_status(ctx: ToolContext, args: dict) -> ToolOutput:
-    task = await discharge_service.update_task(ctx.db, ctx.user, args["task_id"], status=args["status"])
+    task = await discharge_service.update_task(ctx.db, ctx.user, args["task_id"], status=args["status"],
+                                               request=ctx.request)
     return ToolOutput({"message": f"Task '{task.title}' is now {task.status}."}, {"tasks": [task.to_dict()]},
                       task.task_id)
 
 
 async def initiate_discharge(ctx: ToolContext, args: dict) -> ToolOutput:
-    out = await discharge_service.initiate_discharge(ctx.db, args["patient_id"], ctx.user)
+    out = await discharge_service.initiate_discharge(ctx.db, args["patient_id"], ctx.user, ctx.request)
     return ToolOutput({"message": f"Discharge started with {out['tasks_created']} standard tasks."}, out,
                       out["workflow"]["workflow_id"])
 
@@ -233,7 +234,7 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
     Tool("initiate_discharge", "Propose starting the discharge workflow for a patient. Requires confirmation.",
          PatientRefArgs, "workflow:manage", True, initiate_discharge),
     Tool("submit_claim", "Propose submitting an insurance claim for a patient. Requires confirmation.",
-         SubmitClaimArgs, None, True, submit_claim),
+         SubmitClaimArgs, "claim:manage", True, submit_claim),
 ]}
 
 

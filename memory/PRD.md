@@ -34,7 +34,7 @@ October 2026.
 ## Requirements
 
 ### Authentication and access
-- Google sign-in through Emergent Auth; new users join as nurse, and an admin assigns roles
+- Google sign-in through Emergent Auth; new users wait as `pending` (no access) until an admin approves them or invites them by email
 - Short-lived access tokens with a rotating refresh cookie; logout and role changes take effect within seconds
 - Permission-based access (`workflow:manage`, `summary:manage`, ...) mapped to roles in the database
 - Hospitals (tenants) are isolated from each other at the database level

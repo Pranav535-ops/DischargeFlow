@@ -122,3 +122,25 @@ describe('InsightsView', () => {
     expect(panel).toHaveTextContent('offline mock');
   });
 });
+
+describe('InsuranceView', () => {
+  it('is read-only for roles without claim:manage (physician here)', async () => {
+    const { default: InsuranceView } = await import('./InsuranceView');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/insurance/claims') {
+        return { data: [{ claim_id: 'clm_1', patient_id: 'pat_1', insurer_name: 'Acme Health', policy_number: 'P-1',
+          billed_amount: 1200, status: 'pending' }] };
+      }
+      if (url === '/insurance/reports') {
+        return { data: { total_claims: 1, total_billed: 1200, total_paid: 0, total_allowed: 0, denial_rate: 0,
+          pending_count: 1, accepted_count: 0, denied_count: 0, by_insurer: [] } };
+      }
+      return { data: [{ patient_id: 'pat_1', name: 'Jane Doe' }] };
+    });
+    renderAt('/insurance', '/insurance', <InsuranceView />);
+
+    expect(await screen.findByText('Acme Health')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /new claim/i })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Claim status')).toBeDisabled();
+  });
+});

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { toast } from 'sonner';
 import { api, errorMessage } from '@/lib/api';
 import { queryClient, useClaims, useInsuranceReports, usePatients } from '@/lib/queries';
+import { useAuth } from '../context/AuthContext';
 import {
   DollarSign, FileText, Plus, RefreshCw, TrendingUp,
   TrendingDown, Clock, CheckCircle, XCircle, AlertCircle,
@@ -32,7 +33,12 @@ const StatusBadge = ({ status }) => {
   );
 };
 
+// Roles holding claim:manage (migration 0008). Everyone else sees claims and reports read-only.
+const CLAIM_MANAGERS = ['nurse', 'admin'];
+
 const InsuranceView = () => {
+  const { user } = useAuth();
+  const canManage = CLAIM_MANAGERS.includes(user?.role);
   const claimsQuery = useClaims();
   const reportsQuery = useInsuranceReports();
   const patientsQuery = usePatients();
@@ -107,12 +113,14 @@ const InsuranceView = () => {
           <button onClick={fetchData} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors text-sm">
             <RefreshCw className="w-4 h-4" /> Refresh
           </button>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors text-sm font-medium"
-          >
-            <Plus className="w-4 h-4" /> New Claim
-          </button>
+          {canManage && (
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors text-sm font-medium"
+            >
+              <Plus className="w-4 h-4" /> New Claim
+            </button>
+          )}
         </div>
       </div>
 
@@ -227,9 +235,10 @@ const InsuranceView = () => {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <select
+                            aria-label="Claim status"
                             value={claim.status}
                             onChange={e => updateStatus(claim.claim_id, e.target.value)}
-                            disabled={updating === claim.claim_id}
+                            disabled={!canManage || updating === claim.claim_id}
                             className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
                           >
                             {['pending','submitted','accepted','denied','paid'].map(s => <option key={s} value={s}>{s}</option>)}

@@ -242,7 +242,7 @@ async def test_a03_completes_ready_workflow_then_a01_readmits(client, make_clien
     assert (await client.put(f"/api/ai/approve-summary/{summary['summary_id']}", headers=physician)).status_code == 200
     for task in (await client.get(f"/api/workflows/{wf_id}", headers=physician)).json()["tasks"]:
         if task["status"] != "completed":
-            await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed"}, headers=physician)
+            await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed", "reason": "Physician override in test"}, headers=physician)
 
     ack = await send(key, adt("A03", "DIS2"))
     assert (ack["code"], ack["text"]) == ("AA", "Discharge completed")

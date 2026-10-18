@@ -63,6 +63,12 @@ class Settings:
     log_level: str = "INFO"
     # Development/test only: POST /api/auth/dev-login signs in as any role without OAuth (Playwright E2E).
     enable_dev_login: bool = False
+    # Who may request an account by signing in with Google. A new sign-in from an allowed domain (any domain when the
+    # list is empty) gets the no-access role `pending` until an admin approves it; others are refused. With
+    # self_registration off, only people an admin invited (POST /api/users) can sign in. Invited users are always let
+    # in, whatever their domain.
+    allowed_email_domains: tuple[str, ...] = ()
+    self_registration: bool = True
     # How long one notification stream (GET /api/notifications/stream) stays open before the client reconnects.
     # Kept under the serverless function limit on Vercel; a long-running host (ECS) can raise it.
     notification_stream_seconds: float = 25.0
@@ -140,6 +146,8 @@ def load_settings() -> Settings:
         log_level=os.environ.get("LOG_LEVEL", "").strip().upper() or "INFO",
         # Never honoured outside development/test, whatever the variable says.
         enable_dev_login=is_dev and _bool("ENABLE_DEV_LOGIN"),
+        allowed_email_domains=tuple(d.lower().lstrip("@") for d in _split_csv(os.environ.get("ALLOWED_EMAIL_DOMAINS", ""))),
+        self_registration=_bool("SELF_REGISTRATION", True),
         notification_stream_seconds=float(os.environ.get("NOTIFICATION_STREAM_SECONDS", "").strip() or 25),
     )
 

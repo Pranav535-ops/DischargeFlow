@@ -141,7 +141,7 @@ async def discharge(db: AsyncSession, client: CurrentUser, message: Message) -> 
         return Outcome("AE", reason, "207", patient.patient_id)
 
     try:
-        await complete_discharge(db, workflow.workflow_id)
+        await complete_discharge(db, workflow.workflow_id, client)
     except HTTPException as exc:
         # The state machine refused before changing anything (open tasks, unapproved summary).
         reason = str(exc.detail)

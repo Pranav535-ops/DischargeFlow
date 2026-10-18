@@ -94,7 +94,7 @@ In-app notifications by role, pushed over Server-Sent Events, with polling as th
 | **Administration** | User roles, integration API keys, audit log with chain verification. |
 | **Interoperability** | Read-only FHIR R4; inbound HL7 v2 ADT (A01, A03). |
 
-**Roles:** physician, nurse, pharmacist and admin. New users join as nurse and an admin promotes them. The first admin
+**Roles:** physician, nurse, pharmacist and admin. A new sign-in waits as `pending` (no access) until an admin gives it a role; admins can also invite people by email, and `ALLOWED_EMAIL_DOMAINS` / `SELF_REGISTRATION=false` restrict who may ask. The first admin
 is set in the database: `UPDATE users SET role = 'admin' WHERE user_id = '…'`.
 
 </details>

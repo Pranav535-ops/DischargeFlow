@@ -49,10 +49,12 @@ async def test_full_discharge_happy_path(client, make_user, create_patient, db):
     doc_task = next(t for t in detail["tasks"] if t["title"] == "Complete Discharge Summary")
     assert doc_task["status"] == "completed"
 
-    # Complete the remaining tasks; the workflow moves to pending_approval and physicians are told.
+    # Each role completes its own remaining tasks; the workflow moves to pending_approval and physicians are told.
+    by_role = {"physician": physician, "nurse": nurse, "pharmacist": pharmacist}
     for task in detail["tasks"]:
         if task["status"] != "completed":
-            resp = await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed"}, headers=pharmacist)
+            resp = await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed"},
+                                    headers=by_role[task["assigned_role"]])
             assert resp.status_code == 200
             assert resp.json()["completed_by"]
     assert (await client.get(f"/api/workflows/{wf_id}", headers=nurse)).json()["status"] == "pending_approval"
@@ -78,7 +80,7 @@ async def test_complete_requires_approved_summary(client, make_user, create_pati
     patient = await create_patient(physician)
     wf_id = (await client.post(f"/api/workflows/initiate/{patient['patient_id']}", headers=physician)).json()["workflow"]["workflow_id"]
     for task in (await client.get(f"/api/workflows/{wf_id}", headers=physician)).json()["tasks"]:
-        await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed"}, headers=physician)
+        await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed", "reason": "Physician override in test"}, headers=physician)
 
     resp = await client.put(f"/api/workflows/{wf_id}/complete", headers=physician)
     assert resp.status_code == 400
@@ -92,7 +94,7 @@ async def test_reopening_or_adding_task_returns_workflow_to_in_progress(client, 
     wf_id = (await client.post(f"/api/workflows/initiate/{pid}", headers=physician)).json()["workflow"]["workflow_id"]
     tasks = (await client.get(f"/api/workflows/{wf_id}", headers=physician)).json()["tasks"]
     for task in tasks:
-        await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed"}, headers=physician)
+        await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed", "reason": "Physician override in test"}, headers=physician)
     assert (await client.get(f"/api/workflows/{wf_id}", headers=physician)).json()["status"] == "pending_approval"
 
     await client.put(f"/api/tasks/{tasks[0]['task_id']}", json={"status": "pending"}, headers=physician)

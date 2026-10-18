@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.ai import service as ai_service
 from app.ai.models import AIGeneration, DischargeSummary
 from app.ai.prompts import ACTIVE
-from app.audit.service import write_audit
+from app.audit.service import audit_phi_read, write_audit
 from app.core.config import settings
 from app.core.db import DB
 from app.core.security import AuthUser, CurrentUser, requires
@@ -90,9 +90,12 @@ async def approve_summary(
 
 
 @router.get("/summary/{workflow_id}")
-async def get_summary(workflow_id: str, db: DB, user: AuthUser):
+async def get_summary(workflow_id: str, request: Request, db: DB, user: AuthUser):
     summary = await db.scalar(select(DischargeSummary).where(DischargeSummary.workflow_id == workflow_id))
-    return summary.to_dict() if summary else None
+    if not summary:
+        return None
+    await audit_phi_read(db, user, summary.patient_id, f"discharge summary {summary.summary_id}", request)
+    return summary.to_dict()
 
 
 @router.get("/generations")

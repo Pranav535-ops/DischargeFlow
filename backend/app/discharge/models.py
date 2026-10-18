@@ -58,5 +58,8 @@ class Task(TenantMixin, Base):
     created_by: Mapped[Optional[str]] = mapped_column(String(40))
     completed_by: Mapped[Optional[str]] = mapped_column(String(40))
     completed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    # Set when someone outside the assigned role changed the status (task:override): the latest reason, and by whom.
+    override_reason: Mapped[Optional[str]] = mapped_column(Text)
+    override_by: Mapped[Optional[str]] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)

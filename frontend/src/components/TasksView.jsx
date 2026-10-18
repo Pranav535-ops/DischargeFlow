@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { api, errorMessage } from '@/lib/api';
 import { invalidateDischarge, useMyTasks, usePatients, useTasks } from '@/lib/queries';
+import { canChangeTaskStatus, taskStatusBody } from '@/lib/tasks';
 import { 
   Loader2,
   CheckCircle2,
@@ -54,10 +55,12 @@ const TasksView = () => {
     priority: 2
   });
 
-  const handleTaskUpdate = async (taskId, newStatus) => {
-    setUpdatingTask(taskId);
+  const handleTaskUpdate = async (task, newStatus) => {
+    const body = taskStatusBody(task, user, newStatus);
+    if (!body) return;
+    setUpdatingTask(task.task_id);
     try {
-      await api.put(`/tasks/${taskId}`, { status: newStatus });
+      await api.put(`/tasks/${task.task_id}`, body);
       if (newStatus === 'completed') {
         toast.success('Task completed', { description: 'Task has been marked as complete.' });
       } else if (newStatus === 'in_progress') {
@@ -100,9 +103,9 @@ const TasksView = () => {
   // Three-state toggle: pending → in_progress → completed → completed (locked)
   const handleCheckboxChange = (task) => {
     if (task.status === 'pending') {
-      handleTaskUpdate(task.task_id, 'in_progress');
+      handleTaskUpdate(task, 'in_progress');
     } else if (task.status === 'in_progress') {
-      handleTaskUpdate(task.task_id, 'completed');
+      handleTaskUpdate(task, 'completed');
     }
     // completed is locked
   };
@@ -345,7 +348,7 @@ const TasksView = () => {
             {displayTasks.map((task) => {
               const Icon = getCategoryIcon(task.category);
               const isUpdating = updatingTask === task.task_id;
-              const canEdit = task.assigned_role === user?.role || user?.role === 'admin';
+              const canEdit = canChangeTaskStatus(task, user);
               const patientName = patientMap[task.patient_id] || `Patient …${task.patient_id.slice(-6)}`;
               
               return (
