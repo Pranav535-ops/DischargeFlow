@@ -1,184 +1,112 @@
 # DischargeFlow - Product Requirements Document
 
 ## Project Overview
-DischargeFlow is a Hospital Discharge Management System MVP designed to streamline patient discharge workflows, reduce discharge time from 6-8 hours to under 2 hours, and improve coordination between healthcare staff.
+DischargeFlow is a hospital discharge management system. It aims to cut the time from "medically ready" to "patient
+has left" (often 6–8 hours) toward a target of under 2 hours by coordinating the staff and tasks involved, and to
+improve discharge documentation with physician-approved AI summaries.
 
-## Original Problem Statement
-Build a production-ready Hospital Discharge Management System based on the DischargeFlow specification document with:
-- MVP + AI scope
-- Google social login with role-based access
-- In-app notifications
-- Dark theme
+The original MVP (January 2026, built on the Emergent platform) was rebuilt for production readiness following
+[ADR-001](../docs/architecture/ADR-001-production-architecture.md). This document describes the product as of
+October 2026.
 
 ## User Personas
 
 ### Physician
-- Initiates discharge workflows
-- Generates and approves AI discharge summaries
-- Completes final discharge approval
-- Views patient records and analytics
+- Starts discharge workflows and completes the final discharge
+- Generates, edits and approves AI discharge summaries
+- Views patient records, workflow progress and a patient's audit history
 
 ### Nurse
-- Manages discharge tasks (education, vitals, equipment)
-- Updates patient information
-- Coordinates with other departments
+- Works discharge tasks (education, vitals, equipment, follow-up, billing clearance)
+- Creates and updates patient records and ad-hoc tasks
 - Receives notifications for new discharges
 
 ### Pharmacist
 - Handles medication review and preparation tasks
-- Manages prescription-related workflows
 - Receives notifications for medication tasks
 
 ### Admin
-- Manages user roles and permissions
-- Views system-wide analytics
-- Has access to all system features
+- Manages user roles and integration API keys
+- Views the audit log and verifies its integrity
+- Views operational metrics and AI insights
+- Holds every permission, including patient data erasure
 
-## Core Requirements (Static)
+## Requirements
 
-### Authentication
-- Google OAuth via Emergent Auth
-- Session-based authentication with 7-day expiry
-- Role-based access control (Physician, Nurse, Pharmacist, Admin)
+### Authentication and access
+- Google sign-in through Emergent Auth; new users join as nurse, and an admin assigns roles
+- Short-lived access tokens with a rotating refresh cookie; logout and role changes take effect within seconds
+- Permission-based access (`workflow:manage`, `summary:manage`, ...) mapped to roles in the database
+- Hospitals (tenants) are isolated from each other at the database level
 
-### Patient Management
-- CRUD operations for patients
-- Patient status tracking (Admitted, Pending Discharge, Discharged)
-- Patient search and filtering
+### Patient management
+- Create, view and update patients; status Admitted → Pending Discharge → Discharged
+- GDPR consent and right to erasure
+- Patient identifiers (name, date of birth, diagnosis, MRN) encrypted at rest
 
-### Discharge Workflow
-- Workflow initiation by physicians
-- Task orchestration with 8 standard discharge tasks
-- Progress tracking with completion percentage
-- Estimated discharge time calculation
+### Discharge workflow
+- Physician-initiated workflow with eight standard tasks assigned by role
+- Automatic status changes as tasks open and close; completion requires all tasks done and an approved summary
+- At most one active discharge per patient
 
-### AI-Powered Discharge Summaries
-- Integration with Gemini 3 Flash (via Emergent LLM key)
-- Physician approval workflow for AI-generated content
-- Professional medical documentation format
+### AI discharge summaries
+- Generated from de-identified, minimal facts; structured and validated output
+- Grounding warnings for facts not in the input
+- Physician review, edit and approval before anything reaches the record
+- Provenance for every model call; automated evals guard every prompt or model change
 
-### Task Management
-- Role-based task assignment
-- Priority levels (High, Medium, Low)
-- Task completion tracking
-- Automatic workflow status updates
+### AI assistant
+- Natural-language lookups of patients, tasks, analytics and claims
+- Writes are proposed and must be confirmed by the user
 
-### In-App Notifications
-- Role-based notification routing
-- Real-time notification feed
-- Mark as read functionality
-
-### Analytics Dashboard
-- Patient statistics
-- Workflow metrics
-- Task distribution by role
-- Average discharge time tracking
-
-## What's Been Implemented (Jan 2026)
-
-### Backend (FastAPI)
-- ✅ Authentication system with Google OAuth
-- ✅ User management with RBAC
-- ✅ Patient CRUD operations
-- ✅ Discharge workflow initiation and tracking
-- ✅ Task management with role-based filtering
-- ✅ AI summary generation with Gemini 3 Flash
-- ✅ Notification system
-- ✅ Analytics endpoints
-- ✅ Data seeding for demo
-
-### Frontend (React)
-- ✅ Dark theme UI with clinical design
-- ✅ Login page with Google OAuth
-- ✅ Patient list with search and filters
-- ✅ Patient details view
-- ✅ Discharge workflow view with task checklist
-- ✅ AI summary generation and approval
-- ✅ Tasks view (My Tasks / All Tasks)
-- ✅ Analytics dashboard with charts
-- ✅ Admin panel for user management
-- ✅ Notification center
-- ✅ Responsive sidebar navigation
-
-### Database (MongoDB)
-- ✅ Users collection
-- ✅ User sessions collection
-- ✅ Patients collection
-- ✅ Workflows collection
-- ✅ Tasks collection
-- ✅ Discharge summaries collection
-- ✅ Notifications collection
-
-## Tech Stack
-- **Frontend:** React 19, TailwindCSS, Radix UI
-- **Backend:** FastAPI, Python 3.x
-- **Database:** MongoDB
-- **AI:** Gemini 3 Flash via Emergent LLM Key
-- **Auth:** Emergent Google OAuth
-
-## Prioritized Backlog
-
-### P0 (Critical) - Done
-- [x] User authentication
-- [x] Patient management
-- [x] Discharge workflow
-- [x] Task management
-- [x] AI discharge summaries
-
-### P1 (High Priority) - Future
-- [ ] Email/SMS notifications (currently in-app only)
-- [ ] Medication management integration
-- [ ] Billing system integration
-- [ ] Follow-up appointment scheduling
-
-### P2 (Medium Priority) - Future
-- [ ] Patient education materials library
-- [ ] Print discharge documents
-- [ ] Workflow templates customization
-- [ ] Advanced analytics and reporting
-- [ ] Audit logging for HIPAA compliance
-
-### P3 (Low Priority) - Future
-- [ ] EHR/EMR integration
-- [ ] Mobile app version
-- [ ] Multi-language support
-- [ ] Custom branding
-
-## Next Tasks
-1. Add email notifications using SendGrid/Resend
-2. Implement medication management module
-3. Add discharge document printing
-4. Create workflow templates editor
-5. Implement audit logging
-
-## API Endpoints Summary
-
-### Authentication
-- `POST /api/auth/session` - Exchange session_id for token
-- `GET /api/auth/me` - Get current user
-- `POST /api/auth/logout` - Logout
-
-### Patients
-- `GET /api/patients` - List patients
-- `GET /api/patients/{id}` - Get patient
-- `POST /api/patients` - Create patient
-- `PUT /api/patients/{id}` - Update patient
-
-### Workflows
-- `POST /api/workflows/initiate/{patient_id}` - Start discharge
-- `GET /api/workflows` - List workflows
-- `GET /api/workflows/{id}` - Get workflow with tasks
-- `PUT /api/workflows/{id}/complete` - Complete discharge
-
-### Tasks
-- `GET /api/tasks` - List all tasks
-- `GET /api/tasks/my` - Get my tasks
-- `PUT /api/tasks/{id}` - Update task
-
-### AI
-- `POST /api/ai/generate-summary` - Generate AI summary
-- `PUT /api/ai/approve-summary/{id}` - Approve summary
+### Notifications
+- In-app, routed by role, delivered live, with read tracking
 
 ### Analytics
-- `GET /api/analytics/dashboard` - Dashboard stats
-- `GET /api/analytics/tasks-by-role` - Task distribution
+- Dashboard KPIs and task distribution for everyone
+- Operational metrics (throughput, approval wait, task SLA breaches) and AI explanations of aggregate trends for admins
+
+### Insurance
+- Claims per patient with status tracking and reports (denial rate, by insurer)
+
+### Compliance
+- Append-only, tamper-evident audit log of sensitive actions, with verification
+- PHI kept out of logs and out of AI prompts
+
+### Interoperability
+- Read-only FHIR R4 API for patients, encounters, tasks and approved summaries
+- Inbound HL7 v2 ADT: admissions (A01) create patients; discharges (A03) complete the workflow when it is ready
+
+## What's Been Implemented (October 2026)
+
+Everything in the Requirements section above is implemented and deployed at https://dischargeflow.vercel.app, with
+synthetic data only. See the [README](../README.md) for features and architecture and [docs/api.md](../docs/api.md)
+for the endpoints.
+
+### Tech stack
+- **Frontend:** React 19, Vite, TanStack Query, React Router, Tailwind + shadcn/ui (Radix), Recharts
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2 (async), Alembic
+- **Database:** PostgreSQL 16 (Neon in production; SQLite for local development and tests)
+- **AI:** provider-agnostic gateway with a deterministic mock adapter (used in production today) and Claude via the
+  Anthropic API or Amazon Bedrock
+- **Auth:** Emergent Google OAuth, then the app's own JWT access tokens and rotating refresh sessions
+- **Hosting:** Vercel; Terraform for AWS (ECS Fargate, RDS, CloudFront) is written but not applied
+
+## Backlog
+
+### Waiting on an AWS account and a BAA
+- [ ] Real patient data (requires a BAA with the cloud and model provider)
+- [ ] Cognito sign-in with MFA for admins and physicians
+- [ ] Key-encryption key in AWS KMS
+- [ ] Asynchronous AI jobs (outbox → SQS → worker)
+- [ ] Apply the Terraform in `infra/`
+
+### Product
+- [ ] Email/SMS notifications (in-app only today)
+- [ ] Medication management integration
+- [ ] Follow-up appointment scheduling
+- [ ] Printable discharge documents
+- [ ] Customizable workflow templates
+- [ ] Admin screen for integration clients (API only today)
+- [ ] More HL7 ADT events (A02 transfer, A08 update, A11/A13 cancellations) and a FHIR write API
+- [ ] Mobile app, multi-language support, custom branding
