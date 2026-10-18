@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import DB, utcnow
+from app.core.observability import user_id_var
 from app.core.tenancy import use_tenant
 from app.identity.models import AuthSession, User
 from app.identity.permissions import ROLES, permissions_for
@@ -89,6 +90,7 @@ async def get_current_user(request: Request, db: DB) -> CurrentUser:
     # Bind the request's transaction to the token's tenant before reading any tenant-scoped row.
     await use_tenant(db, claims["tid"])
 
+    user_id_var.set(claims["sub"])  # for log correlation only; authorization still waits for the checks below
     cached = _identity_cache.get(claims["sid"])
     if cached and cached[0] > time.monotonic() and cached[1].user_id == claims["sub"]:
         return cached[1]

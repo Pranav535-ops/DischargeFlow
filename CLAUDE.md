@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-DischargeFlow is a hospital discharge management system: a FastAPI backend (`backend/app/`) on SQLAlchemy + PostgreSQL, and a CRA/craco React 19 frontend (`frontend/`). It was scaffolded on the Emergent platform (`.emergent/`, Emergent Auth). Product requirements are in `memory/PRD.md`, and the 12-week roadmap is in `USER_STORIES_12_WEEKS.md`. **The target architecture and phased plan are in `docs/architecture/ADR-001-production-architecture.md`.** Phase 1 (modular backend + Postgres + Alembic + tests) and Phase 2 (hardened sessions, DB-backed permissions, tenant RLS, PHI encryption, tamper-evident audit) are done. Phase 2 kept the Emergent Google login rather than switching to Cognito. Phase 3 (governed AI layer: LLM gateway, de-identification, structured summaries with provenance, golden-set evals, tool-calling assistant) is done except the async outbox/SQS worker (item 11). Later phases (Terraform/ECS, frontend, FHIR) are not started.
+DischargeFlow is a hospital discharge management system: a FastAPI backend (`backend/app/`) on SQLAlchemy + PostgreSQL, and a CRA/craco React 19 frontend (`frontend/`). It was scaffolded on the Emergent platform (`.emergent/`, Emergent Auth). Product requirements are in `memory/PRD.md`, and the 12-week roadmap is in `USER_STORIES_12_WEEKS.md`. **The target architecture and phased plan are in `docs/architecture/ADR-001-production-architecture.md`.** Phase 1 (modular backend + Postgres + Alembic + tests) and Phase 2 (hardened sessions, DB-backed permissions, tenant RLS, PHI encryption, tamper-evident audit) are done. Phase 2 kept the Emergent Google login rather than switching to Cognito. Phase 3 (governed AI layer: LLM gateway, de-identification, structured summaries with provenance, golden-set evals, tool-calling assistant) is done except the async outbox/SQS worker (item 11). Phase 4 (Terraform for AWS, deploy pipeline, observability, runbooks) is written and validated but not applied: there is no AWS account, so production still runs on Vercel + Neon. Phase 5 (frontend, FHIR) is not started.
 
 `project_implementation_plan.md` predates the repo audit (it assumes Node and microservices) and is superseded by ADR-001. `project_overview.md` describes a different project (SkillGraph V2). Ignore both.
 
@@ -17,6 +17,8 @@ python -m app.cli migrate            # alembic upgrade head + encrypt any plaint
 python -m app.cli seed               # idempotent demo patients; refuses in production without --force
 python -m uvicorn server:app --port 8000 --reload
 python -m pytest                     # full suite, in-memory SQLite
+ruff check .                         # lint gate in CI (errors only, see ruff.toml)
+python -m app.cli rewrap-deks        # PHI KEK rotation step, see docs/runbooks/rotate-secrets.md
 python -m app.ai.evals               # golden-set AI evals on the mock adapter (CI gate); --provider anthropic --model claude-haiku-5-5 for a real model
 python -m pytest tests/test_discharge_workflow.py::test_full_discharge_happy_path   # single test
 alembic revision --autogenerate -m "describe change"   # after editing models; review the generated file
@@ -28,7 +30,7 @@ Frontend (from `frontend/`): `npm start` (port 3000), `npm run build`, `npm test
 Full stack: `docker compose up --build` starts Postgres, runs a one-shot `migrate` service, then the backend (with `SEED_ON_STARTUP=true`) and the frontend.
 
 ## Configuration (`app/core/config.py`)
-`APP_ENV` (`development` | `test` | `production`; anything else counts as production), `DATABASE_URL`, `PHI_KEK` (base64 of 32 bytes), `JWT_SECRET`, `CORS_ORIGINS` (comma-separated), `DEFAULT_TENANT_ID` (default `default`), `AUTO_MIGRATE`, `SEED_ON_STARTUP`, `LLM_PROVIDER` (`mock` | `anthropic` | `bedrock` | `none`; defaults to `mock` in development/test and `none` elsewhere), `ANTHROPIC_API_KEY`, `AWS_REGION` (Bedrock), `LLM_SUMMARY_MODEL` (default `claude-sonnet-5-5`), `LLM_ASSISTANT_MODEL` (default `claude-haiku-5-5`).
+`APP_ENV` (`development` | `test` | `production`; anything else counts as production), `DATABASE_URL`, `PHI_KEK` (base64 of 32 bytes), `JWT_SECRET`, `CORS_ORIGINS` (comma-separated), `DEFAULT_TENANT_ID` (default `default`), `AUTO_MIGRATE`, `SEED_ON_STARTUP`, `LLM_PROVIDER` (`mock` | `anthropic` | `bedrock` | `none`; defaults to `mock` in development/test and `none` elsewhere), `ANTHROPIC_API_KEY`, `AWS_REGION` (Bedrock), `LLM_SUMMARY_MODEL` (default `claude-sonnet-5-5`), `LLM_ASSISTANT_MODEL` (default `claude-haiku-5-5`), `LOG_FORMAT` (`json` default in production, `text` in dev), `LOG_LEVEL`, `PHI_KEK_PREVIOUS` (comma-separated retired KEKs during rotation), `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` (used to build the URL when `DATABASE_URL` is unset, as on ECS), `OTEL_EXPORTER_OTLP_ENDPOINT` (turns on tracing if `requirements-otel.txt` is installed).
 - In production, a missing `DATABASE_URL` or `PHI_KEK` fails at settings load. A missing `JWT_SECRET` fails in `create_app()` only, so migrations and the CLI run without it.
 - In dev these default to `backend/dischargeflow.db` (SQLite), a fixed development-only KEK, and an ephemeral JWT secret (sessions die on restart).
 - `normalize_database_url` accepts provider URLs (`postgres://…?sslmode=require`) and converts them for asyncpg. `-pooler` hosts get PgBouncer-safe settings.
@@ -74,6 +76,8 @@ Key conventions:
 - **Evals (`ai/evals/`):** `golden_set.json` holds synthetic patients with expected and forbidden facts; `python -m app.ai.evals` runs them through `run_summary_model` (the production path) and exits non-zero on any hallucination, PHI leak, failure, or coverage below the threshold. A prompt or model change must keep it green.
 - **Assistant (`chatbot/`):** an LLM tool-calling loop over `chatbot/tools.py`, which wraps the same service functions as the HTTP API (`discharge.service.create_task`/`update_task`/`initiate_discharge`, `insurance.service.create_claim`). Each tool declares the permission its endpoint requires (checked with `security.ensure_permission`) and every call is audited. Write tools never run from the model: they create an `assistant_actions` proposal that the same user confirms (`POST /api/chatbot/actions/{id}/confirm`, single use, 10-minute expiry, permission re-checked). Tool results are de-identified and wrapped in `<tool_data>` as untrusted data. A new tool needs an args model, its HTTP permission, and a test.
 
+- **Logging (`core/observability.py`):** never log patient fields, request bodies, prompts or model output. Log lines are JSON in production with `request_id`, `tenant_id` and `user_id` attached automatically, and a PHI scrubber redacts emails, phones, SSNs, MRNs and dates as a backstop. Pass structured fields with `extra={...}`.
+
 ## Frontend architecture
 - `App.js` routes only `/login` and `/dashboard`. If the URL hash contains `session_id=`, `AuthCallback` renders before routing runs.
 - `pages/Dashboard.js` is a single-page shell that switches between `components/*View.js` with `activeView` state. A new screen is a view component wired into `Dashboard` and `Sidebar`.
@@ -81,6 +85,7 @@ Key conventions:
 - UI: shadcn/ui (Radix) components in `components/ui/`, Tailwind, a forced dark theme, lucide icons and Recharts. The `@/` alias points to `src/`. Design tokens are in `design_guidelines.json`.
 
 ## Deployment notes
+- AWS (not yet applied): `infra/` (see `infra/README.md`), `.github/workflows/deploy.yml` (dormant until the `AWS_DEPLOY_ENABLED` repository variable is `true`), `scripts/deploy/ecs_deploy.sh`, `scripts/smoke_test.py`, and runbooks in `docs/runbooks/`. Migrations must stay compatible with the previous release, because the deploy migrates before rolling out.
 - `vercel.json` serves `backend/server.py` as a Python function. `server.py` puts `backend/` on `sys.path` because Vercel imports it by path from the repo root.
 - Production runs on Neon Postgres via the Vercel integration, which injects `DATABASE_URL`. Preview deployments get their own Neon branch.
 - Vercel env: `APP_ENV=production`, `JWT_SECRET`, `PHI_KEK`, `CORS_ORIGINS`, `AUTO_MIGRATE=true`. On Vercel, `make_engine` uses `NullPool`.

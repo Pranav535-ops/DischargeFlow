@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars (not committed).
+domain         = "dischargeflow.example.org"
+hosted_zone_id = "Z0123456789EXAMPLE"
+alarm_emails   = ["oncall@example.org"]
