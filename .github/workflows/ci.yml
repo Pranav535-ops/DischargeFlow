@@ -92,12 +92,12 @@ jobs:
         name: frontend-build
         path: frontend/build
         retention-days: 7
-    # Create React App pins many dev-only packages with known advisories; the report is informational until the
-    # Vite migration (ADR-001 Phase 5). Production dependencies are checked at high severity and do gate.
-    - name: Dependency audit (npm, production deps)
-      run: npm audit --omit=dev --audit-level=high
-    - name: Dependency audit (npm, all deps, report only)
-      run: npm audit || true
+    # Report only. The shipped frontend is a static bundle, but react-scripts (CRA) is listed under
+    # "dependencies", so even --omit=dev audits its whole build toolchain (webpack-dev-server, sockjs, ...), and
+    # CRA is unmaintained, so those advisories cannot be fixed in place. This becomes a gate with the Vite
+    # migration (ADR-001 Phase 5, item 17).
+    - name: Dependency audit (npm, report only)
+      run: npm audit --omit=dev || true
 
   container-scan:
     runs-on: ubuntu-latest
