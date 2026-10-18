@@ -325,6 +325,7 @@ AI jobs, shared caches, and applying `infra/`. Production runs the AI on the moc
 | Document | Contents |
 |---|---|
 | 🏛 [ADR-001](docs/architecture/ADR-001-production-architecture.md) | Architecture decision, options considered, phased plan and what each phase delivered |
+| 🏥 [ADR-002](docs/architecture/ADR-002-hospital-readiness.md) | Design validated against real-hospital use: findings, workflow gaps, and the roadmap for Phases 7–9 |
 | 🔌 [API reference](docs/api.md) | Every endpoint with the permission it requires, and the HL7 ACK contract |
 | 🛠 [CLAUDE.md](CLAUDE.md) | Developer guide: commands, configuration, conventions for every module |
 | 📋 [PRD](memory/PRD.md) | Product requirements, personas and backlog |
