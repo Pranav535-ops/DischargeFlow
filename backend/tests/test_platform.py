@@ -194,3 +194,46 @@ async def test_upgrade_from_phase1_data_encrypts_and_chains(migration_url):
         assert report == {"valid": True, "entries": 3, "broken_at_seq": None}
     await eng.dispose()
     _alembic("downgrade", "base", database_url=migration_url)
+
+
+@pytest.mark.anyio
+async def test_upgrade_encrypts_phase3_discharge_summaries(migration_url):
+    """0004-era plaintext summaries (structured as JSON) come out of `app.cli migrate` encrypted and readable."""
+    from app.ai.models import DischargeSummary
+
+    await _reset_database(migration_url)
+    assert _alembic("upgrade", "0004", database_url=migration_url).returncode == 0
+
+    eng = make_engine(migration_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        await conn.execute(text(
+            "INSERT INTO patients (patient_id, tenant_id, name, date_of_birth, admission_date, room_number, diagnosis, "
+            "attending_physician, status, gdpr_erased, created_at, updated_at) VALUES ('pat_phase3aaaaa', 'default', "
+            "'Summary Sam', '1950-03-03', '2026-01-01', '4', 'Pneumonia', 'Dr P', 'admitted', false, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        ))
+        await conn.execute(text(
+            "INSERT INTO workflows (workflow_id, tenant_id, patient_id, initiated_by, status, started_at) VALUES "
+            "('wf_phase3aaaaaa', 'default', 'pat_phase3aaaaa', 'u1', 'in_progress', CURRENT_TIMESTAMP)"
+        ))
+        await conn.execute(text(
+            "INSERT INTO discharge_summaries (summary_id, tenant_id, workflow_id, patient_id, content, generated_by, "
+            "approved, created_at, structured, original_content) VALUES ('sum_phase3aaaaa', 'default', "
+            "'wf_phase3aaaaaa', 'pat_phase3aaaaa', 'Summary Sam: amoxicillin', 'mock', false, CURRENT_TIMESTAMP, "
+            "'{\"discharge_diagnoses\": [\"Pneumonia\"]}', 'Summary Sam: amoxicillin')"
+        ))
+
+    result = _run(["app.cli", "migrate"], migration_url)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"phi_rows_encrypted": 2' in result.stdout  # the patient and its summary
+
+    factory = async_sessionmaker(eng, expire_on_commit=False)
+    async with factory() as session:
+        raw = (await session.execute(text(
+            "SELECT content, original_content, structured FROM discharge_summaries"))).one()
+        assert all(crypto.is_encrypted(v) for v in raw)
+        summary = await session.get(DischargeSummary, "sum_phase3aaaaa")
+        assert summary.content == summary.original_content == "Summary Sam: amoxicillin"
+        assert summary.structured == {"discharge_diagnoses": ["Pneumonia"]}
+    await eng.dispose()
+    assert _alembic("downgrade", "base", database_url=migration_url).returncode == 0

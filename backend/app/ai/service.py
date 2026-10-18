@@ -116,7 +116,8 @@ async def generate_discharge_summary(db: AsyncSession, user: CurrentUser, patien
         return result
 
     db.add(DischargeSummary(
-        workflow_id=workflow.workflow_id, patient_id=patient.patient_id, content=result.content,
+        # `patient` first: the text fields are encrypted with its data key as they are set.
+        patient=patient, workflow_id=workflow.workflow_id, content=result.content,
         original_content=result.content, structured=result.doc.model_dump(), generation_id=generation.generation_id,
         generated_by="ai" if client.provider != "mock" else "mock",
     ))

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.ai.models import DischargeSummary
 from app.audit.service import write_audit
 from app.core.db import DB
 from app.core.security import AuthUser, CurrentUser, requires
@@ -94,11 +95,13 @@ async def update_patient_consent(patient_id: str, body: ConsentUpdate, request: 
 async def delete_patient_data(
     patient_id: str, request: Request, db: DB, user: CurrentUser = Depends(requires("patient:erase"))
 ):
-    """GDPR right-to-erasure: destroy the patient's data key and overwrite identifiers.
+    """GDPR right-to-erasure: destroy the patient's data key and overwrite identifiers and discharge summaries.
 
     The row stays so audit references remain valid.
     """
     patient = await get_patient_or_404(db, patient_id)
     patient.shred()
+    for summary in await db.scalars(select(DischargeSummary).where(DischargeSummary.patient_id == patient_id)):
+        summary.shred()
     await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data key destroyed and identifiers erased", request)
     return {"message": "Patient data erased per GDPR right-to-be-forgotten"}

@@ -74,6 +74,7 @@ Key conventions:
   - `Patient.name`, `date_of_birth` and `diagnosis` are synonyms over ciphertext columns: AES-256-GCM with a per-patient data key wrapped by `PHI_KEK`, with the patient id and field as associated data (`core/crypto.py`).
   - They can't be filtered or sorted in SQL; load and filter in Python, as the chatbot's patient lookup does.
   - `Patient.shred()` (erasure) destroys the key and overwrites the fields.
+  - `DischargeSummary.content`, `original_content`, `edit_diff` and `structured` (ciphertext of its JSON) use the same scheme with the patient's data key (AAD: summary id + field); the `patient` relationship is always joined so the key is at hand. Set `patient` before the text when constructing one. Erasure also calls `DischargeSummary.shred()`, and a summary whose patient key is gone reads as `[REDACTED]` (`structured` as `None`). `app.cli migrate` backfills legacy plaintext summaries.
   - Never log or return `phi_dek`. `__api_exclude__` keeps it out of `to_dict()`.
 - **Audit:**
   - `audit.service.write_audit` locks the tenant's `audit_chain_heads` row and appends an entry whose SHA-256 covers its fields plus the previous hash. `GET /api/audit/verify` recomputes the chain.
