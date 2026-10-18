@@ -1,15 +1,51 @@
+# Weekly dependency updates for every ecosystem in the repo (ADR-001 Phase 6, item 23).
+# Minor and patch updates are grouped into one PR per ecosystem; major updates arrive one by one.
 version: 2
 updates:
-  - package-ecosystem: "npm" 
-    directory: "/frontend" 
+  - package-ecosystem: "npm"
+    directory: "/frontend"
     schedule:
       interval: "weekly"
     assignees:
       - "ftaakash"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "pip"
     directory: "/backend"
     schedule:
       interval: "weekly"
+    assignees:
+      - "ftaakash"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - "ftaakash"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/backend"
+      - "/frontend"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - "ftaakash"
+
+  - package-ecosystem: "terraform"
+    directories:
+      - "/infra/envs/staging"
+      - "/infra/envs/prod"
+    schedule:
+      interval: "monthly"
     assignees:
       - "ftaakash"

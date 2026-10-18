@@ -132,6 +132,11 @@ async def get_db() -> AsyncIterator[AsyncSession]:
             raise
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """For code that outlives the request transaction (streaming responses open short sessions of their own)."""
+    return SessionLocal
+
+
 # scope="function": commit runs before the response is sent, so a failed commit surfaces as an error
 # instead of a 200 the client believes. Every route takes `db: DB`.
 DB = Annotated[AsyncSession, Depends(get_db, scope="function")]

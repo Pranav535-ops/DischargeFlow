@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.ai.models import DischargeSummary
 from app.audit.service import write_audit
+from app.core.config import VERSION
 from app.core.db import DB
 from app.core.security import AuthUser
 from app.discharge.models import Task, Workflow
@@ -48,8 +49,6 @@ async def _audit(db, user, request: Request, what: str, count: int) -> None:
 
 @router.get("/metadata", name="fhir_metadata")
 async def metadata(request: Request):
-    from app.main import VERSION
-
     return _fhir(fhir.capability_statement(_base_url(request), VERSION))
 
 

@@ -4,7 +4,8 @@ These numbers are the only input to the AI insights feature (ai/insights.py), so
 no names, ids, free text or dates of individual records. Each group carries its sample size `n`, and groups smaller
 than MIN_GROUP_SIZE are reported without averages so a single patient's timeline can't be read off a metric.
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
 from statistics import mean, median
 
 from sqlalchemy import func, select
@@ -17,9 +18,21 @@ from app.discharge.models import Task, Workflow
 MIN_GROUP_SIZE = 3
 WINDOW_TASKS = 2000
 
+# Task SLA targets in hours by priority (1 high, 2 medium, 3 low). Policy defaults for the operational metrics, not
+# measurements; a hospital would set its own.
+TASK_SLA_HOURS = {1: 4, 2: 12, 3: 24}
+PRIORITY_NAMES = {1: "high", 2: "medium", 3: "low"}
 
-def _hours(delta) -> float:
+
+def _hours(delta: timedelta) -> float:
     return delta.total_seconds() / 3600
+
+
+def _span(start: datetime | None, end: datetime | None) -> float:
+    """Hours between two timestamps the query has already filtered to be non-null."""
+    if start is None or end is None:
+        raise ValueError("timestamp unexpectedly NULL")
+    return _hours(end - start)
 
 
 def _stats(values: list[float]) -> dict:
@@ -40,13 +53,13 @@ async def discharge_aggregates(db: AsyncSession) -> dict:
     dwell_by_role: dict[str, list[float]] = defaultdict(list)
     dwell_by_category: dict[str, list[float]] = defaultdict(list)
     for role, category, created, done in completed:
-        dwell_by_role[role].append(_hours(done - created))
-        dwell_by_category[category].append(_hours(done - created))
+        dwell_by_role[role].append(_span(created, done))
+        dwell_by_category[category].append(_span(created, done))
     open_age_by_role: dict[str, list[float]] = defaultdict(list)
     for role, created in open_rows:
         open_age_by_role[role].append(_hours(now - created))
 
-    durations = [_hours(done - started) for started, done in await db.execute(
+    durations = [_span(started, done) for started, done in await db.execute(
         select(Workflow.started_at, Workflow.completed_at)
         .where(Workflow.status == "completed", Workflow.completed_at.is_not(None))
         .order_by(Workflow.completed_at.desc()).limit(500))]
@@ -72,6 +85,75 @@ async def discharge_aggregates(db: AsyncSession) -> dict:
             "approved": summaries[1],
             "avg_edit_similarity": round(float(summaries[2]), 3) if summaries[2] is not None else None,
             "failed_generations": failed_generations,
+        },
+    }
+
+
+def _sla_hours(priority: int | None) -> float:
+    return TASK_SLA_HOURS.get(priority or 2, TASK_SLA_HOURS[2])
+
+
+async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
+    """Discharge throughput, time waiting for approval and task SLA breaches over the last `days` days.
+
+    Same rules as discharge_aggregates: counts and durations only, and groups under MIN_GROUP_SIZE get no averages.
+    """
+    now = utcnow()
+    since = now - timedelta(days=days)
+
+    started = await db.scalar(select(func.count()).select_from(Workflow).where(Workflow.started_at >= since))
+    completed = list(await db.execute(
+        select(Workflow.started_at, Workflow.completed_at, Workflow.pending_approval_seconds)
+        .where(Workflow.status == "completed", Workflow.completed_at >= since)))
+    per_day = Counter(done.date().isoformat() for _, done, _ in completed if done)
+    waits = [secs / 3600 for _, _, secs in completed if secs is not None]
+    waiting_now = [_span(entered, now) for (entered,) in await db.execute(
+        select(Workflow.pending_approval_since)
+        .where(Workflow.status == "pending_approval", Workflow.pending_approval_since.is_not(None)))]
+    waiting_count = await db.scalar(
+        select(func.count()).select_from(Workflow).where(Workflow.status == "pending_approval"))
+
+    open_breaches: dict[str, Counter] = defaultdict(Counter)
+    open_total = 0
+    for role, priority, created in await db.execute(
+            select(Task.assigned_role, Task.priority, Task.created_at).where(Task.status != "completed")):
+        open_total += 1
+        if _hours(now - created) > _sla_hours(priority):
+            open_breaches[role][PRIORITY_NAMES.get(priority, "medium")] += 1
+    done_by_role: dict[str, list[bool]] = defaultdict(list)
+    for role, priority, created, done in await db.execute(
+            select(Task.assigned_role, Task.priority, Task.created_at, Task.completed_at)
+            .where(Task.status == "completed", Task.completed_at >= since).limit(WINDOW_TASKS)):
+        done_by_role[role].append(_span(created, done) > _sla_hours(priority))
+
+    def _rate(flags: list[bool]) -> dict:
+        out: dict = {"n": len(flags), "breached": sum(flags)}
+        if len(flags) >= MIN_GROUP_SIZE:
+            out["breach_rate"] = round(sum(flags) / len(flags), 3)
+        return out
+
+    all_done = [f for flags in done_by_role.values() for f in flags]
+    return {
+        "window_days": days,
+        "throughput": {
+            "discharges_started": started,
+            "discharges_completed": len(completed),
+            "completed_per_day": dict(sorted(per_day.items())),
+            "discharge_duration": _stats([_span(start, done) for start, done, _ in completed]),
+        },
+        "pending_approval": {
+            # Completed discharges whose approval wait was tracked (those started before migration 0006 were not).
+            "wait": _stats(waits),
+            "untracked_completed": len(completed) - len(waits),
+            "waiting_now": waiting_count,
+            "oldest_waiting_hours": round(max(waiting_now), 1) if len(waiting_now) >= MIN_GROUP_SIZE else None,
+        },
+        "task_sla": {
+            "targets_hours": {PRIORITY_NAMES[p]: h for p, h in TASK_SLA_HOURS.items()},
+            "open_tasks": open_total,
+            "open_breaching_by_role": {r: dict(sorted(c.items())) for r, c in sorted(open_breaches.items())},
+            "completed": _rate(all_done),
+            "completed_by_role": {r: _rate(v) for r, v in sorted(done_by_role.items())},
         },
     }
 
