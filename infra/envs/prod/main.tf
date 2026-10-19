@@ -32,6 +32,15 @@ variable "github_repository" {
   default = "ftaakash/DischargeFlow"
 }
 variable "alarm_emails" { type = list(string) }
+variable "sso_saml_metadata_url" {
+  description = "The hospital directory's SAML metadata URL (empty: no federation yet)"
+  type        = string
+  default     = ""
+}
+variable "sso_provider_name" {
+  type    = string
+  default = "Hospital sign-in"
+}
 
 module "stack" {
   source    = "../../modules/stack"
@@ -43,6 +52,11 @@ module "stack" {
   hosted_zone_id    = var.hosted_zone_id
   github_repository = var.github_repository
   alarm_emails      = var.alarm_emails
+  # ADR-002 item 5: Claude on Bedrock, inside the AWS account under the BAA (request model access first).
+  llm_provider = "bedrock"
+  # ADR-002 item 2: hospital SSO through Cognito.
+  sso_saml_metadata_url = var.sso_saml_metadata_url
+  sso_provider_name     = var.sso_provider_name
   # Reuses the GitHub OIDC provider created by the staging stack.
   create_oidc_provider = false
 
@@ -57,3 +71,5 @@ module "stack" {
 
 output "github_environment_variables" { value = module.stack.github_environment_variables }
 output "secret_arns" { value = module.stack.secret_arns }
+output "sso" { value = module.stack.sso }
+output "phi_kms_key_arn" { value = module.stack.phi_kms_key_arn }
