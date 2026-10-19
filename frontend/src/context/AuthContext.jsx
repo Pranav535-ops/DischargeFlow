@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api, refreshAccessToken, setAccessToken, setClientLocked } from '@/lib/api';
 import { LOCK_KEY, broadcastLock, markActivity, readLastActivity, useIdleTimer } from '@/lib/idle';
+import { SSO_CALLBACK_PATH, fetchAuthConfig, preferredProvider, startSso } from '@/lib/sso';
 
 const AuthContext = createContext(null);
 
@@ -99,7 +100,8 @@ export const AuthProvider = ({ children }) => {
 
     // CRITICAL: If returning from OAuth callback, skip the refresh check.
     // AuthCallback will exchange the session_id and establish the session first.
-    if (window.location.hash?.includes('session_id=')) {
+    // The same for hospital SSO: SsoCallback redeems the code first.
+    if (window.location.hash?.includes('session_id=') || window.location.pathname === SSO_CALLBACK_PATH) {
       setLoading(false);
     } else {
       checkAuth();
@@ -111,16 +113,46 @@ export const AuthProvider = ({ children }) => {
     };
   }, [checkAuth, lock]);
 
-  const login = () => {
+  const saveReturnPath = () => {
     try {
       const here = window.location.pathname + window.location.search;
       if (here.startsWith('/') && !here.startsWith('//') && here !== '/login') sessionStorage.setItem(RETURN_TO_KEY, here);
     } catch {
       // Storage blocked: sign-in lands on the dashboard.
     }
+  };
+
+  // The demo Google login (Emergent): only offered while no hospital identity provider is configured.
+  const loginWithEmergent = () => {
+    saveReturnPath();
     // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     const redirectUrl = window.location.origin + '/dashboard';
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  };
+
+  // Hospital single sign-on (ADR-002 item 2).
+  const loginWithSso = async (provider) => {
+    saveReturnPath();
+    await startSso(provider);
+  };
+
+  // Sign in the way this deployment offers (the lock screen's button): the hospital's identity provider when one is
+  // configured, else the demo login. With several hospitals and none used here before, the login page picks.
+  const login = async () => {
+    let config = { providers: [], emergent: true };
+    try {
+      config = await fetchAuthConfig();
+    } catch {
+      // Config unavailable: fall back to the login page, which retries.
+      saveReturnPath();
+      window.location.href = '/login';
+      return;
+    }
+    const provider = preferredProvider(config.providers || []);
+    if (provider) return loginWithSso(provider);
+    if (config.emergent && !(config.providers || []).length) return loginWithEmergent();
+    saveReturnPath();
+    window.location.href = '/login';
   };
 
   const logout = async () => {
@@ -145,15 +177,23 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const exchangeSsoCode = async (body) => {
+    const response = await api.post('/auth/oidc/callback', body);
+    return applySession(response.data);
+  };
+
   return (
     <AuthContext.Provider value={{
       user,
       setUser,
       loading,
       login,
+      loginWithEmergent,
+      loginWithSso,
       logout,
       checkAuth,
       exchangeSession,
+      exchangeSsoCode,
       lock,
       locked,
       idleLockSeconds,

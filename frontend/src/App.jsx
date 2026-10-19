@@ -6,6 +6,8 @@ import { queryClient } from './lib/queries';
 import { Toaster } from './components/ui/sonner';
 import LoginPage from './pages/LoginPage';
 import AuthCallback from './pages/AuthCallback';
+import SsoCallback from './pages/SsoCallback';
+import { SSO_CALLBACK_PATH } from './lib/sso';
 import { LockGate } from './pages/LockScreen';
 import AppLayout from './pages/AppLayout';
 import PendingApproval from './pages/PendingApproval';
@@ -72,6 +74,7 @@ const AppRouter = () => {
   return (
     <Routes>
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+      <Route path={SSO_CALLBACK_PATH} element={<SsoCallback />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={page(<HomeView />)} />
         <Route path="/patients" element={page(<PatientList />)} />
