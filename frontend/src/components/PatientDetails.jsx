@@ -3,7 +3,10 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
-import { invalidateDischarge, keys, queryClient, usePatient, usePatientWorkflow } from '@/lib/queries';
+import {
+  invalidateDischarge, isBreakGlassError, keys, queryClient, usePatient, usePatientWorkflow, useReadOnly, useUnits,
+} from '@/lib/queries';
+import BreakGlassPanel from './BreakGlassPanel';
 import { 
   ArrowLeft, 
   User, 
@@ -24,8 +27,11 @@ const PatientDetails = () => {
   const { patientId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { data: localPatient, isLoading: patientLoading, isError } = usePatient(patientId);
+  const readOnly = useReadOnly();
+  const { data: localPatient, isLoading: patientLoading, isError, error } = usePatient(patientId);
   const { data: workflow, isLoading: loading } = usePatientWorkflow(patientId);
+  const { data: units = [] } = useUnits();
+  const unit = units.find(u => u.unit_id === localPatient?.unit_id);
   const [initiating, setInitiating] = useState(false);
   const onBack = () => navigate('/patients');
 
@@ -80,6 +86,7 @@ const PatientDetails = () => {
       </div>
     );
   }
+  if (isBreakGlassError(error)) return <BreakGlassPanel patientId={patientId} onBack={onBack} />;
   if (isError || !localPatient) {
     return (
       <div className="text-center py-16">
@@ -116,12 +123,16 @@ const PatientDetails = () => {
               <h1 className="text-2xl font-semibold text-zinc-50" style={{ fontFamily: 'Outfit, sans-serif' }}>
                 {localPatient.name}
               </h1>
-              <p className="text-sm text-zinc-500 mt-1">Patient ID: {localPatient.patient_id}</p>
+              <p className="text-sm text-zinc-500 mt-1">
+                Patient ID: {localPatient.patient_id}
+                {unit && <span data-testid="patient-unit"> · Unit {unit.code}</span>}
+              </p>
               <div className="mt-2">
                 {canEditStatus ? (
                   <select
                     value={localPatient.status}
                     onChange={(e) => handleStatusChange(e.target.value)}
+                    disabled={readOnly}
                     className="bg-zinc-800 text-zinc-100 text-sm rounded border border-zinc-700 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
                     <option value="admitted">Admitted</option>
@@ -139,7 +150,7 @@ const PatientDetails = () => {
             <Button
               data-testid="initiate-discharge-btn"
               onClick={handleInitiateDischarge}
-              disabled={initiating}
+              disabled={initiating || readOnly}
               className="bg-blue-600 hover:bg-blue-500"
             >
               {initiating ? (

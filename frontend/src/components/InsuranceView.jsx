@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { toast } from 'sonner';
 import { api, errorMessage } from '@/lib/api';
-import { queryClient, useClaims, useInsuranceReports, usePatients } from '@/lib/queries';
+import { queryClient, useClaims, useInsuranceReports, usePatients, useReadOnly } from '@/lib/queries';
 import { useAuth } from '../context/AuthContext';
 import {
   DollarSign, FileText, Plus, RefreshCw, TrendingUp,
@@ -38,6 +38,7 @@ const CLAIM_MANAGERS = ['nurse', 'admin'];
 
 const InsuranceView = () => {
   const { user } = useAuth();
+  const readOnly = useReadOnly();
   const canManage = CLAIM_MANAGERS.includes(user?.role);
   const claimsQuery = useClaims();
   const reportsQuery = useInsuranceReports();
@@ -116,7 +117,8 @@ const InsuranceView = () => {
           {canManage && (
             <button
               onClick={() => setShowForm(!showForm)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors text-sm font-medium"
+              disabled={readOnly}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors text-sm font-medium disabled:opacity-50"
             >
               <Plus className="w-4 h-4" /> New Claim
             </button>
@@ -238,7 +240,7 @@ const InsuranceView = () => {
                             aria-label="Claim status"
                             value={claim.status}
                             onChange={e => updateStatus(claim.claim_id, e.target.value)}
-                            disabled={!canManage || updating === claim.claim_id}
+                            disabled={!canManage || readOnly || updating === claim.claim_id}
                             className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
                           >
                             {['pending','submitted','accepted','denied','paid'].map(s => <option key={s} value={s}>{s}</option>)}

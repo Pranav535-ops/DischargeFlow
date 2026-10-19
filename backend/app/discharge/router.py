@@ -1,7 +1,7 @@
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 
 from app.audit.service import audit_phi_read
@@ -30,6 +30,18 @@ class TaskUpdate(BaseModel):
     assigned_to: Optional[str] = None
     # Required when changing the status of a task assigned to another user or role (task:override).
     reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class TaskBackfill(BaseModel):
+    """A task done on paper during a downtime (ADR-002 item 6)."""
+    completed_at: AwareDatetime
+    # Required when the task is assigned to another user or role (task:override), as for PUT /tasks/{id}.
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class DischargeCompletion(BaseModel):
+    # Only to back-enter a discharge done on paper during a downtime; omitted means now.
+    completed_at: Optional[AwareDatetime] = None
 
 
 # ---------- workflows ----------
@@ -73,9 +85,11 @@ async def get_workflow(workflow_id: str, request: Request, db: DB, user: AuthUse
 
 @workflows_router.put("/{workflow_id}/complete")
 async def complete_workflow(
-    workflow_id: str, request: Request, db: DB, user: CurrentUser = Depends(requires("workflow:manage"))
+    workflow_id: str, request: Request, db: DB, user: CurrentUser = Depends(requires("workflow:manage")),
+    body: Optional[DischargeCompletion] = None,
 ):
-    return await service.complete_discharge(db, workflow_id, user, request)
+    return await service.complete_discharge(db, workflow_id, user, request,
+                                            completed_at=body.completed_at if body else None)
 
 
 # ---------- tasks ----------
@@ -120,3 +134,10 @@ async def update_task(task_id: str, task_update: TaskUpdate, request: Request, d
     return task.to_dict()
 
 
+@tasks_router.put("/{task_id}/backfill")
+async def backfill_task(task_id: str, body: TaskBackfill, request: Request, db: DB, user: AuthUser):
+    """Complete a task done on paper during a downtime, with the time it was actually done (inside a recorded
+    downtime period). Same ownership rules as PUT /tasks/{id}; audited as BACKFILL_TASK_STATUS."""
+    task = await service.backfill_task(db, user, task_id, completed_at=body.completed_at, reason=body.reason,
+                                       request=request)
+    return task.to_dict()

@@ -20,6 +20,8 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import { toast } from 'sonner';
+import { BreakGlassReview, UnitsCard, UserUnitsPicker } from './AdminUnits';
+import AdminDowntime from './AdminDowntime';
 
 
 const AdminView = () => {
@@ -177,6 +179,10 @@ const AdminView = () => {
         </Button>
       </form>
 
+      <AdminDowntime />
+
+      <UnitsCard />
+
       {/* Users Table */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
         <div className="p-4 border-b border-zinc-800">
@@ -191,6 +197,7 @@ const AdminView = () => {
                 <th className="text-left text-xs font-medium text-zinc-500 uppercase tracking-wider p-4">Email</th>
                 <th className="text-left text-xs font-medium text-zinc-500 uppercase tracking-wider p-4">Current Role</th>
                 <th className="text-left text-xs font-medium text-zinc-500 uppercase tracking-wider p-4">Change Role</th>
+                <th className="text-left text-xs font-medium text-zinc-500 uppercase tracking-wider p-4">Units</th>
                 <th className="text-left text-xs font-medium text-zinc-500 uppercase tracking-wider p-4">Actions</th>
               </tr>
             </thead>
@@ -235,6 +242,7 @@ const AdminView = () => {
                       </SelectContent>
                     </Select>
                   </td>
+                  <td className="p-4"><UserUnitsPicker user={u} /></td>
                   <td className="p-4">
                     {roleChanges[u.user_id] && roleChanges[u.user_id] !== u.role ? (
                       <Button
@@ -266,6 +274,8 @@ const AdminView = () => {
           </table>
         </div>
       </div>
+
+      <BreakGlassReview />
     </div>
   );
 };

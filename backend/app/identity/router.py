@@ -1,4 +1,5 @@
 import logging
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -13,6 +14,7 @@ from app.core.security import (
     ACCESS_TOKEN_TTL,
     USER_ROLES,
     VALID_ROLES,
+    AuthUser,
     CurrentUser,
     SignedInIdentity,
     create_access_token,
@@ -20,8 +22,8 @@ from app.core.security import (
     requires,
 )
 from app.core.tenancy import use_tenant
-from app.identity import integrations, sessions
-from app.identity.models import AuthSession, IntegrationClient, User
+from app.identity import integrations, oidc, sessions
+from app.identity.models import AuthSession, IntegrationClient, Unit, User, UserUnit
 from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
 
@@ -32,16 +34,36 @@ EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/
 auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
 users_router = APIRouter(prefix="/users", tags=["Users"])
 integrations_router = APIRouter(prefix="/integrations/clients", tags=["Integrations"])
+units_router = APIRouter(prefix="/units", tags=["Units"])
 
 
 class RoleUpdate(BaseModel):
     role: str
 
 
+class Logout(BaseModel):
+    # "idle" when the browser locked itself after IDLE_LOCK_MINUTES without input; kept as the revocation reason.
+    reason: Literal["user", "idle"] = "user"
+
+
+class OidcSignIn(BaseModel):
+    id_token: str = Field(min_length=1, max_length=16384)
+    nonce: str = Field(min_length=16, max_length=256)
+
+
 class UserInvite(BaseModel):
     email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     name: str = Field(default="", max_length=200)
     role: str
+
+
+class UnitCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_.-]+$")
+    name: str = Field(min_length=1, max_length=200)
+
+
+class UserUnitsUpdate(BaseModel):
+    unit_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 class IntegrationClientCreate(BaseModel):
@@ -61,13 +83,16 @@ async def fetch_oauth_profile(session_id: str) -> dict:
     return resp.json()
 
 
-def _token_response(response: Response, user: User, session: AuthSession, refresh_token: str) -> dict:
+async def _token_response(db, response: Response, user: User, session: AuthSession, refresh_token: str) -> dict:
     sessions.set_refresh_cookie(response, refresh_token)
+    unit_ids = sorted(await db.scalars(select(UserUnit.unit_id).where(UserUnit.user_id == user.user_id)))
     return {
         "success": True,
         "token": create_access_token(user.user_id, session.session_id, user.tenant_id),
         "expires_in": int(ACCESS_TOKEN_TTL.total_seconds()),
-        "user": user.to_dict(),
+        "idle_lock_seconds": int(settings.idle_lock_minutes * 60),
+        # unit_ids: the frontend defaults new patients to the user's first unit.
+        "user": {**user.to_dict(), "unit_ids": unit_ids},
     }
 
 
@@ -99,20 +124,40 @@ async def create_session(request: Request, response: Response, db: DB):
         raise HTTPException(status_code=400, detail="session_id required")
 
     profile = await fetch_oauth_profile(session_id)
-    email = profile["email"].strip()
+    return await _sign_in(db, request, response, profile["email"], profile["name"], profile.get("picture"))
+
+
+@auth_router.get("/config")
+async def auth_config():
+    """Which sign-in methods this deployment offers (public: the login page reads it before anyone signs in)."""
+    return {"oidc": {"issuer": settings.oidc_issuer, "client_id": settings.oidc_client_id} if oidc.enabled() else None}
+
+
+@auth_router.post("/oidc")
+async def oidc_sign_in(body: OidcSignIn, request: Request, response: Response, db: DB):
+    """Hospital single sign-on (ADR-002 item 2): exchange a verified OIDC ID token for a session, under the same
+    user matching and approval rules as the Google login. 404 unless OIDC_ISSUER and OIDC_CLIENT_ID are set."""
+    if not oidc.enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    claims = await oidc.verify_id_token(body.id_token, body.nonce)
+    return await _sign_in(db, request, response, claims["email"], oidc.display_name(claims), claims.get("picture"))
+
+
+async def _sign_in(db, request: Request, response: Response, email: str, name: str, picture: str | None) -> dict:
+    email = email.strip()
     # Single-hospital deployment: new users join the default tenant. SSO per hospital decides this later.
     await use_tenant(db, sessions.default_tenant())
 
     user = await db.scalar(select(User).where(func.lower(User.email) == email.lower()))
     registered = user is None
     if user:
-        user.name = profile["name"]
-        user.picture = profile.get("picture")
+        user.name = name
+        user.picture = picture
     else:
         refusal = registration_refusal(email)
         if refusal:
             raise HTTPException(status_code=403, detail=refusal)
-        user = User(email=email, name=profile["name"], picture=profile.get("picture"), role=PENDING_ROLE)
+        user = User(email=email, name=name, picture=picture, role=PENDING_ROLE)
         db.add(user)
         await db.flush()
         await notify_role(db, "admin", "Access Request",
@@ -123,7 +168,7 @@ async def create_session(request: Request, response: Response, db: DB):
     if registered:
         await write_audit(db, _identity(user, session), "REQUEST_ACCESS", "user", user.user_id, "Pending approval",
                           request)
-    return _token_response(response, user, session, refresh_token)
+    return await _token_response(db, response, user, session, refresh_token)
 
 
 class DevLogin(BaseModel):
@@ -147,7 +192,7 @@ async def dev_login(body: DevLogin, request: Request, response: Response, db: DB
         db.add(user)
         await db.flush()
     session, refresh_token = await sessions.start_session(db, user, request)
-    return _token_response(response, user, session, refresh_token)
+    return await _token_response(db, response, user, session, refresh_token)
 
 
 @auth_router.post("/refresh")
@@ -159,7 +204,7 @@ async def refresh(request: Request, response: Response, db: DB):
         refused = JSONResponse(status_code=401, content={"detail": "Session expired"})
         sessions.clear_refresh_cookie(refused)
         return refused
-    return _token_response(response, result.user, result.session, result.token)
+    return await _token_response(db, response, result.user, result.session, result.token)
 
 
 @auth_router.get("/me")
@@ -168,15 +213,20 @@ async def get_me(user: SignedInIdentity):
 
 
 @auth_router.post("/logout")
-async def logout(request: Request, response: Response, db: DB):
-    await sessions.revoke_by_token(db, request.cookies.get(sessions.REFRESH_COOKIE))
+async def logout(request: Request, response: Response, db: DB, body: Logout | None = None):
+    reason = "idle_lock" if body and body.reason == "idle" else "logout"
+    await sessions.revoke_by_token(db, request.cookies.get(sessions.REFRESH_COOKIE), reason)
     sessions.clear_refresh_cookie(response)
     return {"success": True}
 
 
 @users_router.get("")
 async def get_users(db: DB, user: CurrentUser = Depends(requires("user:manage"))):
-    return [u.to_dict() for u in (await db.scalars(select(User).order_by(User.created_at)))]
+    memberships: dict[str, list[str]] = {}
+    for m in await db.scalars(select(UserUnit)):
+        memberships.setdefault(m.user_id, []).append(m.unit_id)
+    return [{**u.to_dict(), "unit_ids": sorted(memberships.get(u.user_id, []))}
+            for u in (await db.scalars(select(User).order_by(User.created_at)))]
 
 
 @users_router.post("")
@@ -212,6 +262,49 @@ async def update_user_role(
     invalidate_identity(user_id=user_id)
     await write_audit(db, user, "UPDATE_ROLE", "user", user_id, f"{previous} → {role_update.role}", request)
     return {"success": True, "role": role_update.role}
+
+
+@users_router.put("/{user_id}/units")
+async def update_user_units(
+    user_id: str, body: UserUnitsUpdate, request: Request, db: DB,
+    user: CurrentUser = Depends(requires("user:manage")),
+):
+    """Replace the user's unit memberships. With UNIT_SCOPED_ACCESS on, these decide which patients they see."""
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    wanted = sorted(set(body.unit_ids))
+    units = {u.unit_id: u for u in await db.scalars(select(Unit).where(Unit.unit_id.in_(wanted)))} if wanted else {}
+    if len(units) != len(wanted):
+        raise HTTPException(status_code=400, detail="Unknown unit")
+    for membership in await db.scalars(select(UserUnit).where(UserUnit.user_id == user_id)):
+        await db.delete(membership)
+    await db.flush()
+    db.add_all(UserUnit(user_id=user_id, unit_id=unit_id) for unit_id in wanted)
+    invalidate_identity(user_id=user_id)
+    codes = ", ".join(sorted(u.code for u in units.values())) or "none"
+    await write_audit(db, user, "UPDATE_USER_UNITS", "user", user_id, f"units: {codes}"[:500], request)
+    return {"success": True, "unit_ids": wanted}
+
+
+# ---------- units ----------
+
+@units_router.get("")
+async def list_units(db: DB, user: AuthUser):
+    return [u.to_dict() for u in await db.scalars(select(Unit).order_by(Unit.code))]
+
+
+@units_router.post("")
+async def create_unit(body: UnitCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("user:manage"))):
+    """A ward or department. `code` should match the point of care the ADT feed sends in PV1-3.1."""
+    code = body.code.strip().upper()
+    if await db.scalar(select(Unit.unit_id).where(Unit.code == code)):
+        raise HTTPException(status_code=409, detail="A unit with this code exists")
+    unit = Unit(code=code, name=body.name.strip())
+    db.add(unit)
+    await db.flush()
+    await write_audit(db, user, "CREATE_UNIT", "unit", unit.unit_id, code, request)
+    return unit.to_dict()
 
 
 # ---------- integration clients (API keys for hospital systems) ----------

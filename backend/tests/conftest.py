@@ -45,6 +45,9 @@ async def engine():
         # StaticPool: every session shares the single in-memory database connection.
         eng = make_engine("sqlite+aiosqlite://", poolclass=StaticPool)
     async with eng.begin() as conn:
+        if eng.dialect.name == "postgresql":
+            for stmt in rls.drop_unit_scope_statements():
+                await conn.execute(text(stmt))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         if eng.dialect.name == "postgresql":
@@ -65,6 +68,9 @@ async def engine():
 
     yield eng
     async with eng.begin() as conn:
+        if eng.dialect.name == "postgresql":
+            for stmt in rls.drop_unit_scope_statements():
+                await conn.execute(text(stmt))
         await conn.run_sync(Base.metadata.drop_all)
     await eng.dispose()
 

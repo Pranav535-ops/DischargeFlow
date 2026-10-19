@@ -35,6 +35,10 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "insights:read": (),
     "adt:ingest": (INTEGRATION_ROLE,),
     "claim:manage": ("nurse",),
+    # Not limited to one's units when UNIT_SCOPED_ACCESS is on (ADR-002 item 3). The ADT feed matches any patient.
+    "patient:read_all": (INTEGRATION_ROLE,),
+    # Switch read-only (downtime) mode on and off, and record unplanned outages (ADR-002 item 6). Admin only.
+    "downtime:manage": (),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import crypto
 from app.core.security import CurrentUser
 from app.discharge.service import active_workflow_for, complete_discharge
+from app.identity.models import Unit
 from app.interop.hl7 import HL7Error, Message, Segment, parse_date
 from app.notifications.service import notify_role
 from app.patients.models import MRN_INDEX_PURPOSE, Patient, mrn_index_parts
@@ -98,10 +99,18 @@ def _pid(message: Message) -> Segment:
     return pid
 
 
+async def unit_for(db: AsyncSession, message: Message) -> Optional[str]:
+    """The unit whose code is the point of care in PV1-3.1, if one is set up (ADR-002 item 3)."""
+    pv1 = message.segment("PV1")
+    code = pv1.component(3, 1).strip().upper() if pv1 else ""
+    return await db.scalar(select(Unit.unit_id).where(Unit.code == code)) if code else None
+
+
 async def admit(db: AsyncSession, client: CurrentUser, message: Message) -> Outcome:
     pid = _pid(message)
     authority, mrn = mrn_from(pid)
     fields = admission_fields(message, pid)
+    fields["unit_id"] = await unit_for(db, message)
 
     patient = await find_patient(db, client.tenant_id, authority, mrn)
     if patient is not None:
@@ -153,7 +162,7 @@ async def discharge(db: AsyncSession, client: CurrentUser, message: Message) -> 
 async def _notify_not_applied(db: AsyncSession, patient: Patient, reason: str, link: str) -> None:
     await notify_role(db, "physician", "ADT Discharge Not Applied",
                       f"The hospital ADT system reported {patient.name} as discharged, but DischargeFlow could not "
-                      f"complete the discharge: {reason}.", link)
+                      f"complete the discharge: {reason}.", link, unit_id=patient.unit_id)
 
 
 async def process(db: AsyncSession, client: CurrentUser, message: Message) -> Outcome:

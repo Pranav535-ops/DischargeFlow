@@ -188,11 +188,84 @@ which needs monthly partitioning within a year or two.
     c. **Claim permissions.** Creating a claim and changing its status need the new `claim:manage` (nurse, who owns the billing-clearance task, and admin); reads stay open to signed-in users. The assistant's `submit_claim` tool checks the same permission. The insurance screen is read-only for other roles.
     d. **Audit coverage.** Patient create and update (field names only, never values), discharge initiation and completion (including completion by an HL7 A03), task creation, status changes, overrides and reassignments are now audited in the same transaction as the change. Patient-level PHI reads are audited too, with one `PHI_READ` entry per request and no PHI in the details: the patient list (one entry per list, with the record count), patient detail, both workflow-detail routes and the summary read. Reads use resource type `patient` with the patient id, so `GET /api/audit/patients/{id}` answers "who looked at this record". A read that fails is not logged. **Cost:** each audited read appends to the tenant's hash chain, which locks the chain-head row until the request commits, so PHI reads in one tenant now serialize on that lock. The audit call is placed last in each handler to keep the hold short (a few milliseconds plus the commit). At pilot scale this is fine. At hospital scale, read events should move to a separate append-only table, or be batched into the chain by a worker (ADR-001 item 11). SQLite ignores `FOR UPDATE`, so local SQLite request transactions now run one at a time (`core/db.get_db`); without that, concurrent reads appended duplicate sequence numbers, which the Playwright run caught. **Not done:** list endpoints that carry less identifying data (`/workflows`, `/tasks`, `/insurance/claims`) and the assistant's read tools are not read-audited, though every assistant tool call is already audited.
 2. [ ] Hospital single sign-on (OIDC or SAML against the hospital directory) with MFA, plus automated provisioning and
-   deprovisioning, replacing the Emergent demo login.
-3. [ ] Unit-scoped access with break-glass (design change 3).
-4. [ ] Shared-workstation safety: idle lock after a few minutes and fast re-login (tokens already live in memory only).
+   deprovisioning, replacing the Emergent demo login. **Deferred: needs an AWS account (Cognito) and a hospital
+   directory to federate with. The code seam is in place (2026-10-19).**
+    - **Built:** `POST /api/auth/oidc` (`identity/oidc.py`) takes an OIDC ID token and the nonce the browser generated,
+      and checks it locally: RS256 signature by a key from the provider's JWKS (`OIDC_JWKS_URL`, default the issuer's
+      `/.well-known/jwks.json`, Cognito's layout; keys cached an hour, refetched on an unknown `kid`), `iss` =
+      `OIDC_ISSUER`, `aud` = `OIDC_CLIENT_ID`, expiry, nonce, `token_use` = `id`, `email_verified`, and with
+      `OIDC_REQUIRE_MFA=true` an `amr` claim naming a second factor. A verified token signs the person in through the
+      same code as the Google login (match by email, invited role, `pending` for strangers, domain allow-list), so
+      approval, unit scope and idle lock apply unchanged. Off (404) until both variables are set;
+      `GET /api/auth/config` tells the login page whether SSO is offered. Tested with a local RSA key standing in for
+      the provider's JWKS.
+    - **Left for the AWS phase:** the Cognito user pool and its SAML/OIDC federation with the hospital directory
+      (Terraform), the login page's PKCE redirect to it, SCIM (or Cognito's directory sync) for provisioning and
+      deprovisioning, per-hospital tenant assignment from a token claim, and switching the Emergent login off once
+      SSO works. Until SCIM exists, deprovisioning is an admin setting the user to `pending`, which takes effect within
+      30 seconds. MFA is enforced at the hospital's identity provider; `OIDC_REQUIRE_MFA` only checks that the token
+      says so, and Cognito passes `amr` through only for some federation setups, so it must be tested against the
+      real provider before it is switched on.
+3. [x] Unit-scoped access with break-glass (design change 3; migration 0009, done 2026-10-19).
+    - **Model:** `units` (code matching HL7 PV1-3.1, so an A01 lands the patient on its unit), `user_units`, `patients.unit_id` (NULL = unassigned) and `access_grants` (break-glass), all tenant-scoped. Admins create units, set memberships and patient units in the admin and patient screens.
+    - **Enforcement:** RESTRICTIVE `unit_scope` RLS policies on patients, workflows, tasks, discharge_summaries and insurance_claims, active only when the request sets `app.unit_scope='on'`. The API does that for users whose role lacks the new `patient:read_all` (admin and the ADT `interface` hold it) when `UNIT_SCOPED_ACCESS=true`. Lists, detail routes, FHIR, analytics and the assistant all go through the same policies, so there is one enforcement point, as for tenants.
+    - **Break-glass:** a hidden patient answers 403 with `break_glass: true` (a SECURITY DEFINER function tells it from a missing one), and the UI asks for a reason (10–500 characters). The grant lasts 8 hours, the audit entry names the grant (the reason stays on the grant, redacted on erasure), admins are notified and review grants at `GET /api/access-grants` and on the admin screen.
+    - **Notifications** about a patient go only to members of the patient's unit, since their text may name the patient.
+    - **Rollout decisions:** the flag is off by default, so the deploy changes nobody's access until units are set up. Unassigned patients stay visible to everyone in the tenant, so nothing disappears during setup; new patients default to the creator's first unit.
+    - **Limits:** physicians and pharmacists are unit-scoped like nurses; hospitals whose physicians or central pharmacy work across units should give them those units, or grant `patient:read_all` to the role by migration. Break-glass works from a link to the patient (patient id); there is no search across hidden patients yet (the MRN blind index could support one). A hidden workflow link answers 404 rather than offering break-glass. SQLite does not enforce unit scope (tests are `requires_postgres`). Tested on PostgreSQL 16 locally and in CI.
+4. [x] Shared-workstation safety: idle lock after a few minutes and fast re-login (tokens already live in memory only).
+   After `IDLE_LOCK_MINUTES` (default 5) with no input in any tab, the app unmounts every screen, clears the query
+   cache, toasts and in-memory access token, refuses all non-sign-in requests, locks the other tabs, and revokes the
+   refresh session. Re-entry is a fresh Google sign-in that returns to the same screen. Resuming the same refresh
+   session from the lock screen was rejected: on a shared workstation the next person could press it. The server also
+   revokes a session not refreshed for `SESSION_IDLE_MINUTES` (default 20; it can't go below the ~14-minute refresh of
+   an open tab), which covers tabs closed or killed before they could lock. Limits: input is detected per browser
+   profile, not per person, so someone who keeps using an unlocked screen keeps it open; between closing a tab and
+   the server limit, a page reopened in the same profile locks itself using the shared last-activity time, which a
+   person at the keyboard could clear from developer tools; re-entry is only as fast as the identity provider, and if
+   Google is still signed in on that browser it may re-enter without a password (hospital SSO, item 2, should require
+   a fresh login or a badge tap); the URL path of the locked screen (opaque ids, no PHI) stays in the address bar.
 5. [ ] Hosting and model provider under a BAA; backups with at least 7 days of point-in-time recovery (finding 8).
-6. [ ] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards.
+   **Deferred: needs an AWS account under a BAA (ECS, RDS with point-in-time recovery, Bedrock, KMS; the Terraform in
+   `infra/` is written but not applied). The key-management seam is in place (2026-10-19).**
+    - **Built:** `core/kms.KmsKeyProvider` implements `core/crypto.KeyProvider` with a KMS symmetric key
+      (`PHI_KEY_PROVIDER=kms`, `PHI_KMS_KEY_ID`). Data keys are wrapped by KMS `Encrypt` with a fixed encryption
+      context and marked with a prefix; the local KEK becomes a retired key, so existing rows still read and
+      `app.cli rewrap-deks` moves them to KMS like any rotation. Unwrapped keys are cached in memory for 5 minutes
+      (bounded), so a patient list does not make one KMS call per field. boto3 is imported lazily and only by this
+      module (an `.importlinter` exception next to the AI gateway's). Tested with a fake KMS client: wrap, unwrap,
+      cache, refusal mapping and a local-to-KMS rewrap of a stored patient.
+    - **What it changes:** with the KEK in KMS, scheduling the key's deletion makes every wrapped data key unreadable,
+      including copies in backups, and every unwrap is in CloudTrail. Per-patient erasure is still `Patient.shred()`;
+      the blind-index key (MRN lookup) is still derived from `PHI_KEK`, which therefore stays a secret.
+    - **Left for the AWS phase:** the BAA itself, applying `infra/` (KMS key and grants to the ECS task role, RDS
+      PITR of at least 7 days, Bedrock as the model provider), running the switch and `rewrap-deks` against real
+      KMS, and a restore drill.
+6. [x] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards
+   (migration 0010, done 2026-10-19; procedure in `docs/runbooks/downtime.md`).
+    - **Where the flag lives:** a per-tenant `downtime_periods` row that an admin opens and closes
+      (`POST /api/downtime/start` / `end`, new permission `downtime:manage`). It is in the database because production
+      runs on serverless instances: an environment variable would need a redeploy and could disagree between
+      instances, while every instance reads the row on its next write. `READ_ONLY_MODE=true` forces read-only for every
+      tenant without touching the database, for restores and failovers.
+    - **Enforcement:** one dependency on the whole `/api` router refuses POST, PUT, PATCH and DELETE with 503 and
+      `X-Read-Only: true` before the route runs, so a new write route is covered without changes (a test walks every
+      route). It reads the tenant from the bearer token or the integration key prefix; only writes pay the one indexed
+      query. Exempt: `/api/auth/*` and ending the downtime. Reads keep working and stay audited. HL7 ADT gets the 503,
+      so the interface engine queues messages. The frontend polls `/api/downtime/status` (and refetches it on a 503),
+      shows a banner on every screen, and disables write controls, the assistant included.
+    - **Census:** `GET /api/census` per unit (or unassigned, or all the user can see), JSON or CSV, and a print layout
+      at `/census` with a tick box per open task for the paper record. Unit scope (item 3) applies. One `PHI_READ` entry
+      per request with the scope and count. CSV cells that start like a formula are neutralised.
+    - **Backfill:** `PUT /api/tasks/{id}/backfill` and `PUT /api/workflows/{id}/complete` with `completed_at` record paper
+      work at the time it was done. The time must be in the past, after the record was created and inside a recorded
+      downtime period; an outage nobody switched read-only for is recorded afterwards (`POST /api/downtime/periods`).
+      Ownership rules are those of live updates. `completed_at` keeps the real time (so SLA and duration metrics stay
+      right), `backfilled_at` marks the row, and the audit entry names the downtime.
+    - **Limits:** the person entering is recorded as `completed_by`, so the paper form stays the source until checked.
+      Paper admissions arrive only through the queued ADT feed or manual entry. Summaries can't be generated or approved
+      while read-only. If the database itself is down, only a census printed beforehand is available, so units should
+      print one at each shift change (a scheduled export is a possible follow-up). Tested on SQLite and PostgreSQL 16.
 
 **Phase 8: Workflow fit**
 7. [ ] Patient/Encounter split (design change 1).

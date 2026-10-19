@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
-import { keys, queryClient, usePatients } from '@/lib/queries';
+import { keys, queryClient, usePatients, useReadOnly, useUnits } from '@/lib/queries';
 import { 
   Search, 
   Plus, 
@@ -29,8 +29,10 @@ import { Label } from '../components/ui/label';
 
 const PatientList = () => {
   const { user } = useAuth();
+  const readOnly = useReadOnly();
   const navigate = useNavigate();
   const { data: patients = [], isLoading: loading } = usePatients();
+  const { data: units = [] } = useUnits();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -41,13 +43,16 @@ const PatientList = () => {
     admission_date: '',
     room_number: '',
     diagnosis: '',
-    attending_physician: ''
+    attending_physician: '',
+    unit_id: '',
   });
 
   const handleAddPatient = async () => {
     setAddingPatient(true);
     try {
-      await api.post(`/patients`, newPatient);
+      // Default to the creator's first unit; no unit at all means every user in the hospital can see the patient.
+      const unitId = newPatient.unit_id || user?.unit_ids?.[0] || null;
+      await api.post(`/patients`, { ...newPatient, unit_id: unitId });
       setShowAddDialog(false);
       setNewPatient({
         name: '',
@@ -55,7 +60,8 @@ const PatientList = () => {
         admission_date: '',
         room_number: '',
         diagnosis: '',
-        attending_physician: ''
+        attending_physician: '',
+        unit_id: '',
       });
       await queryClient.invalidateQueries({ queryKey: keys.patients });
     } catch (error) {
@@ -118,6 +124,7 @@ const PatientList = () => {
             <DialogTrigger asChild>
               <Button 
                 data-testid="add-patient-btn"
+                disabled={readOnly}
                 className="bg-blue-600 hover:bg-blue-500 text-white"
               >
                 <Plus className="w-4 h-4 mr-2" />
@@ -177,6 +184,18 @@ const PatientList = () => {
                     />
                   </div>
                 </div>
+                {units.length > 0 && (
+                  <div>
+                    <Label htmlFor="unit" className="text-zinc-300">Unit</Label>
+                    <select id="unit" data-testid="patient-unit-input"
+                            value={newPatient.unit_id || user?.unit_ids?.[0] || ''}
+                            onChange={(e) => setNewPatient({ ...newPatient, unit_id: e.target.value })}
+                            className="w-full mt-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100">
+                      <option value="">No unit (visible to everyone)</option>
+                      {units.map(u => <option key={u.unit_id} value={u.unit_id}>{u.code} · {u.name}</option>)}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <Label htmlFor="diagnosis" className="text-zinc-300">Diagnosis</Label>
                   <Input

@@ -1,9 +1,21 @@
 import React, { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { RETURN_TO_KEY, useAuth } from '../context/AuthContext';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { errorMessage } from '@/lib/api';
+
+// A same-origin path saved by login(), used once; anything else lands on the dashboard.
+const takeReturnPath = () => {
+  try {
+    const path = sessionStorage.getItem(RETURN_TO_KEY);
+    sessionStorage.removeItem(RETURN_TO_KEY);
+    if (path && path.startsWith('/') && !path.startsWith('//') && !path.startsWith('/\\')) return path;
+  } catch {
+    // Storage blocked.
+  }
+  return '/dashboard';
+};
 
 const AuthCallback = () => {
   const navigate = useNavigate();
@@ -35,9 +47,10 @@ const AuthCallback = () => {
 
       try {
         const user = await exchangeSession(sessionId);
-        // Clear the hash and redirect
-        window.history.replaceState(null, '', '/dashboard');
-        navigate('/dashboard', { state: { user }, replace: true });
+        // Clear the hash and redirect, back to the screen the lock screen was covering if there was one.
+        const target = takeReturnPath();
+        window.history.replaceState(null, '', target);
+        navigate(target, { state: { user }, replace: true });
       } catch (error) {
         console.error('Auth failed:', error);
         // 403: the account is not invited or its email domain is not allowed (identity/router.registration_refusal).

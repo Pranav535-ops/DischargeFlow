@@ -22,7 +22,7 @@ const Header = ({ user }) => {
   // Notification links point at real routes (/patients/:id, /workflows/:id).
   const openNotification = (notif) => {
     if (!notif.read) markAsRead(notif.notification_id);
-    if (notif.link && /^\/(patients|workflows)\//.test(notif.link)) {
+    if (notif.link && /^\/((patients|workflows)\/|census$)/.test(notif.link)) {
       setOpen(false);
       navigate(notif.link);
     }
@@ -70,7 +70,7 @@ const Header = ({ user }) => {
   };
 
   return (
-    <header className="h-16 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between px-6">
+    <header className="h-16 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between px-6 print:hidden">
       <div>
         <h2 className="text-lg font-medium text-zinc-50" style={{ fontFamily: 'Outfit, sans-serif' }}>
           Welcome, {user?.name?.split(' ')[0]}

@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.middleware.cors import CORSMiddleware
@@ -15,11 +15,15 @@ from app.core.db import DB, SessionLocal, engine, utcnow
 from app.core.migrate import ensure_migrated
 from app.core.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from app.discharge.router import tasks_router, workflows_router
-from app.identity.router import auth_router, integrations_router, users_router
+from app.downtime.router import census_router
+from app.downtime.router import router as downtime_router
+from app.downtime.service import READ_ONLY_HEADER, enforce_read_only
+from app.identity.router import auth_router, integrations_router, units_router, users_router
 from app.insurance.router import router as insurance_router
 from app.interop.hl7_router import router as hl7_router
 from app.interop.router import router as fhir_router
 from app.notifications.router import router as notifications_router
+from app.patients.router import access_router
 from app.patients.router import router as patients_router
 from app.seed import seed_demo_data
 
@@ -50,6 +54,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[READ_ONLY_HEADER],
     )
 
     @app.middleware("http")
@@ -72,11 +77,12 @@ def create_app() -> FastAPI:
                 return JSONResponse(status_code=503, content={"detail": "Database migration in progress or failed"})
             return await call_next(request)
 
-    api = APIRouter(prefix="/api")
+    # Read-only (downtime) mode refuses every write route before it runs (ADR-002 item 6).
+    api = APIRouter(prefix="/api", dependencies=[Depends(enforce_read_only)])
     for router in (
         auth_router, users_router, patients_router, workflows_router, tasks_router, notifications_router,
         analytics_router, ai_router, insurance_router, chatbot_router, audit_router, fhir_router,
-        integrations_router, hl7_router,
+        integrations_router, hl7_router, units_router, access_router, downtime_router, census_router,
     ):
         api.include_router(router)
 

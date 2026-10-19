@@ -21,6 +21,10 @@ TENANT_TABLES = (
     "assistant_actions",
     "integration_clients",
     "hl7_messages",
+    "units",
+    "user_units",
+    "access_grants",
+    "downtime_periods",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
@@ -28,6 +32,49 @@ READ_ONLY_TABLES = ("tenants", "role_permissions")
 APPEND_ONLY_TABLES = ("audit_logs",)
 
 POLICY_NAME = "tenant_isolation"
+
+# Unit scope (ADR-002 item 3). A RESTRICTIVE policy, so it narrows what tenant_isolation allows. Inactive unless the
+# request set app.unit_scope = 'on' (core/tenancy.use_access_scope): migrations, the CLI, login, the ADT feed and
+# unscoped users see the whole tenant. It limits reads, updates and deletes; inserts are checked by tenant only.
+UNIT_SCOPE_POLICY = "unit_scope"
+_SCOPE_OFF = "current_setting('app.unit_scope', true) IS DISTINCT FROM 'on'"
+PATIENT_VISIBLE = (
+    f"{_SCOPE_OFF} OR unit_id IS NULL "
+    "OR unit_id = ANY (string_to_array(current_setting('app.unit_ids', true), ',')) "
+    "OR EXISTS (SELECT 1 FROM access_grants g WHERE g.patient_id = patients.patient_id "
+    "AND g.user_id = current_setting('app.user_id', true) AND g.expires_at > now())"
+)
+# Rows about one patient are visible when the patient is: the subquery itself runs under the patients policies.
+UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims")
+UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES
+
+
+def _child_visible(table: str) -> str:
+    return f"{_SCOPE_OFF} OR EXISTS (SELECT 1 FROM patients p WHERE p.patient_id = {table}.patient_id)"
+
+
+# Lets the API tell "outside your units" (403, offer break-glass) from "no such patient" (404): RLS hides both.
+# SECURITY DEFINER runs as the owner, who bypasses RLS, so it checks the tenant itself. Returns a boolean only.
+PATIENT_EXISTS_FUNCTION = (
+    "CREATE OR REPLACE FUNCTION df_patient_exists(pid text) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER "
+    "SET search_path = public AS $$ SELECT EXISTS (SELECT 1 FROM patients WHERE patient_id = pid "
+    "AND tenant_id = current_setting('app.tenant_id', true)) $$"
+)
+
+
+def unit_scope_statements() -> list[str]:
+    stmts = []
+    for table in UNIT_SCOPED_TABLES:
+        using = PATIENT_VISIBLE if table == "patients" else _child_visible(table)
+        stmts += [
+            f"DROP POLICY IF EXISTS {UNIT_SCOPE_POLICY} ON {table}",
+            f"CREATE POLICY {UNIT_SCOPE_POLICY} ON {table} AS RESTRICTIVE USING ({using}) WITH CHECK (true)",
+        ]
+    return stmts + [
+        PATIENT_EXISTS_FUNCTION,
+        "REVOKE ALL ON FUNCTION df_patient_exists(text) FROM PUBLIC",
+        f"GRANT EXECUTE ON FUNCTION df_patient_exists(text) TO {APP_ROLE}",
+    ]
 
 
 def install_statements() -> list[str]:
@@ -51,11 +98,22 @@ def install_statements() -> list[str]:
             f"USING (tenant_id = current_setting('app.tenant_id', true)) "
             f"WITH CHECK (tenant_id = current_setting('app.tenant_id', true))",
         ]
-    return stmts
+    return stmts + unit_scope_statements()
+
+
+def drop_unit_scope_statements() -> list[str]:
+    """Drop the unit_scope policies wherever their tables exist. The patients policy references access_grants, so
+    it must go before tables are dropped (tests rebuild the schema with drop_all)."""
+    return [
+        f"DO $$ BEGIN IF to_regclass('{table}') IS NOT NULL THEN "
+        f"DROP POLICY IF EXISTS {UNIT_SCOPE_POLICY} ON {table}; END IF; END $$"
+        for table in UNIT_SCOPED_TABLES
+    ]
 
 
 def uninstall_statements() -> list[str]:
-    stmts = []
+    stmts = [f"DROP POLICY IF EXISTS {UNIT_SCOPE_POLICY} ON {table}" for table in UNIT_SCOPED_TABLES]
+    stmts.append("DROP FUNCTION IF EXISTS df_patient_exists(text)")
     for table in TENANT_TABLES:
         stmts += [
             f"DROP POLICY IF EXISTS {POLICY_NAME} ON {table}",

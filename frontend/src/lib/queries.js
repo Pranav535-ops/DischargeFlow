@@ -3,7 +3,7 @@
 // mutation by invalidating its key.
 import { useEffect } from 'react';
 import { QueryClient, useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { READ_ONLY_EVENT, api } from '@/lib/api';
 import { startNotificationStream, useStreamLive } from '@/lib/notificationStream';
 
 export const queryClient = new QueryClient({
@@ -35,6 +35,11 @@ export const keys = {
   claims: ['insurance', 'claims'],
   insuranceReports: ['insurance', 'reports'],
   users: ['users'],
+  units: ['units'],
+  accessGrants: ['access-grants'],
+  downtime: ['downtime', 'status'],
+  downtimePeriods: ['downtime', 'periods'],
+  census: (unitId, at) => ['census', unitId || 'all', at],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -68,6 +73,33 @@ export const useOperations = (days = 30) =>
 export const useClaims = () => useQuery({ queryKey: keys.claims, queryFn: get('/insurance/claims') });
 export const useInsuranceReports = () => useQuery({ queryKey: keys.insuranceReports, queryFn: get('/insurance/reports') });
 export const useUsers = () => useQuery({ queryKey: keys.users, queryFn: get('/users') });
+export const useUnits = () => useQuery({ queryKey: keys.units, queryFn: get('/units'), staleTime: 300_000 });
+export const useAccessGrants = () => useQuery({ queryKey: keys.accessGrants, queryFn: get('/access-grants') });
+// Read-only (downtime) mode, ADR-002 item 6. Polled so every open screen learns of it within 30 s; a write refused
+// with 503 refetches it at once.
+export const useDowntimeStatus = () =>
+  useQuery({ queryKey: keys.downtime, queryFn: get('/downtime/status'), refetchInterval: 30_000, staleTime: 10_000 });
+export const useReadOnly = () => useDowntimeStatus().data?.read_only === true;
+export const useDowntimePeriods = () => useQuery({ queryKey: keys.downtimePeriods, queryFn: get('/downtime/periods') });
+// Paper work can be back-entered when a downtime period exists and the system is writable again.
+export const useCanBackfill = () => {
+  const readOnly = useReadOnly();
+  const { data: periods } = useDowntimePeriods();
+  return !readOnly && (periods?.length ?? 0) > 0;
+};
+export const useCensus = (unitId, at) => useQuery({
+  queryKey: keys.census(unitId, at),
+  queryFn: () => api.get('/census', { params: unitId ? { unit_id: unitId } : {} }).then(res => res.data),
+  // Each load is an audited PHI read, so it loads when asked for, not on every focus.
+  staleTime: Infinity,
+  refetchOnWindowFocus: false,
+});
+if (typeof window !== 'undefined') {
+  window.addEventListener(READ_ONLY_EVENT, () => queryClient.invalidateQueries({ queryKey: keys.downtime }));
+}
+
+// A patient outside the user's units (403 with break_glass), as opposed to one that does not exist.
+export const isBreakGlassError = (error) => error?.response?.status === 403 && error?.response?.data?.break_glass === true;
 
 // After any change to discharge state: workflows, tasks, patients' statuses, notifications and dashboards all move.
 export const invalidateDischarge = () => Promise.all(

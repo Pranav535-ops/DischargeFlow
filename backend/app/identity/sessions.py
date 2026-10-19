@@ -3,6 +3,10 @@
 The refresh token lives only in an httpOnly, SameSite=Strict cookie scoped to /api/auth, so page scripts can't read
 it and other sites can't send it. Every refresh rotates it. Presenting the previous token is tolerated for a few
 seconds (two tabs refreshing at once); after that it means the token leaked, and the whole session is revoked.
+
+Shared workstations (ADR-002 item 4): the browser locks itself after IDLE_LOCK_MINUTES without input and revokes the
+session through /auth/logout. A tab that is closed or killed never gets to do that, so a session not refreshed for
+SESSION_IDLE_MINUTES is revoked here as well. An open tab refreshes about every 14 minutes, which sets the floor.
 """
 import hashlib
 import secrets
@@ -90,6 +94,9 @@ async def rotate(db: AsyncSession, raw_token: Optional[str]) -> Optional[Refresh
     now = utcnow()
     if session is None or session.revoked_at is not None or session.expires_at <= now:
         return None
+    if now - session.last_used_at > timedelta(minutes=settings.session_idle_minutes):
+        await revoke(db, session, "idle_timeout")
+        return None
 
     presented = _hash(secret)
     if presented == session.current_hash:
@@ -119,7 +126,7 @@ async def revoke(db: AsyncSession, session: AuthSession, reason: str) -> None:
     invalidate_identity(session_id=session.session_id)
 
 
-async def revoke_by_token(db: AsyncSession, raw_token: Optional[str]) -> None:
+async def revoke_by_token(db: AsyncSession, raw_token: Optional[str], reason: str = "logout") -> None:
     parsed = parse_token(raw_token)
     if parsed is None:
         return
@@ -127,7 +134,7 @@ async def revoke_by_token(db: AsyncSession, raw_token: Optional[str]) -> None:
     await use_tenant(db, tenant_id)
     session = await db.get(AuthSession, session_id)
     if session is not None and _hash(secret) in (session.current_hash, session.previous_hash):
-        await revoke(db, session, "logout")
+        await revoke(db, session, reason)
 
 
 def default_tenant() -> str:

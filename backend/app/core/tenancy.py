@@ -58,3 +58,18 @@ async def use_tenant(db: AsyncSession, tenant_id: str) -> None:
     if await _role_available(db):
         await db.execute(text(f"SET LOCAL ROLE {APP_ROLE}"))
     await db.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_id})
+
+
+async def use_access_scope(db: AsyncSession, user_id: str, unit_ids: list[str]) -> None:
+    """Limit this transaction to patients on `unit_ids` (plus unassigned ones and the user's break-glass grants).
+
+    Postgres only: the `unit_scope` RLS policies read these settings (core/rls.py). Call it after use_tenant, and only
+    for users who are unit-scoped; without it the transaction sees the whole tenant.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    await db.execute(
+        text("SELECT set_config('app.unit_scope', 'on', true), set_config('app.user_id', :u, true), "
+             "set_config('app.unit_ids', :units, true)"),
+        {"u": user_id, "units": ",".join(unit_ids)},
+    )

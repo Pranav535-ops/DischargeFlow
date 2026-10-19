@@ -6,7 +6,8 @@ associated data so a ciphertext cannot be moved to another row or column.
 
 Destroying a patient's wrapped DEK makes its ciphertext unreadable ("crypto-shredding"). With a KEK held in app
 config, copies of the wrapped DEK in older database backups remain decryptable; moving the KEK to a KMS with key
-deletion (ADR-001, AWS phase) closes that gap. `KeyProvider` is the seam for that change.
+deletion closes that gap. `KeyProvider` is the seam: PHI_KEY_PROVIDER=kms wraps new DEKs with `core.kms.KmsKeyProvider`
+(ADR-002 item 5), and `app.cli rewrap-deks` moves existing ones over.
 """
 import base64
 import hashlib
@@ -45,16 +46,22 @@ class LocalKeyProvider:
         return self._aead.decrypt(wrapped[:_NONCE], wrapped[_NONCE:], b"dischargeflow-dek")
 
 
-class RotatingKeyProvider:
-    """Wraps with the current KEK; unwraps with the current one or any retired one (PHI_KEK_PREVIOUS).
+def _provider(key: "bytes | KeyProvider") -> KeyProvider:
+    return LocalKeyProvider(key) if isinstance(key, bytes) else key
 
-    AES-GCM authentication tells the keys apart, so wrapped DEKs need no key id. `rewrap` reports whether a DEK
-    was wrapped by a retired key and returns it wrapped by the current one (used by `app.cli rewrap-deks`).
+
+class RotatingKeyProvider:
+    """Wraps with the current key; unwraps with the current one or any retired one (PHI_KEK_PREVIOUS, or the local
+    KEK after a switch to KMS). Keys are given as raw KEKs or as providers.
+
+    A failed AES-GCM tag (or KMS refusing the ciphertext) tells the keys apart, so wrapped DEKs need no key id.
+    `rewrap` reports whether a DEK was wrapped by a retired key and returns it wrapped by the current one (used by
+    `app.cli rewrap-deks`).
     """
 
-    def __init__(self, current: bytes, previous: tuple[bytes, ...] = ()):
-        self._current = LocalKeyProvider(current)
-        self._previous = [LocalKeyProvider(k) for k in previous]
+    def __init__(self, current: "bytes | KeyProvider", previous: "tuple[bytes | KeyProvider, ...]" = ()):
+        self._current = _provider(current)
+        self._previous = [_provider(k) for k in previous]
 
     def wrap(self, dek: bytes) -> bytes:
         return self._current.wrap(dek)
@@ -74,11 +81,16 @@ class RotatingKeyProvider:
             except InvalidTag:
                 continue
             return dek, self._current.wrap(dek)
-        raise InvalidTag("DEK is not wrapped by PHI_KEK or any key in PHI_KEK_PREVIOUS")
+        raise InvalidTag("DEK is not wrapped by the current key or any retired one")
 
 
 @lru_cache(maxsize=1)
 def key_provider() -> RotatingKeyProvider:
+    if settings.phi_key_provider == "kms" and settings.phi_kms_key_id:
+        from app.core.kms import KmsKeyProvider
+
+        kms = KmsKeyProvider(settings.phi_kms_key_id, region=settings.aws_region)
+        return RotatingKeyProvider(kms, (settings.phi_kek, *settings.phi_kek_previous))
     return RotatingKeyProvider(settings.phi_kek, settings.phi_kek_previous)
 
 

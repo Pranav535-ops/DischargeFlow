@@ -36,6 +36,9 @@ class Workflow(TenantMixin, Base):
     # pending_approval; NULL means the workflow predates tracking (migration 0006), not zero.
     pending_approval_since: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     pending_approval_seconds: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    # Set when the discharge was done on paper during a downtime and entered afterwards: completed_at keeps the real
+    # time, this is when it was entered (ADR-002 item 6).
+    backfilled_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
 
 
 class Task(TenantMixin, Base):
@@ -61,5 +64,8 @@ class Task(TenantMixin, Base):
     # Set when someone outside the assigned role changed the status (task:override): the latest reason, and by whom.
     override_reason: Mapped[Optional[str]] = mapped_column(Text)
     override_by: Mapped[Optional[str]] = mapped_column(String(40))
+    # Set when the task was done on paper during a downtime and entered afterwards: completed_at is the time it was
+    # done, this is when it was entered (ADR-002 item 6).
+    backfilled_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)

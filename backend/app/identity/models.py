@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, UTCDateTime, utcnow
@@ -29,6 +29,29 @@ class User(TenantMixin, Base):
     role: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, onupdate=utcnow)
+
+
+class Unit(TenantMixin, Base):
+    """A ward or department (e.g. "4W"). Staff are members of units; patients are on one (ADR-002 item 3)."""
+
+    __tablename__ = "units"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_units_tenant_code"),)
+
+    unit_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("unit"))
+    # Matches the point of care in HL7 PV1-3.1, so ADT admissions land on the right unit.
+    code: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class UserUnit(TenantMixin, Base):
+    """Membership: with UNIT_SCOPED_ACCESS on, a user sees the patients on these units."""
+
+    __tablename__ = "user_units"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True)
+    unit_id: Mapped[str] = mapped_column(ForeignKey("units.unit_id", ondelete="CASCADE"), primary_key=True,
+                                         index=True)
 
 
 class AuthSession(TenantMixin, Base):

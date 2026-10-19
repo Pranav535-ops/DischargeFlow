@@ -12,8 +12,15 @@ export const api = axios.create({ baseURL: API_BASE, withCredentials: true });
 
 let accessToken = null;
 let refreshInFlight = null;
+// Set while the idle lock screen is up: only sign-in calls leave the browser, so no refetch or retry-after-401 can
+// bring patient data or a fresh token back behind the lock.
+let locked = false;
 
 export const setAccessToken = (token) => { accessToken = token; };
+export const setClientLocked = (value) => {
+  locked = value;
+  if (value) accessToken = null;
+};
 // For the few callers that can't go through axios (the notification stream reads a fetch body).
 export const getAccessToken = () => accessToken;
 
@@ -21,6 +28,9 @@ const isAuthCall = (url = '') => ['/auth/refresh', '/auth/session', '/auth/logou
   .some(path => url.includes(path));
 
 api.interceptors.request.use(config => {
+  if (locked && !isAuthCall(config.url)) {
+    return Promise.reject(new axios.CanceledError('Session locked'));
+  }
   if (accessToken && !isAuthCall(config.url)) {
     config.headers.set('Authorization', `Bearer ${accessToken}`);
   }
@@ -29,6 +39,7 @@ api.interceptors.request.use(config => {
 
 // Single-flight refresh: concurrent 401s share one /auth/refresh call. Resolves to { token, expires_in, user }.
 export const refreshAccessToken = () => {
+  if (locked) return Promise.reject(new axios.CanceledError('Session locked'));
   if (!refreshInFlight) {
     refreshInFlight = api.post('/auth/refresh')
       .then(res => {
@@ -40,8 +51,15 @@ export const refreshAccessToken = () => {
   return refreshInFlight;
 };
 
+// A write refused because DischargeFlow is in read-only (downtime) mode. queries.js listens for the event and refetches
+// the downtime status, so the banner appears and write controls disable even before the next poll.
+export const READ_ONLY_EVENT = 'df:read-only';
+export const isReadOnlyError = (error) =>
+  error?.response?.status === 503 && String(error?.response?.headers?.['x-read-only']) === 'true';
+
 // On a 401 from any API call, refresh once and retry the original request.
 api.interceptors.response.use(undefined, async error => {
+  if (isReadOnlyError(error)) window.dispatchEvent(new Event(READ_ONLY_EVENT));
   const original = error.config;
   if (error.response?.status === 401 && original && !original._retried && !isAuthCall(original.url)) {
     original._retried = true;

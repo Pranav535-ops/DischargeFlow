@@ -11,7 +11,8 @@ import {
   LayoutDashboard,
   DollarSign,
   Bot,
-  Sparkles
+  Sparkles,
+  ClipboardList
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 
@@ -24,6 +25,7 @@ const Sidebar = ({ user }) => {
     { id: 'tasks',     to: '/tasks',     label: 'My Tasks',     icon: CheckSquare,     roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'insurance', to: '/insurance', label: 'Insurance',    icon: DollarSign,      roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'chatbot',   to: '/assistant', label: 'AI Assistant', icon: Bot,             roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'census',    to: '/census',    label: 'Census',       icon: ClipboardList,   roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'analytics', to: '/analytics', label: 'Analytics',    icon: BarChart3,       roles: ['physician', 'nurse', 'admin'] },
     { id: 'insights',  to: '/insights',  label: 'AI Insights',  icon: Sparkles,        roles: ['admin'] },
     { id: 'admin',     to: '/admin',     label: 'Admin',        icon: Settings,        roles: ['admin'] },
@@ -44,7 +46,7 @@ const Sidebar = ({ user }) => {
   };
 
   return (
-    <div className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col">
+    <div className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col print:hidden">
       {/* Logo */}
       <div className="p-6 border-b border-zinc-800">
         <div className="flex items-center gap-3">

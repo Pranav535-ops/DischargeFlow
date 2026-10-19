@@ -23,10 +23,24 @@ def render_item(type_, obj, autogen_context):
     return False
 
 
+# Foreign keys that migrations add to an existing SQLite table in place (ALTER TABLE ... ADD COLUMN ... REFERENCES),
+# because batch mode would rebuild the table and cascade-delete its children. SQLite reflection reads neither the
+# name nor ON DELETE of such an inline constraint, so `alembic check` would report it as drift. Postgres still
+# compares them in full.
+SQLITE_INLINE_FKS = {("patients", ("unit_id",))}
+
+
+def include_object(obj, name, type_, reflected, compare_to):
+    if type_ == "foreign_key_constraint" and context.get_context().dialect.name == "sqlite":
+        return (obj.table.name, tuple(c.name for c in obj.columns)) not in SQLITE_INLINE_FKS
+    return True
+
+
 def _configure(**kwargs) -> None:
     context.configure(
         target_metadata=target_metadata,
         render_item=render_item,
+        include_object=include_object,
         compare_type=True,
         render_as_batch=True,  # SQLite needs batch mode for ALTER TABLE
         **kwargs,
