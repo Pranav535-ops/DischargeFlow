@@ -284,8 +284,8 @@ which needs monthly partitioning within a year or two.
       category, priority, unit, who was told and how many, and page status. No PHI. Completed tasks resolve their
       escalations on the next run.
     - **Running it:** there is no scheduler on Vercel, so `/api/escalations/run` is idempotent and something calls
-      it: Vercel Cron every 5 minutes (GET with `CRON_SECRET`; off until that is set), a hospital scheduler as an
-      integration client (`escalation:run`), an admin's "Run now", or `python -m app.cli escalate`. Each run takes
+      it: Vercel Cron (GET with `CRON_SECRET`; off until that is set), a hospital scheduler as an integration
+      client (`escalation:run`, the intended cadence: every few minutes), an admin's "Run now", or `python -m app.cli escalate`. Each run takes
       only the steps that are due and missing, at most one new step per task (so level 2 never fires in the same run
       as level 1), and is bounded per run (100 escalations, 20 pages) to stay inside the function time limit. On
       Postgres a per-tenant advisory lock makes an overlapping run skip; the unique constraint backs it up. A tenant
@@ -302,9 +302,11 @@ which needs monthly partitioning within a year or two.
     - **Limits:** there is no charge-nurse role, so nursing and pharmacy tasks escalate to physicians and physician
       tasks to admins; a real charge-nurse or house-supervisor role (and an on-call roster) is the hospital-specific
       follow-up. The policy is code, not per-hospital configuration. Delivery is at least once: a run whose commit
-      fails pages again, which the idempotency key lets the gateway drop. Vercel Cron runs only on production
-      deployments, and its granularity (every 5 minutes, or daily on the Hobby plan) bounds how late an escalation
-      can be; on AWS a scheduled task (EventBridge) replaces it, and the outbox (ADR-001 item 11) would make page
+      fails pages again, which the idempotency key lets the gateway drop. The Vercel project is on the Hobby plan,
+      which refuses to deploy a cron job that runs more than once a day, so `vercel.json` schedules a daily run
+      (07:00 UTC, within the hour) as a backstop only. That is far too slow for a 4-hour target: until the project
+      moves to Pro (then `*/5 * * * *`), something else must call the run every few minutes, such as the hospital's
+      interface engine or scheduler with an integration key. Vercel Cron runs only on production deployments; on AWS a scheduled task (EventBridge) replaces it, and the outbox (ADR-001 item 11) would make page
       delivery asynchronous. Paging is not acknowledged back: a page is "sent" once the gateway accepts it, and only
       completing the task stops further levels. No gateway has been tested yet; the webhook is tested against a
       local fake. Tested on SQLite and PostgreSQL 16.
