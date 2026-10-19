@@ -153,7 +153,7 @@ async def outcome_metrics(db: AsyncSession, days: int = 90) -> dict:
         },
         "notes": {
             "attribution": "by the unit of the stay; no service line in the data model yet",
-            "first_expected_date": "recorded from migration 0018 on; earlier stays count only toward the final date",
+            "first_expected_date": "recorded from migration 0019 on; earlier stays count only toward the final date",
             "readmission": f"another admission within {READMISSION_DAYS} days of discharge, any unit; discharges "
                            f"less than {READMISSION_DAYS} days ago are pending follow-up",
         },

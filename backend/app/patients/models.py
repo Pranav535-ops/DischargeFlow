@@ -207,7 +207,7 @@ class Encounter(TenantMixin, Base):
     disposition: Mapped[Optional[str]] = mapped_column(String(40))
     expected_discharge_date: Mapped[Optional[date]] = mapped_column(Date)
     # The first expected date the plan was given, kept when the date moves, so outcome analytics can measure how
-    # accurate the first estimate was (ADR-002 item 19). NULL for stays planned before migration 0018.
+    # accurate the first estimate was (ADR-002 item 19). NULL for stays planned before migration 0019.
     first_expected_discharge_date: Mapped[Optional[date]] = mapped_column(Date)
     # The discharge plan (ADR-002 item 8): where the patient is expected to go (discharge.models.DISPOSITIONS, which
     # picks the workflow template), and the last daily review of the plan.

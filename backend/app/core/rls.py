@@ -33,6 +33,9 @@ TENANT_TABLES = (
     "delay_reasons",
     "hl7_parked_messages",
     "bed_turnovers",
+    "smart_issuers",
+    "ehr_user_links",
+    "smart_launches",
     "patient_instructions",
 )
 # Shared reference data the app may read but never change.

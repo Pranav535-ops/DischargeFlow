@@ -25,6 +25,7 @@ NOTES = (
 # change a prompt by adding the next version. Add an entry here when publishing a version, never to "fix" an edit.
 PROMPT_HASHES = {
     "discharge_summary@v1": "15acf765ac42c0570e67ad7e24c7e0ff1c5d14786c38756b03148a187acf88f8",
+    "discharge_summary@v2": "f200f6bf43504a965c1fb5b2098bee5c079196aa243f6270ee3a9af402545571",
     "assistant@v1": "4140a6aa7316d38e6a579cef7c9b3602a2b589dc7c196a3a2d5ddc018bd77b44",
     "insights@v1": "55564b79e7f99df666f619a16f94d717ba7ba9d7e1dea3eb89b2d30421bef9c9",
     "patient_instructions@v1": "e98e130c65dae57d28ef025f20e596f84b0fc2b406517b1de674c1d4778209f1",
@@ -157,7 +158,7 @@ async def test_generate_summary_deidentifies_and_records_provenance(client, make
     assert body["original_content"] == body["content"]
 
     gen = body["generation"]
-    assert gen["prompt_version"] == "discharge_summary@v1" and gen["model_id"] == "mock-1"
+    assert gen["prompt_version"] == "discharge_summary@v2" and gen["model_id"] == "mock-1"
     assert gen["status"] == "succeeded" and gen["attempts"] == 1 and len(gen["input_hash"]) == 64
     assert gen["grounding_warnings"] == [] and gen["input_tokens"] > 0
     assert body["generation_id"] == gen["generation_id"]
@@ -228,7 +229,7 @@ async def test_approval_records_physician_edit_diff(client, make_user, create_pa
 
     metrics = (await client.get("/api/ai/metrics", headers=physician)).json()
     [row] = metrics["summary_quality"]
-    assert row["prompt_version"] == "discharge_summary@v1" and row["approved"] == 1 and row["approval_rate"] == 1.0
+    assert row["prompt_version"] == "discharge_summary@v2" and row["approved"] == 1 and row["approval_rate"] == 1.0
     assert row["avg_edit_similarity"] == resp.json()["edit_similarity"]
 
 
