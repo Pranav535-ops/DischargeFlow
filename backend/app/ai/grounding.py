@@ -5,6 +5,7 @@ golden-set evals (ai/evals) fail CI when any case produces one. The checks are l
 deterministic and explainable, and they err towards flagging.
 """
 import re
+from typing import Sequence
 
 from app.ai.schemas import DischargeSummaryDoc
 
@@ -42,8 +43,9 @@ def summary_text(doc: DischargeSummaryDoc) -> str:
                      *doc.follow_up, *doc.warning_signs])
 
 
-def check_grounding(doc: DischargeSummaryDoc, source_text: str) -> list[dict]:
-    """Return one warning per ungrounded medication or diagnosis (empty list = grounded)."""
+def check_grounding(doc: DischargeSummaryDoc, source_text: str, allergies: Sequence[str] = ()) -> list[dict]:
+    """Return one warning per ungrounded medication or diagnosis (empty list = grounded), and one per discharge
+    medication that names a recorded allergy (`allergies`: the EHR's list, ADR-002 item 15)."""
     source = _words(source_text)
     warnings: list[dict] = []
 
@@ -61,4 +63,10 @@ def check_grounding(doc: DischargeSummaryDoc, source_text: str) -> list[dict]:
         if missing:
             warnings.append({"type": "diagnosis", "value": dx,
                              "reason": f"terms not in the source record: {', '.join(sorted(missing))}"})
+    allergens = {w for a in allergies for w in _significant(a)}
+    for med in doc.medications:
+        drug = (WORD_RE.findall(med.name.lower()) or [""])[0]
+        if drug and drug in allergens:
+            warnings.append({"type": "allergy", "value": med.name,
+                             "reason": "medication matches a recorded allergy"})
     return warnings

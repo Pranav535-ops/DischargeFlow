@@ -102,6 +102,8 @@ def configure_logging(log_format: str, level: str = "INFO") -> None:
     root.setLevel(level)
     # Uvicorn's own access log duplicates ours and logs raw query strings; keep its errors only.
     logging.getLogger("uvicorn.access").disabled = True
+    # httpx logs every outbound URL at INFO; FHIR searches to the EHR carry the EHR's patient id in the query.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error"):
         logging.getLogger(name).handlers[:] = []
         logging.getLogger(name).propagate = True

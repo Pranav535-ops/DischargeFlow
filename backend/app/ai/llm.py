@@ -143,11 +143,19 @@ def mock_summary(facts: dict) -> dict:
     diagnosis = facts.get("diagnosis") or "Not documented"
     patient = facts.get("patient", "[PATIENT_1]")
     course = notes.get("course") or f"{patient} was admitted with {diagnosis.lower()}."
+    # The EHR's lists (ADR-002 item 15), when given: reconciled with the notes by name.
+    medications = [_mock_medication(m) for m in _split(notes.get("medications", ""))]
+    named = {m["name"].lower() for m in medications}
+    medications += [_mock_medication(m) for m in facts.get("ehr_active_medications") or []
+                    if m.split(" ", 1)[0].lower() not in named]
+    diagnoses = [diagnosis] + [p for p in facts.get("ehr_problem_list") or [] if p.lower() != diagnosis.lower()]
+    if facts.get("ehr_allergies"):
+        course = f"{course} Allergies: {'; '.join(facts['ehr_allergies'])}."
     return {
         "hospital_course": course,
-        "discharge_diagnoses": [diagnosis],
+        "discharge_diagnoses": diagnoses,
         "procedures": _split(notes.get("procedures", "")),
-        "medications": [_mock_medication(m) for m in _split(notes.get("medications", ""))],
+        "medications": medications,
         "activity": notes.get("activity", "As tolerated."),
         "diet": notes.get("diet", "Resume usual diet."),
         "follow_up": _split(notes.get("follow_up", "")) or ["Follow up with primary care as directed."],

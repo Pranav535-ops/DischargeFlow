@@ -32,6 +32,9 @@ TENANT_TABLES = (
     "workflow_templates",
     "delay_reasons",
     "hl7_parked_messages",
+    "smart_issuers",
+    "ehr_user_links",
+    "smart_launches",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")

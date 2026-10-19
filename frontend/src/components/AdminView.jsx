@@ -24,6 +24,7 @@ import { BreakGlassReview, UnitsCard, UserUnitsPicker } from './AdminUnits';
 import AdminDowntime from './AdminDowntime';
 import AdminEscalations from './AdminEscalations';
 import AdminTemplates from './AdminTemplates';
+import AdminSmart from './AdminSmart';
 
 
 const AdminView = () => {
@@ -188,6 +189,8 @@ const AdminView = () => {
       <UnitsCard />
 
       <AdminTemplates />
+
+      <AdminSmart />
 
       {/* Users Table */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">

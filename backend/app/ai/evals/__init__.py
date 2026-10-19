@@ -66,7 +66,8 @@ async def run_case(case: dict, client: LLMClient) -> CaseResult:
     tasks = [SimpleNamespace(title=t, status="completed") for t in case.get("completed_tasks", [])]
     recorder = _Recorder(client)
     deid = Deidentifier()
-    facts = summary_facts(patient, tasks, case.get("clinical_notes", ""), deid)
+    # ehr_context: the EHR medication, problem and allergy lists (ADR-002 item 15), as interop.fhir_client parses them.
+    facts = summary_facts(patient, tasks, case.get("clinical_notes", ""), deid, case.get("ehr_context"))
     prov, result = await run_summary_model(recorder, facts, deid)
 
     sent = "\n".join(recorder.sent).lower()

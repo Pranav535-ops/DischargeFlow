@@ -154,6 +154,8 @@ export const AuthProvider = ({ children }) => {
       logout,
       checkAuth,
       exchangeSession,
+      // A session issued by another sign-in route (the SMART EHR launch, ADR-002 item 14).
+      startSession: applySession,
       lock,
       locked,
       idleLockSeconds,
