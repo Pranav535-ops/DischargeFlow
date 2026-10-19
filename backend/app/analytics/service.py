@@ -11,17 +11,16 @@ from statistics import mean, median
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import lifecycle
 from app.ai.models import AIGeneration, DischargeSummary
+from app.core.config import settings
 from app.core.db import utcnow
-from app.discharge.models import Task, Workflow
+from app.discharge.models import DELAY_KINDS, TASK_SLA_HOURS, DelayReason, Task, Workflow, due_time
 from app.patients.models import Encounter
 
 MIN_GROUP_SIZE = 3
 WINDOW_TASKS = 2000
 
-# Task SLA targets in hours by priority (1 high, 2 medium, 3 low). Policy defaults for the operational metrics, not
-# measurements; a hospital would set its own.
-TASK_SLA_HOURS = {1: 4, 2: 12, 3: 24}
 READMISSION_DAYS = 30
 PRIORITY_NAMES = {1: "high", 2: "medium", 3: "low"}
 
@@ -122,8 +121,21 @@ async def stay_metrics(db: AsyncSession, since: datetime) -> dict:
     }
 
 
-def _sla_hours(priority: int | None) -> float:
-    return TASK_SLA_HOURS.get(priority or 2, TASK_SLA_HOURS[2])
+async def delay_metrics(db: AsyncSession, since: datetime) -> dict:
+    """Delay reasons recorded since `since` (ADR-002 item 10), counted by kind and code. Codes only: the free-text
+    notes are never read here. Average slip days only for groups of MIN_GROUP_SIZE or more."""
+    rows = list(await db.execute(select(DelayReason.kind, DelayReason.code, DelayReason.slip_days)
+                                 .where(DelayReason.created_at >= since)))
+    out: dict = {"recorded": len(rows)}
+    for kind in DELAY_KINDS:
+        of_kind = [(code, days) for k, code, days in rows if k == kind]
+        entry: dict = {"n": len(of_kind), "by_code": dict(sorted(Counter(code for code, _ in of_kind).items()))}
+        if kind == "expected_date_slip":
+            slips = [days for _, days in of_kind if days is not None]
+            entry["slip_days"] = ({"n": len(slips), "avg_days": round(mean(slips), 1)}
+                                  if len(slips) >= MIN_GROUP_SIZE else {"n": len(slips)})
+        out[kind] = entry
+    return out
 
 
 async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
@@ -148,16 +160,19 @@ async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
 
     open_breaches: dict[str, Counter] = defaultdict(Counter)
     open_total = 0
-    for role, priority, created in await db.execute(
-            select(Task.assigned_role, Task.priority, Task.created_at).where(Task.status != "completed")):
+    # A task is due at its template due time (ADR-002 item 9), else the SLA target for its priority after creation.
+    for role, priority, created, due in await db.execute(
+            select(Task.assigned_role, Task.priority, Task.created_at, Task.due_at).where(Task.status != "completed")):
         open_total += 1
-        if _hours(now - created) > _sla_hours(priority):
+        if now > due_time(due, created, priority):
             open_breaches[role][PRIORITY_NAMES.get(priority, "medium")] += 1
     done_by_role: dict[str, list[bool]] = defaultdict(list)
-    for role, priority, created, done in await db.execute(
-            select(Task.assigned_role, Task.priority, Task.created_at, Task.completed_at)
+    for role, priority, created, due, done in await db.execute(
+            select(Task.assigned_role, Task.priority, Task.created_at, Task.due_at, Task.completed_at)
             .where(Task.status == "completed", Task.completed_at >= since).limit(WINDOW_TASKS)):
-        done_by_role[role].append(_span(created, done) > _sla_hours(priority))
+        if done is None:
+            raise ValueError("timestamp unexpectedly NULL")
+        done_by_role[role].append(done > due_time(due, created, priority))
 
     def _rate(flags: list[bool]) -> dict:
         out: dict = {"n": len(flags), "breached": sum(flags)}
@@ -166,6 +181,14 @@ async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
         return out
 
     all_done = [f for flags in done_by_role.values() for f in flags]
+
+    # Summary signing against the sign-by policy (ADR-002 item 13).
+    overdue_hours = [row["hours_overdue"] for row in await lifecycle.unsigned_overdue(db, now)]
+    signed = list(await db.execute(
+        select(Workflow, DischargeSummary.approved_at)
+        .join(DischargeSummary, DischargeSummary.workflow_id == Workflow.workflow_id)
+        .where(DischargeSummary.approved.is_(True), DischargeSummary.approved_at >= since)))
+    signed_late = [approved_at is not None and approved_at > lifecycle.sign_by(wf) for wf, approved_at in signed]
     return {
         "window_days": days,
         "throughput": {
@@ -188,7 +211,16 @@ async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
             "completed": _rate(all_done),
             "completed_by_role": {r: _rate(v) for r, v in sorted(done_by_role.items())},
         },
+        "summary_signing": {
+            "sign_by_hours": settings.summary_sign_hours,
+            "overdue_unsigned": len(overdue_hours),
+            "oldest_overdue_hours": round(max(overdue_hours), 1) if len(overdue_hours) >= MIN_GROUP_SIZE else None,
+            # From the start of the discharge to the signature.
+            "time_to_sign": _stats([_span(wf.started_at, approved_at) for wf, approved_at in signed]),
+            "signed": _rate(signed_late),
+        },
         "stays": await stay_metrics(db, since),
+        "delays": await delay_metrics(db, since),
     }
 
 

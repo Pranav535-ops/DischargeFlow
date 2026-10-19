@@ -3,7 +3,9 @@
 When the hospital's ADT system discharges the patient first (HL7 A03, ADR-002 item 11): in_progress or
 pending_approval -> externally_discharged -> completed, and an A13 (cancel discharge) goes back to in_progress.
 
-A workflow discharges one encounter (stay): completing it closes the encounter (ADR-002 item 7).
+A workflow discharges one encounter (stay): completing it closes the encounter (ADR-002 item 7). Its tasks come from
+the template for the stay's planned disposition (item 9, discharge.templates), with prerequisites that update_task
+enforces and due times; completing a task after its due time needs a delay reason (item 10, discharge.planning).
 """
 from datetime import datetime, timedelta
 from typing import Optional
@@ -13,12 +15,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import lifecycle
 from app.ai.models import AIGeneration, DischargeSummary
 from app.audit.service import write_audit
 from app.core.config import settings
 from app.core.db import utcnow
 from app.core.security import CurrentUser, ensure_permission
-from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, EXTERNALLY_DISCHARGED, Task, Workflow
+from app.discharge import planning, templates
+from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, EXTERNALLY_DISCHARGED, DelayReason, Task, Workflow, due_time
 from app.downtime.service import backfill_period
 from app.identity.models import User
 from app.identity.permissions import PENDING_ROLE
@@ -61,15 +65,38 @@ async def encounter_for(db: AsyncSession, workflow: Workflow) -> Optional[Encoun
     return encounter
 
 
+def task_view(task: Task, by_id: dict[str, Task], delayed: frozenset[str] = frozenset()) -> dict:
+    """A task as the UI shows it: its due time (template or SLA), whether it is overdue (and whether a delay reason
+    is on record), and the prerequisites it is still waiting on."""
+    out = task.to_dict()
+    due = due_time(task.due_at, task.created_at, task.priority)
+    out["due"] = due.isoformat()
+    out["overdue"] = task.status != "completed" and planning.task_overdue(task)
+    out["delay_recorded"] = task.task_id in delayed
+    out["blocked_by"] = [{"task_id": d, "title": by_id[d].title} for d in task.depends_on or []
+                         if d in by_id and by_id[d].status != "completed"]
+    return out
+
+
 async def workflow_detail(db: AsyncSession, workflow: Workflow) -> dict:
-    """Workflow plus its tasks (priority order) and discharge summary, as the UI expects."""
-    tasks = await db.scalars(
+    """Workflow plus its tasks (priority order), discharge summary and the stay's discharge plan, as the UI
+    expects."""
+    tasks = list(await db.scalars(
         select(Task).where(Task.workflow_id == workflow.workflow_id).order_by(Task.priority, Task.created_at)
-    )
+    ))
     summary = await db.scalar(select(DischargeSummary).where(DischargeSummary.workflow_id == workflow.workflow_id))
     out = workflow.to_dict()
-    out["tasks"] = [t.to_dict() for t in tasks]
-    out["discharge_summary"] = summary.to_dict() if summary else None
+    by_id = {t.task_id: t for t in tasks}
+    delayed = frozenset(t for t in await db.scalars(select(DelayReason.task_id).where(
+        DelayReason.task_id.in_(by_id), DelayReason.kind == "task_sla_breach")) if t)
+    out["tasks"] = [task_view(t, by_id, delayed) for t in tasks]
+    encounter = await db.get(Encounter, workflow.encounter_id) if workflow.encounter_id else None
+    out["plan"] = planning.plan_view(encounter) if encounter is not None else None
+    out["discharge_summary"] = lifecycle.summary_view(summary, workflow) if summary else None
+    # ADR-002 item 13: the policy deadline for a signed summary, and whether it has passed unsigned.
+    deadline = lifecycle.sign_by(workflow)
+    out["summary_sign_by"] = deadline.isoformat()
+    out["summary_overdue"] = not (summary and summary.approved) and deadline < utcnow()
     if summary and summary.generation_id:
         gen = await db.get(AIGeneration, summary.generation_id)
         out["discharge_summary"]["generation"] = {
@@ -95,12 +122,16 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
     if patient.status == "discharged":
         raise HTTPException(status_code=400, detail="Patient is already discharged")
     encounter = await ensure_current_encounter(db, patient)
+    # The template for the planned disposition (ADR-002 item 9); without one, the built-in standard checklist.
+    template = await templates.template_for(db, encounter.planned_disposition)
 
     workflow = Workflow(
         patient_id=patient_id,
         encounter_id=encounter.encounter_id,
         initiated_by=user.user_id,
         estimated_discharge_time=utcnow() + timedelta(hours=2),
+        template_id=template.template_id if template else None,
+        template_version=template.version if template else None,
     )
     db.add(workflow)
     try:
@@ -109,7 +140,12 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
     except IntegrityError:
         raise HTTPException(status_code=400, detail="Active workflow already exists")
 
-    db.add_all(Task(workflow_id=workflow.workflow_id, patient_id=patient_id, **t) for t in STANDARD_TASKS)
+    if template is not None:
+        tasks = templates.tasks_from_template(template, workflow_id=workflow.workflow_id, patient_id=patient_id,
+                                              expected=encounter.expected_discharge_date)
+    else:
+        tasks = [Task(workflow_id=workflow.workflow_id, patient_id=patient_id, **t) for t in STANDARD_TASKS]
+    db.add_all(tasks)
     patient.status = "pending_discharge"
 
     await notify_role(db, "nurse", "New Discharge Initiated",
@@ -119,9 +155,12 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
                       f"Medication review needed for {patient.name}'s discharge", f"/patients/{patient_id}",
                       unit_id=patient.unit_id)
     await db.flush()
+    template_note = f" template={template.template_id} v{template.version}" if template else " template=standard"
     await write_audit(db, user, "INITIATE_DISCHARGE", "patient", patient_id,
-                      f"workflow={workflow.workflow_id} tasks={len(STANDARD_TASKS)}", request)
-    return {"workflow": workflow.to_dict(), "tasks_created": len(STANDARD_TASKS)}
+                      f"workflow={workflow.workflow_id} tasks={len(tasks)}{template_note}", request)
+    return {"workflow": workflow.to_dict(), "tasks_created": len(tasks),
+            "template": {"template_id": template.template_id, "name": template.name, "version": template.version,
+                         "disposition": template.disposition} if template else None}
 
 
 async def create_task(db: AsyncSession, user: CurrentUser, *, patient_id: str, title: str, description: str,
@@ -149,7 +188,8 @@ def is_assignee(user: CurrentUser, task: Task) -> bool:
 async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, status: Optional[str] = None,
                       assigned_to: Optional[str] = None, reason: Optional[str] = None,
                       request: Optional[Request] = None,
-                      backfill: Optional[tuple[datetime, str]] = None) -> Task:
+                      backfill: Optional[tuple[datetime, str]] = None,
+                      delay_code: Optional[str] = None, delay_note: Optional[str] = None) -> Task:
     """Change a task's status and/or named assignee.
 
     Only the assignee (the named user or anyone in the assigned role) changes the status. Someone holding
@@ -157,6 +197,10 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
     the task. Assigning the task to a named user needs `task:assign`, except members of the assigned role claiming
     it for themselves. Every change is audited. `backfill` (time done, downtime id; see backfill_task) records a
     completion done on paper during a downtime at the time it was actually done.
+
+    A task can't start or be completed while a prerequisite (`depends_on`) is not completed; nobody can override
+    that. Completing a task after its due time needs a delay reason (`delay_code`, ADR-002 item 10) unless one was
+    already recorded for it.
     """
     task = await db.get(Task, task_id)
     if not task:
@@ -179,6 +223,15 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
         previous_assignee = task.assigned_to or f"role {task.assigned_role}"
         task.assigned_to = assigned_to
         await write_audit(db, user, "REASSIGN_TASK", "task", task_id, f"{previous_assignee} → {assigned_to}", request)
+
+    if status and status_changes and status != "pending":
+        await _ensure_prerequisites_done(db, task)
+    if status == "completed" and status_changes:
+        done_at = backfill[0] if backfill else utcnow()
+        if planning.task_overdue(task, done_at) and not await planning.task_delay_recorded(db, task_id):
+            if delay_code is None:
+                raise HTTPException(status_code=400, detail="This task is past its due time: give a delay reason")
+            await planning.record_task_delay(db, user, task, delay_code, delay_note, request)
 
     if status and status_changes:
         previous = task.status
@@ -214,8 +267,18 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
     return task
 
 
+async def _ensure_prerequisites_done(db: AsyncSession, task: Task) -> None:
+    if not task.depends_on:
+        return
+    waiting = list(await db.scalars(select(Task.title).where(Task.task_id.in_(task.depends_on),
+                                                             Task.status != "completed")))
+    if waiting:
+        raise HTTPException(status_code=409, detail=f"Waiting on: {', '.join(sorted(waiting))}")
+
+
 async def backfill_task(db: AsyncSession, user: CurrentUser, task_id: str, *, completed_at: datetime,
-                        reason: Optional[str] = None, request: Optional[Request] = None) -> Task:
+                        reason: Optional[str] = None, request: Optional[Request] = None,
+                        delay_code: Optional[str] = None, delay_note: Optional[str] = None) -> Task:
     """Complete a task that was done on paper during a downtime, at the time it was actually done (ADR-002 item 6).
 
     The same ownership rules as update_task apply (an override needs `task:override` and a reason). The time must be
@@ -229,7 +292,8 @@ async def backfill_task(db: AsyncSession, user: CurrentUser, task_id: str, *, co
         raise HTTPException(status_code=400, detail="Task is already completed")
     period = await backfill_period(db, user.tenant_id, completed_at, task.created_at)
     return await update_task(db, user, task_id, status="completed", reason=reason, request=request,
-                             backfill=(completed_at, period.downtime_id))
+                             backfill=(completed_at, period.downtime_id), delay_code=delay_code,
+                             delay_note=delay_note)
 
 
 def set_workflow_status(workflow: Workflow, status: str) -> None:

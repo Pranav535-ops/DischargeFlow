@@ -3,7 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
 import { invalidateDischarge, useCanBackfill, usePatient, useReadOnly, useWorkflow } from '@/lib/queries';
-import { canChangeTaskStatus, taskBackfillBody, taskStatusBody } from '@/lib/tasks';
+import { canChangeTaskStatus, isBlocked, taskBackfillBody, taskStatusBody } from '@/lib/tasks';
+import { DISPOSITION_LABELS } from '@/lib/plans';
 import { 
   ArrowLeft, 
   Clock,
@@ -18,9 +19,11 @@ import {
   FileCheck,
   GraduationCap,
   Calendar,
-  Receipt
+  Receipt,
+  Lock
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
+import SummaryLifecycle, { SignByBadge } from './SummaryLifecycle';
 import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
 
@@ -73,7 +76,7 @@ const WorkflowView = () => {
       const body = editingSummary ? { content: editedContent } : {};
       await api.put(`/ai/approve-summary/${workflow.discharge_summary.summary_id}`, body);
       setEditingSummary(false);
-      toast.success('Summary approved', { description: 'Discharge summary has been approved.' });
+      toast.success('Summary signed', { description: 'Discharge summary approved and signed as version 1.' });
       await fetchData();
     } catch (error) {
       toast.error('Failed to approve summary', { description: errorMessage(error) });
@@ -212,12 +215,22 @@ const WorkflowView = () => {
             <Clock className="w-4 h-4" />
             Started: {new Date(workflow.started_at).toLocaleString()}
           </div>
-          {workflow.estimated_discharge_time && (
+          {workflow.plan?.expected_discharge_date ? (
+            <div className="flex items-center gap-2" data-testid="workflow-plan">
+              <Calendar className="w-4 h-4" />
+              Expected discharge: {new Date(`${workflow.plan.expected_discharge_date}T00:00`).toLocaleDateString()}
+              {workflow.plan.planned_disposition && ` · ${DISPOSITION_LABELS[workflow.plan.planned_disposition] || workflow.plan.planned_disposition}`}
+              {workflow.plan.expected_date_passed && <span className="text-red-400">(date passed)</span>}
+            </div>
+          ) : workflow.estimated_discharge_time && (
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4" />
               Est. Discharge: {new Date(workflow.estimated_discharge_time).toLocaleString()}
             </div>
           )}
+          <div className="flex items-center gap-2 text-zinc-500">
+            {workflow.template_id ? `Template v${workflow.template_version}` : 'Standard checklist'}
+          </div>
         </div>
 
         {/* Progress bar */}
@@ -275,11 +288,13 @@ const WorkflowView = () => {
             <Sparkles className="w-5 h-5 text-blue-400" strokeWidth={1.5} />
             <h2 className="text-lg font-medium text-zinc-50">AI Discharge Summary</h2>
           </div>
-          {workflow.discharge_summary?.approved && (
-            <span className="flex items-center gap-1 text-emerald-400 text-sm">
+          {workflow.discharge_summary?.approved ? (
+            <span className="flex items-center gap-1 text-emerald-400 text-sm" data-testid="summary-signed">
               <CheckCircle2 className="w-4 h-4" />
-              Approved
+              Signed
             </span>
+          ) : (
+            <SignByBadge workflow={workflow} />
           )}
         </div>
 
@@ -327,6 +342,9 @@ const WorkflowView = () => {
                       Approved with physician edits ({Math.round(summary.edit_similarity * 100)}% similar to the AI draft)
                     </p>
                   )}
+                  {summary.approved && (
+                    <SummaryLifecycle summary={summary} canSign={canApprove} readOnly={readOnly} onChanged={fetchData} />
+                  )}
                   {!summary.approved && canApprove && (
                     <div className="mt-4 flex gap-3">
                       <Button
@@ -340,7 +358,7 @@ const WorkflowView = () => {
                         ) : (
                           <Check className="w-4 h-4 mr-2" />
                         )}
-                        {editingSummary ? 'Approve Edited Summary' : 'Approve Summary'}
+                        {editingSummary ? 'Approve and Sign Edited Summary' : 'Approve and Sign'}
                       </Button>
                       <Button
                         data-testid="edit-summary-btn"
@@ -409,6 +427,7 @@ const WorkflowView = () => {
             const Icon = getCategoryIcon(task.category);
             const isUpdating = updatingTask === task.task_id;
             const canEdit = canUpdateTask(task);
+            const blocked = task.status !== 'completed' && isBlocked(task);
             
             return (
               <div
@@ -421,7 +440,7 @@ const WorkflowView = () => {
                     <Checkbox
                       data-testid={`task-checkbox-${task.task_id}`}
                       checked={task.status === 'completed'}
-                      disabled={isUpdating || readOnly || task.status === 'completed'}
+                      disabled={isUpdating || readOnly || task.status === 'completed' || blocked}
                       onCheckedChange={(checked) => {
                         handleTaskUpdate(task, checked ? 'completed' : 'pending');
                       }}
@@ -458,13 +477,24 @@ const WorkflowView = () => {
                       <span className="text-zinc-600">
                         Priority: {task.priority === 1 ? 'High' : task.priority === 2 ? 'Medium' : 'Low'}
                       </span>
-                      {task.completed_at && (
+                      {task.completed_at ? (
                         <span className="text-zinc-600">
                           Completed: {new Date(task.completed_at).toLocaleString()}
                           {task.backfilled_at && ' (on paper, entered after a downtime)'}
                         </span>
+                      ) : task.due && (
+                        <span className={task.overdue ? 'text-red-400' : 'text-zinc-600'} data-testid={`task-due-${task.task_id}`}>
+                          {task.overdue ? 'Overdue since' : 'Due'} {new Date(task.due).toLocaleString()}
+                          {task.overdue && task.delay_recorded && ' (delay reason recorded)'}
+                        </span>
                       )}
                     </div>
+                    {blocked && (
+                      <p className="flex items-center gap-1 text-xs text-amber-400 mt-2" data-testid={`task-blocked-${task.task_id}`}>
+                        <Lock className="w-3 h-3" />
+                        Waiting on: {task.blocked_by.map(b => b.title).join(', ')}
+                      </p>
+                    )}
                     {canBackfill && canEdit && task.status !== 'completed' && (
                       <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-zinc-400">
                         Done on paper at

@@ -19,7 +19,7 @@ from app.ai.deid import Deidentifier
 from app.ai.schemas import inline_refs
 from app.core.security import CurrentUser
 from app.discharge import service as discharge_service
-from app.discharge.models import Task, Workflow
+from app.discharge.models import DELAY_CODES, Task, Workflow
 from app.identity.permissions import ROLES
 from app.insurance import service as insurance_service
 from app.insurance.models import InsuranceClaim
@@ -180,11 +180,14 @@ async def create_task(ctx: ToolContext, args: dict) -> ToolOutput:
 class UpdateTaskArgs(_Args):
     task_id: str
     status: Literal["pending", "in_progress", "completed"]
+    # Needed to complete a task past its due time (ADR-002 item 10).
+    delay_code: Optional[Literal[DELAY_CODES]] = Field(  # type: ignore[valid-type]
+        default=None, description="Why the task is late, if it is past its due time")
 
 
 async def update_task_status(ctx: ToolContext, args: dict) -> ToolOutput:
     task = await discharge_service.update_task(ctx.db, ctx.user, args["task_id"], status=args["status"],
-                                               request=ctx.request)
+                                               request=ctx.request, delay_code=args.get("delay_code"))
     return ToolOutput({"message": f"Task '{task.title}' is now {task.status}."}, {"tasks": [task.to_dict()]},
                       task.task_id)
 

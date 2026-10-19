@@ -285,9 +285,46 @@ which needs monthly partitioning within a year or two.
       them), and `encounter_id` is nullable during the rollout; rows the previous release writes are linked when the
       state machine next touches them. Unit scope still keys on the patient's unit. FHIR Encounter ids changed from
       workflow ids to encounter ids. Tested on SQLite and PostgreSQL 16.
-8. [ ] Discharge plan from admission: expected discharge date and disposition, reviewed daily.
-9. [ ] Workflow templates per disposition, with task dependencies and due times relative to the expected date.
-10. [ ] Delay reason codes whenever the expected date slips or a task breaches its SLA.
+8. [x] Discharge plan from admission: expected discharge date and disposition, reviewed daily (migration 0014).
+    - **Built:** the plan is on the encounter: `expected_discharge_date` (from item 7), `planned_disposition` (home,
+      home with services, SNF, rehab, hospice, AMA, transfer, expired) and the last review (`plan_reviewed_at`,
+      `plan_reviewed_by`). `PUT /api/encounters/{id}/plan` and `POST .../plan/review` need the new `plan:manage`
+      (physician, nurse); changing the plan counts as the day's review. `GET /api/discharge-plans/review` lists the
+      active stays per unit with "reviewed today" and who reviewed last, not-reviewed first, one `PHI_READ` entry per
+      request, under unit scope. "Today" is the date in `HOSPITAL_TIMEZONE` (default UTC). Audit entries carry field
+      names, the delay code and ids, never the dates. The patient screen has a plan card (edit, "reviewed, no
+      change", delays), and `/plans` is the rounds list.
+    - **Limits:** the plan is set by hand; nothing reads an expected date from the EHR or the ADT feed yet (PV2-9
+      could). Disposition codes are DischargeFlow's own list, not mapped to HL7 PV1-36 codes (the actual disposition
+      from A03 stays in `disposition`). The review list is not paginated (fine for a few hundred beds).
+9. [x] Workflow templates per disposition, with task dependencies and due times relative to the expected date.
+    - **Built:** `workflow_templates` (tenant-scoped): one per disposition, tasks with a key, role, priority, due time
+      in hours from 00:00 on the expected date (hospital time; negative is the days before) and prerequisites by key.
+      Migration 0014 seeds home, home with services, SNF, rehab, hospice and AMA into every tenant.
+      `initiate_discharge` uses the active template for the planned disposition and records its id and version on the
+      workflow; tasks get `due_at`, `due_offset_hours` and `depends_on` (task ids). `update_task` refuses to start or
+      complete a task while a prerequisite is open (409, overrides included), and moving the expected date moves the
+      open tasks' due times. Admins manage templates at `/api/workflow-templates` (`template:manage`) and on the admin
+      screen; saving bumps the version and is audited. The workflow screen shows due times, overdue tasks and what a
+      task is waiting on. Escalation (item 12) and the SLA metrics use the same due time: the template's when a
+      task has one, else the SLA target for its priority after creation.
+    - **Limits:** without a plan, or without an active template for the disposition, the eight standard tasks (no
+      prerequisites, SLA by priority) are used, as before; the E2E path still runs that way. A disposition changed
+      after the discharge started does not re-template it. Approving the AI summary completes the summary task
+      directly, so it should have no prerequisites (none of the defaults do). A template task created after its due
+      time gets its priority's SLA from creation instead, so a late start isn't counted as a breach by staff.
+10. [x] Delay reason codes whenever the expected date slips or a task breaches its SLA.
+    - **Built:** `delay_reasons` (tenant- and unit-scoped): kind (`expected_date_slip`, `task_sla_breach`), code
+      (medical, social, placement, insurance, transport, pharmacy, documentation, other), optional note (required for
+      other), `slip_days`, who and when. Required when the date moves later, on the first review of a day after the date
+      has passed, and when a task is completed after its due time (also on backfill and through the assistant's tool),
+      unless one is on record (`POST /api/tasks/{id}/delay-reason` records it while the task is open). Audited with the
+      code and ids; the note stays on the row and erasure redacts it. `/api/analytics/operations` adds `delays`: counts
+      by kind and code, with average slip days only for groups of three or more. The task SLA breach count now uses a
+      task's template due time when it has one.
+    - **Limits:** one code per event, no hierarchy (no "placement: SNF bed vs. insurance denial" subcodes) and no
+      attribution to a service or unit in the metrics yet (Phase 9 item 19). A late summary task completed by approval
+      asks for no reason.
 11. [x] A03 reconciliation (design change 2), the remaining ADT events (A02, A08, A11, A13, A40 with MRN merge), and
     parking of out-of-order messages (findings 6, 7, 10).
     - **Built:** an A03 the state machine refuses is now AA: the encounter closes at the departure time (PV1-45, else
@@ -320,9 +357,71 @@ which needs monthly partitioning within a year or two.
       an unknown MRN; other out-of-order cases (an A03 for a stay whose A01 readmission has not arrived) are still
       decided against the current state. Tables added by unmerged items (summary versions and addenda, item 13)
       are not moved by a merge yet.
-12. [ ] Escalation of overdue tasks to secure messaging or paging (design change 4).
-13. [ ] Discharge summary lifecycle: signed versions, addenda instead of edits after signature, and a sign-by deadline
+12. [x] Escalation of overdue tasks to secure messaging or paging (design change 4; migration 0012, done 2026-10-19).
+    - **Policy:** a task breaches at its SLA target (`TASK_SLA_HOURS`, the operational metrics' targets: high 4 h,
+      medium 12 h, low 24 h). Level 1, at the breach, notifies the assignee (the named user, or the assigned role on
+      the patient's unit). Level 2, a further 1 h (high) or 4 h (medium) later, and never sooner than that after level
+      1, notifies the supervising role. Low priority stops at level 1. High priority is paged at both levels, medium
+      at level 2 only, low never: paging for routine work trains people to ignore pages.
+    - **State:** one `escalations` row per step (tenant-scoped, usual policy), unique per task and level, with ids,
+      category, priority, unit, who was told and how many, and page status. No PHI. Completed tasks resolve their
+      escalations on the next run.
+    - **Running it:** there is no scheduler on Vercel, so `/api/escalations/run` is idempotent and something calls
+      it: Vercel Cron (GET with `CRON_SECRET`; off until that is set), a hospital scheduler as an integration
+      client (`escalation:run`, the intended cadence: every few minutes), an admin's "Run now", or `python -m app.cli escalate`. Each run takes
+      only the steps that are due and missing, at most one new step per task (so level 2 never fires in the same run
+      as level 1), and is bounded per run (100 escalations, 20 pages) to stay inside the function time limit. On
+      Postgres a per-tenant advisory lock makes an overlapping run skip; the unique constraint backs it up. A tenant
+      in read-only mode is skipped, since nobody can complete tasks during a downtime.
+    - **Delivery:** in-app notifications always, through the same unit-filtered fan-out as other notifications. A
+      `Pager` interface adds the external channel: `none` (default) or a generic webhook to the hospital's
+      secure-messaging or paging gateway, HMAC-SHA256 signed over timestamp and body, with an idempotency key stable
+      per task and level. Failed pages are retried on the next runs, up to 3 attempts. Pages and notifications carry
+      task id, category, priority, unit code, minutes overdue and a link; the recipient signs in to see the patient,
+      so unit scope and PHI-read audit still apply.
+    - **Audit and view:** every step is audited (`ESCALATE_TASK`) and every page attempt (`PAGE_ESCALATION`). The
+      admin screen lists active escalations with who was told (a count of 0 flags a unit nobody in that role is on),
+      page status, the policy, and whether a schedule is configured.
+    - **Limits:** there is no charge-nurse role, so nursing and pharmacy tasks escalate to physicians and physician
+      tasks to admins; a real charge-nurse or house-supervisor role (and an on-call roster) is the hospital-specific
+      follow-up. The policy is code, not per-hospital configuration. Delivery is at least once: a run whose commit
+      fails pages again, which the idempotency key lets the gateway drop. The Vercel project is on the Hobby plan,
+      which refuses to deploy a cron job that runs more than once a day, so `vercel.json` schedules a daily run
+      (07:00 UTC, within the hour) as a backstop only. That is far too slow for a 4-hour target: until the project
+      moves to Pro (then `*/5 * * * *`), something else must call the run every few minutes, such as the hospital's
+      interface engine or scheduler with an integration key. Vercel Cron runs only on production deployments; on AWS a scheduled task (EventBridge) replaces it, and the outbox (ADR-001 item 11) would make page
+      delivery asynchronous. Paging is not acknowledged back: a page is "sent" once the gateway accepts it, and only
+      completing the task stops further levels. No gateway has been tested yet; the webhook is tested against a
+      local fake. Tested on SQLite and PostgreSQL 16.
+13. [x] Discharge summary lifecycle: signed versions, addenda instead of edits after signature, and a sign-by deadline
     tracked against hospital policy.
+    - **Signed versions:** the physician's approval is the signature. It freezes the text as
+      `discharge_summary_versions` version 1 (migration 0013) with `signed_by`, `signed_at` and a SHA-256 of the signed
+      text; reads report `hash_verified`. From then on the summary's text can't change: the API refuses a second
+      approval, and the model raises `SignedSummaryError` if code tries to set different text. Summaries signed before
+      0013 get their version 1 from `app.cli migrate`.
+    - **Addenda:** `POST /api/ai/summaries/{id}/addenda` (`summary:manage`) appends text to the latest signed version,
+      signed by its author as it is added (`signed_by`, `signed_at`, SHA-256), including after discharge. Never edited
+      or removed. The summary read and the workflow view show the signed version, the version history and the
+      addenda; FHIR `DocumentReference` carries the signed version and then one attachment per addendum, with
+      `docStatus` `amended`.
+    - **Protection:** versions and addenda are encrypted with the patient's data key (AAD: their own id and field),
+      tenant-scoped, and unit-scoped like `discharge_summaries`. Erasure overwrites their text and clears their hashes.
+      Audit entries carry version and addendum ids only.
+    - **Sign-by deadline:** `SUMMARY_SIGN_HOURS` (default 24, 1 to 720) after the patient left. While the patient is
+      still here the expected discharge time stands in, so a stalled unsigned discharge still becomes overdue.
+      Operational metrics report overdue unsigned summaries, time to sign and signatures after the deadline;
+      `GET /api/ai/summaries/overdue` lists them (ids and times only) and the workflow view flags them.
+      `python -m app.cli summary-deadlines` (or `POST /api/ai/summaries/overdue/notify`) notifies physicians on the
+      patient's unit once per discharge.
+    - **Limits:** nothing runs the notification sweep on its own yet: on ECS it needs a scheduled task (hourly is
+      enough; the sweep is idempotent), and on Vercel a Vercel Cron calling the endpoint with a service identity.
+      Until then overdue summaries show in metrics and in the workflow view only. Discharge still requires a signed
+      summary, so "after discharge" deadlines matter only once A03 reconciliation (item 11) lets a patient leave
+      first. There is one signer per version (no co-signature by an attending for a resident's summary) and no
+      correction workflow that issues version 2; the version number leaves room for both. The signature is the
+      authenticated approval plus a hash, not a cryptographic signature with the physician's own key. Tested on
+      SQLite and PostgreSQL 16.
 
 **Phase 9: Integration and value**
 14. [ ] SMART on FHIR launch from the EHR, with patient context and no second sign-in.

@@ -9,13 +9,44 @@ export const canOverrideTask = (user) => ['physician', 'admin'].includes(user?.r
 
 export const canChangeTaskStatus = (task, user) => isTaskAssignee(task, user) || canOverrideTask(user);
 
-// The PUT /tasks/:id body for a status change, asking for the override reason when the user is not the assignee.
-// Returns null if they cancel.
+// Delay reason codes (ADR-002 item 10), as discharge/models.py:DELAY_CODES.
+export const DELAY_CODES = ['medical', 'social', 'placement', 'insurance', 'transport', 'pharmacy', 'documentation', 'other'];
+
+// Ask why something is late: returns {delay_code, delay_note?}, or null if cancelled or not a known code. The note
+// is optional except for `other`.
+export const askDelayReason = (question, ask = window.prompt) => {
+  const answer = ask(`${question}\nDelay reason: ${DELAY_CODES.join(', ')}\n`
+    + '(optionally followed by a note, e.g. "placement waiting for a bed")');
+  if (!answer || !answer.trim()) return null;
+  const [first, ...rest] = answer.trim().split(/\s+/);
+  const code = first.toLowerCase();
+  if (!DELAY_CODES.includes(code)) return null;
+  const note = rest.join(' ').trim();
+  if (code === 'other' && !note) return null;
+  return note ? { delay_code: code, delay_note: note } : { delay_code: code };
+};
+
+// A prerequisite (ADR-002 item 9) is still open: the task can't start or be completed yet.
+export const isBlocked = (task) => (task.blocked_by?.length ?? 0) > 0;
+
+// Completing a task past its due time needs a delay reason, unless one is on record (the API answers 400 then).
+const needsDelayReason = (task, status) => status === 'completed' && task.overdue && !task.delay_recorded;
+
+// The PUT /tasks/:id body for a status change, asking for the override reason when the user is not the assignee, and
+// the delay reason when a late task is completed. Returns null if they cancel.
 export const taskStatusBody = (task, user, status, ask = window.prompt) => {
-  if (isTaskAssignee(task, user)) return { status };
-  const reason = ask(`"${task.title}" is assigned to the ${task.assigned_role} team. Why are you changing it?`);
-  if (!reason || !reason.trim()) return null;
-  return { status, reason: reason.trim() };
+  let body = { status };
+  if (!isTaskAssignee(task, user)) {
+    const reason = ask(`"${task.title}" is assigned to the ${task.assigned_role} team. Why are you changing it?`);
+    if (!reason || !reason.trim()) return null;
+    body = { ...body, reason: reason.trim() };
+  }
+  if (needsDelayReason(task, status)) {
+    const delay = askDelayReason(`"${task.title}" is past its due time.`, ask);
+    if (!delay) return null;
+    body = { ...body, ...delay };
+  }
+  return body;
 };
 
 // The PUT /tasks/:id/backfill body for a task done on paper during a downtime. `localTime` is a datetime-local input
@@ -24,8 +55,16 @@ export const taskBackfillBody = (task, user, localTime, ask = window.prompt) => 
   const when = localTime ? new Date(localTime) : null;
   if (!when || Number.isNaN(when.getTime())) return null;
   const completed_at = when.toISOString();
-  if (isTaskAssignee(task, user)) return { completed_at };
-  const reason = ask(`"${task.title}" is assigned to the ${task.assigned_role} team. Why are you entering it?`);
-  if (!reason || !reason.trim()) return null;
-  return { completed_at, reason: reason.trim() };
+  let body = { completed_at };
+  if (!isTaskAssignee(task, user)) {
+    const reason = ask(`"${task.title}" is assigned to the ${task.assigned_role} team. Why are you entering it?`);
+    if (!reason || !reason.trim()) return null;
+    body = { ...body, reason: reason.trim() };
+  }
+  if (task.due && when > new Date(task.due) && !task.delay_recorded) {
+    const delay = askDelayReason(`"${task.title}" was done after its due time.`, ask);
+    if (!delay) return null;
+    body = { ...body, ...delay };
+  }
+  return body;
 };

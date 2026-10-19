@@ -45,8 +45,10 @@ test('a patient is discharged end to end', async ({ page }) => {
   await expect(editor).toHaveValue(new RegExp(PATIENT)); // re-identified for the physician
   await editor.fill((await editor.inputValue()).replace('Primary care in 7 days', 'Primary care in 5 days'));
   await page.getByTestId('approve-summary-btn').click();
-  await expect(page.getByText('Approved', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('summary-signed')).toBeVisible();
   await expect(page.getByText(/Approved with physician edits/)).toBeVisible();
+  await expect(page.getByTestId('signed-version')).toContainText('Version 1 signed by');
+  await expect(page.getByTestId('summary-editor')).toHaveCount(0); // signed text can't be edited
 
   // --- nurse and pharmacist finish their tasks, arriving by deep link ---
   for (const role of ['nurse', 'pharmacist']) {
@@ -60,6 +62,12 @@ test('a patient is discharged end to end', async ({ page }) => {
   await open(page, workflowPath);
   await page.getByTestId('complete-workflow-btn').click();
   await expect(page.getByText('Completed', { exact: true }).first()).toBeVisible();
+
+  // After discharge the signed summary takes addenda, never edits.
+  await page.getByTestId('addendum-input').fill('Addendum: final culture negative.');
+  await page.getByTestId('add-addendum-btn').click();
+  await expect(page.getByTestId('addenda')).toContainText('final culture negative');
+  await expect(page.getByTestId('version-history')).toContainText('Addendum 1 signed by');
 
   // Back and reload keep working on the patient's own URL.
   await page.goto(patientUrl);
@@ -80,4 +88,8 @@ test('the FHIR API exposes the approved summary', async ({ page }) => {
   expect(bundle.resourceType).toBe('Bundle');
   const texts = bundle.entry.map(e => Buffer.from(e.resource.content[0].attachment.data, 'base64').toString('utf-8'));
   expect(texts.some(t => t.includes('Primary care in 5 days'))).toBeTruthy(); // the physician's approved edit
+  // The addendum follows the signed version as a further attachment, and the document is marked amended.
+  const amended = bundle.entry.map(e => e.resource).find(r => r.docStatus === 'amended');
+  expect(amended.content).toHaveLength(2);
+  expect(Buffer.from(amended.content[1].attachment.data, 'base64').toString('utf-8')).toContain('final culture negative');
 });

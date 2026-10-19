@@ -13,7 +13,7 @@ ADR-002 Phase 8, item 11 (design change 2; findings 6, 7 and 10).
 Every change is additive, so the previous release keeps working while the deploy rolls out.
 
 Revision ID: 0015
-Revises: 0011
+Revises: 0014
 Create Date: 2026-10-19 21:00:00
 """
 from typing import Sequence, Union
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '0015'
-down_revision: Union[str, None] = '0011'
+down_revision: Union[str, None] = '0014'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

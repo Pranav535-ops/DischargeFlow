@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select, text, update
 
-from app.ai.models import DischargeSummary
+from app.ai.models import DischargeSummary, content_sha256
 from app.audit.models import AuditLog
 from app.core import crypto
 from app.core.db import utcnow
@@ -278,6 +278,10 @@ async def test_a40_merges_records_and_retires_the_old_index(client, make_client,
     assert all(t.patient_id == survivor_id for t in await db.scalars(select(Task)))
     summary = await db.scalar(select(DischargeSummary))
     assert summary.patient_id == survivor_id and summary.content and summary.content != "[REDACTED]"
+    # Its signed version (ADR-002 item 13) moved too, re-encrypted with the survivor's key: same text, same hash.
+    [version] = summary.versions
+    assert version.patient_id == survivor_id and version.content == summary.content
+    assert version.content_sha256 == content_sha256(version.content)
     assert all(m.patient_id == survivor_id for m in await db.scalars(select(HL7Message)) if m.patient_id)
 
     listed = [p["patient_id"] for p in (await client.get("/api/patients", headers=admin)).json()]

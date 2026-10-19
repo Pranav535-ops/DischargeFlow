@@ -22,6 +22,8 @@ import {
 import { toast } from 'sonner';
 import { BreakGlassReview, UnitsCard, UserUnitsPicker } from './AdminUnits';
 import AdminDowntime from './AdminDowntime';
+import AdminEscalations from './AdminEscalations';
+import AdminTemplates from './AdminTemplates';
 
 
 const AdminView = () => {
@@ -181,7 +183,11 @@ const AdminView = () => {
 
       <AdminDowntime />
 
+      <AdminEscalations />
+
       <UnitsCard />
+
+      <AdminTemplates />
 
       {/* Users Table */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">

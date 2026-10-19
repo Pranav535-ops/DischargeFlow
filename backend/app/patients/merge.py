@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.models import ENCRYPTED_SUMMARY_FIELDS, AIGeneration, DischargeSummary
+from app.ai.models import AIGeneration, DischargeSummary, DischargeSummaryAddendum, DischargeSummaryVersion
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
 from app.insurance.models import InsuranceClaim
 from app.patients.models import AccessGrant, Encounter, Patient
@@ -39,15 +39,16 @@ async def merge_into(db: AsyncSession, prior: Patient, survivor: Patient) -> dic
         encounter.patient_id = survivor.patient_id
         encounter.visit_number = visit_number  # re-encrypted with the survivor's
 
-    summaries = list(await db.scalars(select(DischargeSummary).where(DischargeSummary.patient_id == prior.patient_id)))
-    for summary in summaries:
-        texts = {field: getattr(summary, field) for field in ENCRYPTED_SUMMARY_FIELDS}
-        summary.patient = survivor
-        summary.patient_id = survivor.patient_id
-        for field, value in texts.items():
-            setattr(summary, field, value)
+    # Summaries, their signed versions and addenda (ADR-002 item 13) all hold text under the patient's key.
+    keyed_models: tuple[type[DischargeSummary] | type[DischargeSummaryVersion] | type[DischargeSummaryAddendum], ...] = (
+        DischargeSummary, DischargeSummaryVersion, DischargeSummaryAddendum)
+    summaries = 0
+    for keyed in keyed_models:
+        for row in list(await db.scalars(select(keyed).where(keyed.patient_id == prior.patient_id))):
+            row.rekey(survivor)  # type: ignore[attr-defined]  # select(keyed) is typed as Base
+            summaries += keyed is DischargeSummary
 
-    moved = {"encounters": len(encounters), "summaries": len(summaries)}
+    moved = {"encounters": len(encounters), "summaries": summaries}
     for name, model in (("workflows", Workflow), ("tasks", Task), ("claims", InsuranceClaim),
                         ("grants", AccessGrant)):
         result = await db.execute(update(model).where(model.patient_id == prior.patient_id)

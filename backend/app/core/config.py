@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -96,6 +97,21 @@ class Settings:
     # until `app.cli rewrap-deks` has moved them all to KMS.
     phi_key_provider: str = "local"
     phi_kms_key_id: str | None = None
+    # Hospital policy for signing the discharge summary (ADR-002 item 13): hours after discharge. Unsigned summaries
+    # past it count as overdue in operational metrics, and `app.cli summary-deadlines` notifies physicians.
+    summary_sign_hours: float = 24.0
+    # ADR-002 item 12: escalation of overdue tasks. There is no scheduler on Vercel, so something calls
+    # /api/escalations/run: Vercel Cron (GET with `Authorization: Bearer <CRON_SECRET>`), an integration client, an
+    # admin, or `python -m app.cli escalate`. escalation_pager "webhook" also sends each page to the hospital's
+    # secure-messaging or paging gateway, signed with escalation_webhook_secret. app_base_url makes page links absolute.
+    cron_secret: str | None = None
+    escalation_pager: str = "none"
+    escalation_webhook_url: str | None = None
+    escalation_webhook_secret: str | None = None
+    app_base_url: str = ""
+    # IANA time zone of the hospital (ADR-002 items 8-9): what "reviewed today" means for the daily plan review, and
+    # where template due times ("10:00 on the expected discharge date") are anchored.
+    hospital_timezone: str = "UTC"
     # ADR-002 item 11 (HL7 ADT). When an A03 arrives before the discharge workflow is done, its remaining tasks stay
     # open with a deadline this many hours after the patient left (hospital policy). Out-of-order messages (an A03
     # before its A01) are parked, encrypted, for hl7_park_hours, then expire unapplied.
@@ -129,6 +145,17 @@ def _database_url_from_parts() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode=require"
 
 
+def _hours(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of hours")
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum:g} and {maximum:g} hours")
+    return value
+
+
 def _minutes(name: str, default: float, minimum: float) -> float:
     raw = os.environ.get(name, "").strip()
     try:
@@ -137,17 +164,6 @@ def _minutes(name: str, default: float, minimum: float) -> float:
         raise RuntimeError(f"{name} must be a number of minutes")
     if not minimum <= value <= 24 * 60:
         raise RuntimeError(f"{name} must be between {minimum:g} and 1440 minutes")
-    return value
-
-
-def _hours(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    try:
-        value = float(raw) if raw else default
-    except ValueError:
-        raise RuntimeError(f"{name} must be a number of hours")
-    if not 1 <= value <= 24 * 30:
-        raise RuntimeError(f"{name} must be between 1 and 720 hours")
     return value
 
 
@@ -178,8 +194,29 @@ def load_settings() -> Settings:
     if phi_key_provider == "kms" and not phi_kms_key_id:
         raise RuntimeError("PHI_KMS_KEY_ID must be set when PHI_KEY_PROVIDER is 'kms'")
 
+    hospital_timezone = os.environ.get("HOSPITAL_TIMEZONE", "").strip() or "UTC"
+    try:
+        ZoneInfo(hospital_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise RuntimeError(f"HOSPITAL_TIMEZONE is not a known time zone: {hospital_timezone!r}")
+
     # The issuer is compared with the token's `iss` claim exactly, so a trailing slash would refuse every token.
     oidc_issuer = os.environ.get("OIDC_ISSUER", "").strip().rstrip("/") or None
+
+    escalation_pager = os.environ.get("ESCALATION_PAGER", "").strip().lower() or "none"
+    webhook_url = os.environ.get("ESCALATION_WEBHOOK_URL", "").strip() or None
+    webhook_secret = os.environ.get("ESCALATION_WEBHOOK_SECRET", "").strip() or None
+    if escalation_pager not in ("none", "webhook"):
+        raise RuntimeError("ESCALATION_PAGER must be 'none' or 'webhook'")
+    if escalation_pager == "webhook":
+        if not webhook_url or not webhook_secret or len(webhook_secret) < 32:
+            raise RuntimeError("ESCALATION_PAGER=webhook needs ESCALATION_WEBHOOK_URL and an ESCALATION_WEBHOOK_SECRET "
+                               "of at least 32 characters")
+        if not is_dev and not webhook_url.startswith("https://"):
+            raise RuntimeError("ESCALATION_WEBHOOK_URL must be https outside development/test")
+    cron_secret = os.environ.get("CRON_SECRET", "").strip() or None
+    if cron_secret and len(cron_secret) < 32:
+        raise RuntimeError("CRON_SECRET must be at least 32 characters")
 
     jwt_secret = os.environ.get("JWT_SECRET", "").strip() or None
     if not jwt_secret and is_dev:
@@ -222,8 +259,15 @@ def load_settings() -> Settings:
         oidc_require_mfa=_bool("OIDC_REQUIRE_MFA"),
         phi_key_provider=phi_key_provider,
         phi_kms_key_id=phi_kms_key_id,
-        adt_documentation_hours=_hours("ADT_DOCUMENTATION_HOURS", 24),
-        hl7_park_hours=_hours("HL7_PARK_HOURS", 72),
+        summary_sign_hours=_hours("SUMMARY_SIGN_HOURS", 24, 1, 24 * 30),
+        cron_secret=cron_secret,
+        escalation_pager=escalation_pager,
+        escalation_webhook_url=webhook_url,
+        escalation_webhook_secret=webhook_secret,
+        app_base_url=os.environ.get("APP_BASE_URL", "").strip().rstrip("/"),
+        hospital_timezone=hospital_timezone,
+        adt_documentation_hours=_hours("ADT_DOCUMENTATION_HOURS", 24, 1, 24 * 30),
+        hl7_park_hours=_hours("HL7_PARK_HOURS", 72, 1, 24 * 30),
     )
 
 

@@ -55,7 +55,8 @@ async def upgrade_schema() -> None:
 
 
 async def encrypt_legacy_phi() -> int:
-    """Encrypt patient identifiers and discharge summary text still stored as plaintext.
+    """Encrypt patient identifiers and discharge summary text still stored as plaintext, and give summaries signed
+    before migration 0013 their signed version 1.
 
     Idempotent; returns how many rows changed. Summaries use their patient's data key, so patients go first (a
     summary of an erased patient is overwritten instead).
@@ -80,6 +81,11 @@ async def encrypt_legacy_phi() -> int:
                 for summary in await db.scalars(stmt):
                     if summary.needs_encryption:
                         summary.encrypt_legacy_fields()
+                        changed += 1
+                    # Signed before migration 0013: freeze the approved text as version 1 (ADR-002 item 13).
+                    if summary.approved and not summary.versions and not summary.patient.gdpr_erased:
+                        summary.record_signed_version(summary.approved_by or "unknown",
+                                                      summary.approved_at or summary.created_at)
                         changed += 1
                 await db.commit()
         finally:

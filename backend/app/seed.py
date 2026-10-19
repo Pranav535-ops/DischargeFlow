@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.tenancy import use_tenant
+from app.discharge.templates import ensure_default_templates
 from app.identity.models import Tenant
 from app.patients.models import Patient
 from app.patients.service import open_encounter
@@ -31,6 +32,8 @@ async def seed_demo_data(db: AsyncSession, tenant_id: str | None = None) -> int:
     tenant_id = tenant_id or settings.default_tenant_id
     await ensure_tenant(db, tenant_id, "Default Hospital")
     await use_tenant(db, tenant_id)
+    # Migration 0014 seeds them for tenants that existed then; a database built otherwise gets them here.
+    await ensure_default_templates(db)
     if await db.scalar(select(func.count()).select_from(Patient).where(Patient.tenant_id == tenant_id)):
         return 0
     for fields in DEMO_PATIENTS:
