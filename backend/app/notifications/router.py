@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import settings
 from app.core.db import DB, get_session_factory
 from app.core.security import AuthUser
+from app.notifications.hub import get_hub
 from app.notifications.models import Notification
 from app.notifications.stream import notification_events
 
@@ -34,10 +35,11 @@ async def stream_notifications(
     """Server-Sent Events: a `notification` event per new notification for the signed-in user.
 
     Authenticated with the usual Bearer header (the frontend reads it with fetch, not EventSource, so the token
-    never goes into a URL). The stream ends after NOTIFICATION_STREAM_SECONDS and the client reconnects.
+    never goes into a URL). The stream ends after NOTIFICATION_STREAM_SECONDS and the client reconnects. With
+    NOTIFICATION_TRANSPORT=listen the ids come from the process's LISTEN hub instead of polling.
     """
     events = notification_events(user, session_factory, duration=settings.notification_stream_seconds,
-                                 is_disconnected=request.is_disconnected)
+                                 is_disconnected=request.is_disconnected, hub=get_hub())
     return StreamingResponse(events, media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 

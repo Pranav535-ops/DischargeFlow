@@ -51,7 +51,7 @@ async def engine():
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         if eng.dialect.name == "postgresql":
-            for stmt in rls.install_statements() + rls.APPEND_ONLY_TRIGGER_PG:
+            for stmt in rls.install_statements() + rls.APPEND_ONLY_TRIGGER_PG + rls.NOTIFY_TRIGGER_PG:
                 await conn.execute(text(stmt))
         else:
             for stmt in rls.APPEND_ONLY_TRIGGER_SQLITE:

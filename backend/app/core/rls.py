@@ -145,6 +145,18 @@ END $$""",
     "CREATE TRIGGER audit_logs_append_only BEFORE UPDATE OR DELETE ON audit_logs "
     "FOR EACH ROW EXECUTE FUNCTION audit_logs_append_only()",
 ]
+# ADR-002 item 21: announce each new notification on the `notifications` channel, as "<tenant>:<user>:<id>" (ids only,
+# never text). Postgres delivers a NOTIFY only when the inserting transaction commits. Frozen copy in migration 0016.
+NOTIFY_TRIGGER_PG = [
+    """CREATE OR REPLACE FUNCTION notifications_notify() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('notifications', NEW.tenant_id || ':' || NEW.user_id || ':' || NEW.notification_id);
+    RETURN NULL;
+END $$""",
+    "DROP TRIGGER IF EXISTS notifications_notify ON notifications",
+    "CREATE TRIGGER notifications_notify AFTER INSERT ON notifications "
+    "FOR EACH ROW EXECUTE FUNCTION notifications_notify()",
+]
 APPEND_ONLY_TRIGGER_SQLITE = [
     "CREATE TRIGGER IF NOT EXISTS audit_logs_no_update BEFORE UPDATE ON audit_logs "
     "BEGIN SELECT RAISE(ABORT, 'audit_logs is append-only (UPDATE blocked)'); END",

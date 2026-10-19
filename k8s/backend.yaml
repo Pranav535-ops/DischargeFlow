@@ -50,6 +50,12 @@ spec:
           value: "production"
         - name: CORS_ORIGINS
           value: "https://dischargeflow.example.com"  # set to the real frontend origin(s), comma-separated
+        # ADR-002 item 21: one LISTEN connection per pod pushes notifications as they commit. DATABASE_URL must reach
+        # Postgres directly; behind a transaction pooler, also put DATABASE_DIRECT_URL in backend-secrets.
+        - name: NOTIFICATION_TRANSPORT
+          value: "listen"
+        - name: NOTIFICATION_STREAM_SECONDS
+          value: "300"
         envFrom:
         - secretRef:
             name: backend-secrets
