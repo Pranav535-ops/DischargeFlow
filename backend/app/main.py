@@ -14,7 +14,7 @@ from app.core.config import VERSION, settings
 from app.core.db import DB, SessionLocal, engine, utcnow
 from app.core.migrate import ensure_migrated
 from app.core.observability import RequestContextMiddleware, configure_logging, setup_tracing
-from app.discharge.router import tasks_router, workflows_router
+from app.discharge.router import plans_router, tasks_router, templates_router, workflows_router
 from app.downtime.router import census_router
 from app.downtime.router import router as downtime_router
 from app.downtime.service import READ_ONLY_HEADER, enforce_read_only
@@ -85,6 +85,7 @@ def create_app() -> FastAPI:
         analytics_router, ai_router, insurance_router, chatbot_router, audit_router, fhir_router,
         integrations_router, hl7_router, units_router, access_router, downtime_router, census_router,
         escalations_router,
+        plans_router, templates_router,
     ):
         api.include_router(router)
 

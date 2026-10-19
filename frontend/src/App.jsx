@@ -23,6 +23,7 @@ const AnalyticsView = lazy(() => import('./components/AnalyticsView'));
 const AdminView = lazy(() => import('./components/AdminView'));
 const InsightsView = lazy(() => import('./components/InsightsView'));
 const CensusView = lazy(() => import('./components/CensusView'));
+const PlanReviewView = lazy(() => import('./components/PlanReviewView'));
 
 export const Spinner = ({ full = false }) => (
   <div className={`${full ? 'min-h-screen bg-zinc-950' : 'h-64'} flex items-center justify-center`}>
@@ -80,6 +81,7 @@ const AppRouter = () => {
         <Route path="/insurance" element={page(<InsuranceView />)} />
         <Route path="/assistant" element={page(<ChatbotView />)} />
         <Route path="/census" element={page(<CensusView />)} />
+        <Route path="/plans" element={page(<PlanReviewView />)} />
         <Route path="/analytics" element={
           <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<AnalyticsView />)}</RoleRoute>} />
         <Route path="/admin" element={<RoleRoute roles={['admin']}>{page(<AdminView />)}</RoleRoute>} />

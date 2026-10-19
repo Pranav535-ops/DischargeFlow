@@ -1,6 +1,7 @@
 """Escalation of overdue tasks (ADR-002 item 12, design change 4): clinicians do not watch a web app.
 
-A task breaches when it is open longer than its SLA target (analytics.service.TASK_SLA_HOURS, by priority). Then:
+A task breaches when it is still open at its due time: the template due time (ADR-002 item 9), else its SLA target
+after creation (discharge.models.due_time, TASK_SLA_HOURS by priority). Then:
 
 - level 1, at the breach: tell the assignee (the named user, or the assigned role on the patient's unit);
 - level 2, a further interval later (and never sooner than that after level 1): tell the supervising role.
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.analytics.service import PRIORITY_NAMES, TASK_SLA_HOURS
@@ -28,6 +29,7 @@ from app.core.config import settings
 from app.core.db import utcnow
 from app.core.security import CurrentUser
 from app.core.tenancy import use_tenant
+from app.discharge.models import due_time
 from app.discharge.models import Task
 from app.downtime.service import read_only_status
 from app.escalations.models import Escalation
@@ -83,7 +85,7 @@ def task_link(task: Task) -> str:
 
 
 def _due_at(task: Task, step: Step, previous: Optional[Escalation]) -> datetime:
-    breach = task.created_at + timedelta(hours=sla_hours(task.priority))
+    breach = due_time(task.due_at, task.created_at, task.priority)
     due = breach + timedelta(hours=step.after_breach_hours)
     if previous is not None:
         # Level 2 always leaves the assignee the interval to act, even when level 1 was late (a backlog).
@@ -91,8 +93,8 @@ def _due_at(task: Task, step: Step, previous: Optional[Escalation]) -> datetime:
     return due
 
 
-def _overdue_minutes(created_at: datetime, priority: Optional[int], now: datetime) -> int:
-    return int((now - created_at - timedelta(hours=sla_hours(priority))).total_seconds() // 60)
+def _overdue_minutes(due: datetime, now: datetime) -> int:
+    return int((now - due).total_seconds() // 60)
 
 
 async def _try_lock(db: AsyncSession, tenant_id: str) -> bool:
@@ -120,7 +122,7 @@ async def _notify(db: AsyncSession, task: Task, step: Step, unit_id: Optional[st
     priority = PRIORITY_NAMES.get(task.priority, "medium")
     where = f" on unit {unit_code}" if unit_code else ""
     facts = (f"Task {task.task_id} ({task.category}, {priority} priority){where} is {overdue_minutes} min past its "
-             f"{sla_hours(task.priority):g} h target.")
+             f"{'due time' if task.due_at else f'{sla_hours(task.priority):g} h target'}.")
     link = task_link(task)
     if step.level == 1:
         if task.assigned_to:
@@ -139,7 +141,7 @@ async def _notify(db: AsyncSession, task: Task, step: Step, unit_id: Optional[st
 async def _deliver_pages(db: AsyncSession, actor: CurrentUser, pager: Pager, now: datetime) -> tuple[int, int]:
     """Send pending pages and retry failed ones (up to MAX_PAGE_ATTEMPTS). Returns (sent, failed)."""
     rows = (await db.execute(
-        select(Escalation, Task.workflow_id, Task.created_at, Unit.code)
+        select(Escalation, Task.workflow_id, Task.created_at, Task.due_at, Unit.code)
         .join(Task, Task.task_id == Escalation.task_id)
         .outerjoin(Unit, Unit.unit_id == Escalation.unit_id)
         .where(Escalation.tenant_id == actor.tenant_id, Escalation.resolved_at.is_(None),
@@ -148,7 +150,7 @@ async def _deliver_pages(db: AsyncSession, actor: CurrentUser, pager: Pager, now
         .limit(MAX_PAGES_PER_RUN)
     )).all()
     sent = failed = 0
-    for escalation, workflow_id, created_at, unit_code in rows:
+    for escalation, workflow_id, created_at, task_due_at, unit_code in rows:
         link = f"/workflows/{workflow_id}" if workflow_id else "/tasks"
         page = Page(
             escalation_id=escalation.escalation_id,
@@ -157,7 +159,7 @@ async def _deliver_pages(db: AsyncSession, actor: CurrentUser, pager: Pager, now
             tenant_id=escalation.tenant_id, task_id=escalation.task_id, level=escalation.level,
             priority=PRIORITY_NAMES.get(escalation.priority, "medium"), category=escalation.category,
             unit=unit_code, target_role=escalation.target_role,
-            overdue_minutes=_overdue_minutes(created_at, escalation.priority, now),
+            overdue_minutes=_overdue_minutes(due_time(task_due_at, created_at, escalation.priority), now),
             link=f"{settings.app_base_url}{link}",
         )
         ok = await pager.send(page)
@@ -197,7 +199,8 @@ async def run_tenant(db: AsyncSession, actor: CurrentUser, now: Optional[datetim
         select(Task, Patient.unit_id, Unit.code)
         .join(Patient, Patient.patient_id == Task.patient_id)
         .outerjoin(Unit, Unit.unit_id == Patient.unit_id)
-        .where(Task.tenant_id == tenant_id, Task.status != "completed", Task.created_at <= earliest)
+        .where(Task.tenant_id == tenant_id, Task.status != "completed",
+               or_(Task.created_at <= earliest, Task.due_at <= now))
         .order_by(Task.priority, Task.created_at)
     )).all()
     existing: dict[str, dict[int, Escalation]] = {}
@@ -218,7 +221,7 @@ async def run_tenant(db: AsyncSession, actor: CurrentUser, now: Optional[datetim
             due = _due_at(task, step, previous)
             if due > now:
                 break
-            overdue = _overdue_minutes(task.created_at, task.priority, now)
+            overdue = _overdue_minutes(due_time(task.due_at, task.created_at, task.priority), now)
             role, user_id, recipients = await _notify(db, task, step, unit_id, unit_code, overdue)
             escalation = Escalation(
                 task_id=task.task_id, level=step.level, priority=task.priority or 2, category=task.category,

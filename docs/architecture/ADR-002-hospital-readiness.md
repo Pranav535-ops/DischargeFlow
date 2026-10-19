@@ -285,9 +285,46 @@ which needs monthly partitioning within a year or two.
       them), and `encounter_id` is nullable during the rollout; rows the previous release writes are linked when the
       state machine next touches them. Unit scope still keys on the patient's unit. FHIR Encounter ids changed from
       workflow ids to encounter ids. Tested on SQLite and PostgreSQL 16.
-8. [ ] Discharge plan from admission: expected discharge date and disposition, reviewed daily.
-9. [ ] Workflow templates per disposition, with task dependencies and due times relative to the expected date.
-10. [ ] Delay reason codes whenever the expected date slips or a task breaches its SLA.
+8. [x] Discharge plan from admission: expected discharge date and disposition, reviewed daily (migration 0014).
+    - **Built:** the plan is on the encounter: `expected_discharge_date` (from item 7), `planned_disposition` (home,
+      home with services, SNF, rehab, hospice, AMA, transfer, expired) and the last review (`plan_reviewed_at`,
+      `plan_reviewed_by`). `PUT /api/encounters/{id}/plan` and `POST .../plan/review` need the new `plan:manage`
+      (physician, nurse); changing the plan counts as the day's review. `GET /api/discharge-plans/review` lists the
+      active stays per unit with "reviewed today" and who reviewed last, not-reviewed first, one `PHI_READ` entry per
+      request, under unit scope. "Today" is the date in `HOSPITAL_TIMEZONE` (default UTC). Audit entries carry field
+      names, the delay code and ids, never the dates. The patient screen has a plan card (edit, "reviewed, no
+      change", delays), and `/plans` is the rounds list.
+    - **Limits:** the plan is set by hand; nothing reads an expected date from the EHR or the ADT feed yet (PV2-9
+      could). Disposition codes are DischargeFlow's own list, not mapped to HL7 PV1-36 codes (the actual disposition
+      from A03 stays in `disposition`). The review list is not paginated (fine for a few hundred beds).
+9. [x] Workflow templates per disposition, with task dependencies and due times relative to the expected date.
+    - **Built:** `workflow_templates` (tenant-scoped): one per disposition, tasks with a key, role, priority, due time
+      in hours from 00:00 on the expected date (hospital time; negative is the days before) and prerequisites by key.
+      Migration 0014 seeds home, home with services, SNF, rehab, hospice and AMA into every tenant.
+      `initiate_discharge` uses the active template for the planned disposition and records its id and version on the
+      workflow; tasks get `due_at`, `due_offset_hours` and `depends_on` (task ids). `update_task` refuses to start or
+      complete a task while a prerequisite is open (409, overrides included), and moving the expected date moves the
+      open tasks' due times. Admins manage templates at `/api/workflow-templates` (`template:manage`) and on the admin
+      screen; saving bumps the version and is audited. The workflow screen shows due times, overdue tasks and what a
+      task is waiting on. Escalation (item 12) and the SLA metrics use the same due time: the template's when a
+      task has one, else the SLA target for its priority after creation.
+    - **Limits:** without a plan, or without an active template for the disposition, the eight standard tasks (no
+      prerequisites, SLA by priority) are used, as before; the E2E path still runs that way. A disposition changed
+      after the discharge started does not re-template it. Approving the AI summary completes the summary task
+      directly, so it should have no prerequisites (none of the defaults do). A template task created after its due
+      time gets its priority's SLA from creation instead, so a late start isn't counted as a breach by staff.
+10. [x] Delay reason codes whenever the expected date slips or a task breaches its SLA.
+    - **Built:** `delay_reasons` (tenant- and unit-scoped): kind (`expected_date_slip`, `task_sla_breach`), code
+      (medical, social, placement, insurance, transport, pharmacy, documentation, other), optional note (required for
+      other), `slip_days`, who and when. Required when the date moves later, on the first review of a day after the date
+      has passed, and when a task is completed after its due time (also on backfill and through the assistant's tool),
+      unless one is on record (`POST /api/tasks/{id}/delay-reason` records it while the task is open). Audited with the
+      code and ids; the note stays on the row and erasure redacts it. `/api/analytics/operations` adds `delays`: counts
+      by kind and code, with average slip days only for groups of three or more. The task SLA breach count now uses a
+      task's template due time when it has one.
+    - **Limits:** one code per event, no hierarchy (no "placement: SNF bed vs. insurance denial" subcodes) and no
+      attribution to a service or unit in the metrics yet (Phase 9 item 19). A late summary task completed by approval
+      asks for no reason.
 11. [ ] A03 reconciliation (design change 2), the remaining ADT events (A02, A08, A11, A13, A40 with MRN merge), and
     parking of out-of-order messages (findings 6, 7, 10).
 12. [x] Escalation of overdue tasks to secure messaging or paging (design change 4; migration 0012, done 2026-10-19).
