@@ -37,7 +37,7 @@ test('a patient is discharged end to end', async ({ page }) => {
     + 'Follow-up: Primary care in 7 days',
   );
   await page.getByTestId('generate-summary-btn').click();
-  await expect(page.getByTestId('summary-provenance')).toContainText('discharge_summary@v1');
+  await expect(page.getByTestId('summary-provenance')).toContainText('discharge_summary@v2');
   await expect(page.getByText(/amoxicillin.*875 mg twice daily for 5 days/).first()).toBeVisible();
   await expect(page.getByTestId('grounding-warnings')).toHaveCount(0); // nothing invented
 

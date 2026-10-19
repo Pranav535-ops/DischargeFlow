@@ -9,7 +9,7 @@ import difflib
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from pydantic import ValidationError
 from sqlalchemy import case, func, select
@@ -29,13 +29,37 @@ from app.patients.models import Patient
 MAX_ATTEMPTS = 2  # the first try plus one retry on invalid output
 SUMMARY_MAX_TOKENS = 8000
 MAX_NOTES_CHARS = 20000
+MAX_EHR_ITEMS = 50
+
+# Where the EHR's clinical context comes from (ADR-002 item 15): interop.smart.summary_context, registered by
+# app.main because nothing may import interop. It returns None when the physician did not launch from the EHR for
+# this patient, or the EHR did not answer.
+ClinicalContextSource = Callable[[AsyncSession, CurrentUser, Patient], Awaitable[Optional[dict]]]
+_clinical_context_source: Optional[ClinicalContextSource] = None
 
 
-def summary_facts(patient: Patient, tasks: list[Task], clinical_notes: str, deid: Deidentifier) -> dict:
-    """The minimum the prompt needs, already de-identified. No DOB, dates, room or ids are sent."""
+def set_clinical_context_source(source: Optional[ClinicalContextSource]) -> None:
+    global _clinical_context_source
+    _clinical_context_source = source
+
+
+def ehr_facts(ehr: dict, deid: Deidentifier) -> dict:
+    """The EHR's active lists (interop.fhir_client shapes), de-identified like the notes."""
+    meds = [deid.redact(f"{m['name']} {m.get('dosage') or ''}".strip()) for m in ehr.get("medications") or []]
+    problems = [deid.redact(p["name"]) for p in ehr.get("problems") or []]
+    allergies = [deid.redact(a["substance"] + (f" ({', '.join(a['reactions'])})" if a.get("reactions") else ""))
+                 for a in ehr.get("allergies") or []]
+    return {"ehr_active_medications": meds[:MAX_EHR_ITEMS], "ehr_problem_list": problems[:MAX_EHR_ITEMS],
+            "ehr_allergies": allergies[:MAX_EHR_ITEMS]}
+
+
+def summary_facts(patient: Patient, tasks: list[Task], clinical_notes: str, deid: Deidentifier,
+                  ehr: Optional[dict] = None) -> dict:
+    """The minimum the prompt needs, already de-identified. No DOB, dates, room or ids are sent. With `ehr` (the
+    EHR's medication, problem and allergy lists) the summary is grounded in the real lists."""
     patient_tok = deid.add_person("PATIENT", patient.name)
     physician_tok = deid.add_person("PHYSICIAN", patient.attending_physician, match_parts=False)
-    return {
+    facts = {
         "patient": patient_tok,
         "age_years": age_from_dob(patient.date_of_birth),
         "length_of_stay_days": days_between(patient.admission_date),
@@ -45,6 +69,9 @@ def summary_facts(patient: Patient, tasks: list[Task], clinical_notes: str, deid
         "open_discharge_tasks": [deid.redact(t.title) for t in tasks if t.status != "completed"],
         "clinical_notes": deid.redact(clinical_notes[:MAX_NOTES_CHARS]),
     }
+    if ehr:
+        facts.update(ehr_facts(ehr, deid))
+    return facts
 
 
 @dataclass
@@ -92,7 +119,7 @@ async def run_summary_model(client: LLMClient, facts: dict, deid: Deidentifier) 
         return prov, SummaryResult(generation=None, doc=None, content=None, error=prov["error"])
 
     # Grounding is checked on the de-identified text, against exactly what the model was given.
-    prov["grounding_warnings"] = check_grounding(doc, json.dumps(facts))
+    prov["grounding_warnings"] = check_grounding(doc, json.dumps(facts), facts.get("ehr_allergies") or [])
     prov["status"], prov["error"] = "succeeded", None
     final = DischargeSummaryDoc.model_validate(deid.reidentify_obj(doc.model_dump()))
     return prov, SummaryResult(generation=None, doc=final, content=render_summary(final))
@@ -103,8 +130,9 @@ async def generate_discharge_summary(db: AsyncSession, user: CurrentUser, patien
     """Generate and store a draft. On failure the provenance row is still added (the caller commits it)."""
     client = get_llm_client("summary")
     tasks = list(await db.scalars(select(Task).where(Task.workflow_id == workflow.workflow_id)))
+    ehr = await _clinical_context_source(db, user, patient) if _clinical_context_source else None
     deid = Deidentifier()
-    facts = summary_facts(patient, tasks, clinical_notes, deid)
+    facts = summary_facts(patient, tasks, clinical_notes, deid, ehr)
     prov, result = await run_summary_model(client, facts, deid)
 
     generation = AIGeneration(purpose="discharge_summary", user_id=user.user_id, workflow_id=workflow.workflow_id,

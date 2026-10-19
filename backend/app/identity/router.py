@@ -11,21 +11,18 @@ from app.audit.service import write_audit
 from app.core.config import settings
 from app.core.db import DB, utcnow
 from app.core.security import (
-    ACCESS_TOKEN_TTL,
     USER_ROLES,
     VALID_ROLES,
     AuthUser,
     CurrentUser,
     SignedInIdentity,
-    create_access_token,
     invalidate_identity,
     requires,
 )
 from app.core.tenancy import use_tenant
 from app.identity import integrations, oidc, sessions
-from app.identity.models import AuthSession, IntegrationClient, Unit, User, UserUnit
-from app.identity.permissions import PENDING_ROLE
-from app.notifications.service import notify_role
+from app.identity import service as identity_service
+from app.identity.models import IntegrationClient, Unit, User, UserUnit
 
 logger = logging.getLogger(__name__)
 
@@ -83,34 +80,6 @@ async def fetch_oauth_profile(session_id: str) -> dict:
     return resp.json()
 
 
-async def _token_response(db, response: Response, user: User, session: AuthSession, refresh_token: str) -> dict:
-    sessions.set_refresh_cookie(response, refresh_token)
-    unit_ids = sorted(await db.scalars(select(UserUnit.unit_id).where(UserUnit.user_id == user.user_id)))
-    return {
-        "success": True,
-        "token": create_access_token(user.user_id, session.session_id, user.tenant_id),
-        "expires_in": int(ACCESS_TOKEN_TTL.total_seconds()),
-        "idle_lock_seconds": int(settings.idle_lock_minutes * 60),
-        # unit_ids: the frontend defaults new patients to the user's first unit.
-        "user": {**user.to_dict(), "unit_ids": unit_ids},
-    }
-
-
-def registration_refusal(email: str) -> str | None:
-    """Why a Google account with no user row may not request access, or None if it may (as `pending`)."""
-    if not settings.self_registration:
-        return "This account has not been invited. Ask an administrator for access."
-    domain = email.rsplit("@", 1)[-1].lower()
-    if settings.allowed_email_domains and domain not in settings.allowed_email_domains:
-        return "Sign-in is limited to the hospital's email domains."
-    return None
-
-
-def _identity(user: User, session: AuthSession) -> CurrentUser:
-    return CurrentUser(user_id=user.user_id, email=user.email, name=user.name, picture=user.picture, role=user.role,
-                       tenant_id=user.tenant_id, session_id=session.session_id, created_at=user.created_at)
-
-
 @auth_router.post("/session")
 async def create_session(request: Request, response: Response, db: DB):
     """Exchange an OAuth session_id for an access token (body) and a refresh session (httpOnly cookie).
@@ -124,7 +93,7 @@ async def create_session(request: Request, response: Response, db: DB):
         raise HTTPException(status_code=400, detail="session_id required")
 
     profile = await fetch_oauth_profile(session_id)
-    return await _sign_in(db, request, response, profile["email"], profile["name"], profile.get("picture"))
+    return await identity_service.sign_in(db, request, response, profile["email"], profile["name"], profile.get("picture"))
 
 
 @auth_router.get("/config")
@@ -140,35 +109,7 @@ async def oidc_sign_in(body: OidcSignIn, request: Request, response: Response, d
     if not oidc.enabled():
         raise HTTPException(status_code=404, detail="Not Found")
     claims = await oidc.verify_id_token(body.id_token, body.nonce)
-    return await _sign_in(db, request, response, claims["email"], oidc.display_name(claims), claims.get("picture"))
-
-
-async def _sign_in(db, request: Request, response: Response, email: str, name: str, picture: str | None) -> dict:
-    email = email.strip()
-    # Single-hospital deployment: new users join the default tenant. SSO per hospital decides this later.
-    await use_tenant(db, sessions.default_tenant())
-
-    user = await db.scalar(select(User).where(func.lower(User.email) == email.lower()))
-    registered = user is None
-    if user:
-        user.name = name
-        user.picture = picture
-    else:
-        refusal = registration_refusal(email)
-        if refusal:
-            raise HTTPException(status_code=403, detail=refusal)
-        user = User(email=email, name=name, picture=picture, role=PENDING_ROLE)
-        db.add(user)
-        await db.flush()
-        await notify_role(db, "admin", "Access Request",
-                          f"{user.name} ({user.email}) signed in and is waiting for approval.", "/admin")
-    await db.flush()
-
-    session, refresh_token = await sessions.start_session(db, user, request)
-    if registered:
-        await write_audit(db, _identity(user, session), "REQUEST_ACCESS", "user", user.user_id, "Pending approval",
-                          request)
-    return await _token_response(db, response, user, session, refresh_token)
+    return await identity_service.sign_in(db, request, response, claims["email"], oidc.display_name(claims), claims.get("picture"))
 
 
 class DevLogin(BaseModel):
@@ -192,7 +133,7 @@ async def dev_login(body: DevLogin, request: Request, response: Response, db: DB
         db.add(user)
         await db.flush()
     session, refresh_token = await sessions.start_session(db, user, request)
-    return await _token_response(db, response, user, session, refresh_token)
+    return await identity_service.token_response(db, response, user, session, refresh_token)
 
 
 @auth_router.post("/refresh")
@@ -204,7 +145,7 @@ async def refresh(request: Request, response: Response, db: DB):
         refused = JSONResponse(status_code=401, content={"detail": "Session expired"})
         sessions.clear_refresh_cookie(refused)
         return refused
-    return await _token_response(db, response, result.user, result.session, result.token)
+    return await identity_service.token_response(db, response, result.user, result.session, result.token)
 
 
 @auth_router.get("/me")

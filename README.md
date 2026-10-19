@@ -92,7 +92,7 @@ In-app notifications by role, pushed over Server-Sent Events, with polling as th
 | **Notifications** | Role-routed in-app notifications delivered live over SSE. |
 | **Analytics** | Dashboard KPIs and task distribution; operational metrics and AI insights for admins. |
 | **Administration** | User roles, integration API keys, audit log with chain verification. |
-| **Interoperability** | Read-only FHIR R4; inbound HL7 v2 ADT (A01, A03). |
+| **Interoperability** | Read-only FHIR R4; inbound HL7 v2 ADT (A01, A02, A03, A08, A11, A13, A40); SMART on FHIR launch from the EHR with its medication, problem and allergy lists. |
 
 **Roles:** physician, nurse, pharmacist and admin. A new sign-in waits as `pending` (no access) until an admin gives it a role; admins can also invite people by email, and `ALLOWED_EMAIL_DOMAINS` / `SELF_REGISTRATION=false` restrict who may ask. The first admin
 is set in the database: `UPDATE users SET role = 'admin' WHERE user_id = '…'`.
@@ -212,6 +212,11 @@ integration API key and gets the HL7 ACK back.
 
 Admins create and revoke API keys at `/api/integrations/clients`. There is no MLLP listener: the interface engine
 bridges MLLP to HTTPS. Full contract: [docs/api.md](docs/api.md#hl7-v2-adt).
+
+**SMART on FHIR EHR launch** at `/launch`: an EHR the admin registered opens DischargeFlow on the patient in context,
+with no second sign-in. The workflow screen, the medication tasks and the AI summary then use the EHR's active
+medications, problems and allergies, read live over FHIR; the EHR's token stays on the server. Tested against a fake
+EHR only, not a real EHR sandbox yet. Contract: [docs/api.md](docs/api.md#smart-on-fhir-ehr-launch-and-clinical-context).
 
 ---
 

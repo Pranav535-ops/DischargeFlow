@@ -9,6 +9,7 @@ import AuthCallback from './pages/AuthCallback';
 import { LockGate } from './pages/LockScreen';
 import AppLayout from './pages/AppLayout';
 import PendingApproval from './pages/PendingApproval';
+import SmartLaunch from './pages/SmartLaunch';
 import { Loader2 } from 'lucide-react';
 
 // Each screen is its own chunk, loaded on first visit.
@@ -73,6 +74,8 @@ const AppRouter = () => {
   return (
     <Routes>
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+      {/* SMART on FHIR EHR launch (ADR-002 item 14): its own sign-in, so neither public nor protected. */}
+      <Route path="/launch" element={<SmartLaunch />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={page(<HomeView />)} />
         <Route path="/patients" element={page(<PatientList />)} />
