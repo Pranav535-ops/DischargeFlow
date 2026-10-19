@@ -53,6 +53,8 @@ export const keys = {
   deliveries: (status) => ['deliveries', status || 'all'],
   workflowDeliveries: (workflowId) => ['workflows', workflowId, 'deliveries'],
   recipients: (encounterId) => ['workflows', 'recipients', encounterId],
+  clinicalContext: (patientId) => ['smart', 'clinical-context', patientId],
+  smartIssuers: ['smart', 'issuers'],
   // Patient instructions (ADR-002 item 18), under the workflow so a discharge change refreshes them too.
   patientInstructions: (workflowId) => ['workflows', workflowId, 'instructions'],
   instructionsSheet: (id) => ['instructions', id, 'print'],
@@ -65,6 +67,13 @@ export const usePatientWorkflow = (id) =>
 export const useEncounters = (id) =>
   useQuery({ queryKey: keys.patientEncounters(id), queryFn: get(`/patients/${id}/encounters`), enabled: !!id });
 export const useWorkflow = (id) => useQuery({ queryKey: keys.workflow(id), queryFn: get(`/workflows/${id}`), enabled: !!id });
+// The EHR's medication, problem and allergy lists for a patient this session launched from the EHR (ADR-002 item 15).
+// Read live from the EHR on each fetch (the server caches for a minute), so it is not refetched on focus.
+export const useClinicalContext = (patientId) => useQuery({
+  queryKey: keys.clinicalContext(patientId), queryFn: get(`/smart/clinical-context/${patientId}`),
+  enabled: !!patientId, staleTime: 60_000, refetchOnWindowFocus: false, retry: false,
+});
+export const useSmartIssuers = () => useQuery({ queryKey: keys.smartIssuers, queryFn: get('/smart/issuers') });
 export const useTasks = () => useQuery({ queryKey: keys.tasks, queryFn: get('/tasks') });
 export const useMyTasks = () => useQuery({ queryKey: keys.myTasks, queryFn: get('/tasks/my') });
 // Polls every 30 s only while the live stream (useNotificationStream) is down.

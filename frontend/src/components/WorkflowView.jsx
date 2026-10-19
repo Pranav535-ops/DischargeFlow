@@ -25,6 +25,7 @@ import {
 import { Button } from '../components/ui/button';
 import SummaryLifecycle, { SignByBadge } from './SummaryLifecycle';
 import { SummaryRecipients } from './SummaryDelivery';
+import EhrClinicalContext, { EhrSummaryNote } from './EhrClinicalContext';
 import PatientInstructionsPanel from './PatientInstructionsPanel';
 import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
@@ -283,6 +284,9 @@ const WorkflowView = () => {
         )}
       </div>
 
+      {/* EHR medications, problems and allergies when launched from the EHR (ADR-002 item 15) */}
+      <EhrClinicalContext patientId={workflow.patient_id} />
+
       {/* AI Discharge Summary */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
@@ -385,6 +389,7 @@ const WorkflowView = () => {
           <div className="text-center py-8">
             <Sparkles className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
             <p className="text-zinc-400 mb-4">No discharge summary generated yet</p>
+            {canApprove && <div className="flex justify-center mb-2"><EhrSummaryNote patientId={workflow.patient_id} /></div>}
             {canApprove && (
               <textarea
                 data-testid="clinical-notes-input"

@@ -35,6 +35,9 @@ TENANT_TABLES = (
     "delivery_endpoints",
     "discharge_recipients",
     "summary_deliveries",
+    "smart_issuers",
+    "ehr_user_links",
+    "smart_launches",
     "patient_instructions",
 )
 # Shared reference data the app may read but never change.

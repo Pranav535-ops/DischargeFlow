@@ -15,7 +15,7 @@ from app.downtime.models import DowntimePeriod
 from app.escalations.models import Escalation
 from app.identity.models import AuthSession, IntegrationClient, RolePermission, Tenant, Unit, User, UserUnit
 from app.insurance.models import InsuranceClaim
-from app.interop.models import HL7Message, HL7ParkedMessage
+from app.interop.models import EhrUserLink, HL7Message, HL7ParkedMessage, SmartIssuer, SmartLaunch
 from app.notifications.models import Notification
 from app.patients.models import AccessGrant, Encounter, Patient
 
@@ -34,6 +34,7 @@ __all__ = [
     "DischargeSummaryAddendum",
     "DischargeSummaryVersion",
     "DowntimePeriod",
+    "EhrUserLink",
     "Encounter",
     "Escalation",
     "HL7Message",
@@ -45,6 +46,8 @@ __all__ = [
     "PatientInstructions",
     "RolePermission",
     "SummaryDelivery",
+    "SmartIssuer",
+    "SmartLaunch",
     "Task",
     "Tenant",
     "Unit",

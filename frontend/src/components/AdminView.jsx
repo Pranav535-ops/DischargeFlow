@@ -25,6 +25,7 @@ import AdminDowntime from './AdminDowntime';
 import AdminEscalations from './AdminEscalations';
 import { AdminDeliveryEndpoints } from './SummaryDelivery';
 import AdminTemplates from './AdminTemplates';
+import AdminSmart from './AdminSmart';
 
 
 const AdminView = () => {
@@ -191,6 +192,7 @@ const AdminView = () => {
       <AdminTemplates />
 
       <AdminDeliveryEndpoints />
+      <AdminSmart />
 
       {/* Users Table */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">

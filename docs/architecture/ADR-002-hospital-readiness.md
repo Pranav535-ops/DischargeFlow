@@ -425,11 +425,52 @@ which needs monthly partitioning within a year or two.
       SQLite and PostgreSQL 16.
 
 **Phase 9: Integration and value**
-14. [ ] SMART on FHIR launch from the EHR, with patient context and no second sign-in.
-15. [ ] Read-only clinical context from the EHR over FHIR (medications, problems, allergies), so medication
+14. [x] SMART on FHIR launch from the EHR, with patient context and no second sign-in.
+    - **Flow:** SMART App Launch EHR launch as a public client with PKCE (S256). The EHR opens `/launch?iss&launch`;
+      the server checks `iss` against a per-tenant allow-list (`smart_issuers`, migration 0018, admin screen) before
+      contacting it, discovers the endpoints from `.well-known/smart-configuration`, and returns the authorization
+      URL (scopes `launch openid fhirUser patient/*.read`, a fresh `state` stored as a hash, a nonce). On the way back
+      the browser checks `state` against the one it kept and `POST /api/smart/token` exchanges the code (single use,
+      verifier checked against the stored challenge) and verifies the id_token against the server's JWKS (issuer,
+      audience, expiry, nonce, `fhirUser`).
+    - **Who:** an admin link from the EHR user (`fhirUser`) to a DischargeFlow user, else a match by email (from the
+      id_token or the Practitioner's telecom) with the same rules as the Google login: unknown accounts become
+      `pending`, registration limits apply. The result is our normal session (15-minute token, `df_refresh` cookie),
+      so the idle lock, unit scope and audit all apply unchanged.
+    - **Which patient:** the EHR Patient's MRN identifier (configured system, else the one typed `MR`) is looked up
+      through the MRN blind index with the configured assigning authority, and the encounter by its visit number,
+      else the active stay. The browser lands on the active workflow, else the patient. No match still signs in, with
+      the reason shown.
+    - **The EHR token** never reaches the browser: it is stored encrypted under the launch's own data key, capped at an
+      hour, without a refresh token, and usable only by the session that made the launch. Expiry, a 401 from the EHR
+      or disabling the issuer drops it. Launches are audited (`SMART_LAUNCH`, `SMART_LAUNCH_FAILED`, ids and reasons
+      only).
+    - **Limits:** tested only against a fake EHR (unit tests with a fake authorization and FHIR server, and a
+      Playwright spec with a local fake EHR), not a real Epic or Oracle Health sandbox, so vendor quirks (Epic's
+      identifier systems, `fhirUser` formats, required `aud`) are untested. Public client only: no confidential
+      client secret or private-key JWT client authentication, and no standalone launch. Launches go to the default
+      tenant, as the Google login does. The link from EHR user to DischargeFlow user is by email or an admin link
+      created through the API; the admin screen registers EHRs but does not manage links yet. Signing out of
+      DischargeFlow does not revoke the EHR token at the EHR; it is simply no longer usable by any session.
+15. [x] Read-only clinical context from the EHR over FHIR (medications, problems, allergies), so medication
     reconciliation compares real lists and summaries are grounded in real data.
+    - **Read:** `GET /api/smart/clinical-context/{patient_id}` reads active `MedicationRequest`, `Condition` and
+      `AllergyIntolerance` live from the EHR with the session's launch token (httpx, 8-second timeout, only the
+      launch's `iss`, at most five pages). Parsed lists are cached 60 seconds per process and never persisted.
+      Entered-in-error, refuted, inactive and resolved entries are left out. Each response with data is a `PHI_READ`.
+    - **Shown:** on the workflow screen, and on medication tasks in the task list (medications and allergies), where
+      the pharmacist reconciles against the real lists.
+    - **Summaries:** the same lists, de-identified, become `ehr_active_medications`, `ehr_problem_list` and
+      `ehr_allergies` in the facts (prompt `discharge_summary@v2` tells the model to reconcile against them).
+      Grounding checks against what the model was given, and a discharge medication named like a recorded allergy
+      adds an `allergy` warning. Two golden-set cases (reconciliation, de-identification of EHR text) keep the evals
+      green on the mock adapter.
+    - **Limits:** the context exists only while the physician's session holds a live EHR launch for that patient;
+      there is no backend service access (SMART Backend Services) for reading without a launch. Medications are
+      `MedicationRequest`s only (no `MedicationStatement` or dispense history), names are matched lexically, and the
+      allergy check would not know that amoxicillin is a penicillin. Not tested against a real EHR sandbox.
 16. [x] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
-    delivery tracked (migration 0018, done 2026-10-19 against synthetic endpoints; no real HIE or Direct yet).
+    delivery tracked (migration 0019, done 2026-10-19 against synthetic endpoints; no real HIE or Direct yet).
     - **Built:** an admin-managed directory of receivers (`delivery_endpoints`: name, primary care or receiving
       facility, document format, transport, URL) and the recipients of each stay, set on its encounter with the
       discharge plan (`discharge_recipients`, `plan:manage`). Signing the summary queues one `summary_deliveries` row
@@ -461,7 +502,7 @@ which needs monthly partitioning within a year or two.
       the HTTPS adapter is exercised only against local fakes, and synthetic endpoints. Neither document has been run
       through the HL7 FHIR validator or the ONC C-CDA validator: tests check the structure (document Bundle rules,
       reference resolution, required C-CDA header elements and section codes) and that the XML is well formed. The
-      C-CDA carries no coded entries (no structured medications, problems or allergies until item 15), the patient's
+      C-CDA carries no coded entries (the EHR lists of item 15 are read live and never stored, so not sent), the patient's
       name is one string split at the last word, gender is unknown, and local ids use UUID roots instead of
       registered OIDs. Receivers are found by an admin, not from a provider directory, and the PCP is not taken from
       the ADT feed (PD1-4). Endpoint authentication is the HMAC signature only (no OAuth client credentials or mutual
