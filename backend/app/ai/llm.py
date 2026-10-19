@@ -22,7 +22,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-Purpose = Literal["summary", "assistant", "insights"]
+Purpose = Literal["summary", "assistant", "insights", "instructions"]
 
 
 @dataclass
@@ -111,6 +111,7 @@ class ClaudeClient:
 # ---------- Mock (offline, deterministic) ----------
 
 FACTS_RE = re.compile(r"<patient_facts>\s*(\{.*?\})\s*</patient_facts>", re.S)
+SIGNED_SUMMARY_RE = re.compile(r"<signed_summary_facts>\s*(\{.*\})\s*</signed_summary_facts>", re.S)
 AGGREGATES_RE = re.compile(r"<aggregates>\s*(\{.*\})\s*</aggregates>", re.S)
 NOTE_FIELDS = {"course": "course", "procedures": "procedures", "medications": "medications",
                "follow-up": "follow_up", "follow up": "follow_up", "warning signs": "warning_signs",
@@ -231,6 +232,10 @@ class MockLLMClient:
             from app.ai.insights import mock_insights
 
             return self._reply(json.dumps(mock_insights(json.loads(agg.group(1)))), messages)
+        if json_schema is not None and isinstance(content, str) and (signed := SIGNED_SUMMARY_RE.search(content)):
+            from app.ai.instructions import mock_instructions
+
+            return self._reply(json.dumps(mock_instructions(json.loads(signed.group(1)))), messages)
         if json_schema is not None:
             match = FACTS_RE.search(content if isinstance(content, str) else json.dumps(content))
             facts = json.loads(match.group(1)) if match else {}

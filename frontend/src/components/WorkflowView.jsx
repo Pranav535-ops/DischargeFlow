@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import SummaryLifecycle, { SignByBadge } from './SummaryLifecycle';
+import PatientInstructionsPanel from './PatientInstructionsPanel';
 import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
 
@@ -417,6 +418,8 @@ const WorkflowView = () => {
           </div>
         )}
       </div>
+
+      <PatientInstructionsPanel workflow={workflow} patient={patient} role={user?.role} readOnly={readOnly} />
 
       {/* Tasks */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">

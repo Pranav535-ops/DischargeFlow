@@ -135,4 +135,9 @@ code, pre {
   @page {
     margin: 12mm;
   }
+  /* Patient instructions: keep a list item or a short section from splitting across pages. */
+  .instructions-sheet {
+    orphans: 3;
+    widows: 3;
+  }
 }
