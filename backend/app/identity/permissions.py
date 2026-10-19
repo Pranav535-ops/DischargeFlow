@@ -39,6 +39,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "patient:read_all": (INTEGRATION_ROLE,),
     # Switch read-only (downtime) mode on and off, and record unplanned outages (ADR-002 item 6). Admin only.
     "downtime:manage": (),
+    # Run the escalation of overdue tasks (ADR-002 item 12): the hospital's scheduler as an integration client.
+    "escalation:run": (INTEGRATION_ROLE,),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

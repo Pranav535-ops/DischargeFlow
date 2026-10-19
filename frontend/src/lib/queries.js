@@ -41,6 +41,7 @@ export const keys = {
   downtime: ['downtime', 'status'],
   downtimePeriods: ['downtime', 'periods'],
   census: (unitId, at) => ['census', unitId || 'all', at],
+  escalations: ['escalations'],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -90,6 +91,8 @@ export const useCanBackfill = () => {
   const { data: periods } = useDowntimePeriods();
   return !readOnly && (periods?.length ?? 0) > 0;
 };
+// Active escalations of overdue tasks and the policy behind them (ADR-002 item 12), admin screen.
+export const useEscalations = () => useQuery({ queryKey: keys.escalations, queryFn: get('/escalations'), refetchInterval: 60_000 });
 export const useCensus = (unitId, at) => useQuery({
   queryKey: keys.census(unitId, at),
   queryFn: () => api.get('/census', { params: unitId ? { unit_id: unitId } : {} }).then(res => res.data),

@@ -290,7 +290,42 @@ which needs monthly partitioning within a year or two.
 10. [ ] Delay reason codes whenever the expected date slips or a task breaches its SLA.
 11. [ ] A03 reconciliation (design change 2), the remaining ADT events (A02, A08, A11, A13, A40 with MRN merge), and
     parking of out-of-order messages (findings 6, 7, 10).
-12. [ ] Escalation of overdue tasks to secure messaging or paging (design change 4).
+12. [x] Escalation of overdue tasks to secure messaging or paging (design change 4; migration 0012, done 2026-10-19).
+    - **Policy:** a task breaches at its SLA target (`TASK_SLA_HOURS`, the operational metrics' targets: high 4 h,
+      medium 12 h, low 24 h). Level 1, at the breach, notifies the assignee (the named user, or the assigned role on
+      the patient's unit). Level 2, a further 1 h (high) or 4 h (medium) later, and never sooner than that after level
+      1, notifies the supervising role. Low priority stops at level 1. High priority is paged at both levels, medium
+      at level 2 only, low never: paging for routine work trains people to ignore pages.
+    - **State:** one `escalations` row per step (tenant-scoped, usual policy), unique per task and level, with ids,
+      category, priority, unit, who was told and how many, and page status. No PHI. Completed tasks resolve their
+      escalations on the next run.
+    - **Running it:** there is no scheduler on Vercel, so `/api/escalations/run` is idempotent and something calls
+      it: Vercel Cron (GET with `CRON_SECRET`; off until that is set), a hospital scheduler as an integration
+      client (`escalation:run`, the intended cadence: every few minutes), an admin's "Run now", or `python -m app.cli escalate`. Each run takes
+      only the steps that are due and missing, at most one new step per task (so level 2 never fires in the same run
+      as level 1), and is bounded per run (100 escalations, 20 pages) to stay inside the function time limit. On
+      Postgres a per-tenant advisory lock makes an overlapping run skip; the unique constraint backs it up. A tenant
+      in read-only mode is skipped, since nobody can complete tasks during a downtime.
+    - **Delivery:** in-app notifications always, through the same unit-filtered fan-out as other notifications. A
+      `Pager` interface adds the external channel: `none` (default) or a generic webhook to the hospital's
+      secure-messaging or paging gateway, HMAC-SHA256 signed over timestamp and body, with an idempotency key stable
+      per task and level. Failed pages are retried on the next runs, up to 3 attempts. Pages and notifications carry
+      task id, category, priority, unit code, minutes overdue and a link; the recipient signs in to see the patient,
+      so unit scope and PHI-read audit still apply.
+    - **Audit and view:** every step is audited (`ESCALATE_TASK`) and every page attempt (`PAGE_ESCALATION`). The
+      admin screen lists active escalations with who was told (a count of 0 flags a unit nobody in that role is on),
+      page status, the policy, and whether a schedule is configured.
+    - **Limits:** there is no charge-nurse role, so nursing and pharmacy tasks escalate to physicians and physician
+      tasks to admins; a real charge-nurse or house-supervisor role (and an on-call roster) is the hospital-specific
+      follow-up. The policy is code, not per-hospital configuration. Delivery is at least once: a run whose commit
+      fails pages again, which the idempotency key lets the gateway drop. The Vercel project is on the Hobby plan,
+      which refuses to deploy a cron job that runs more than once a day, so `vercel.json` schedules a daily run
+      (07:00 UTC, within the hour) as a backstop only. That is far too slow for a 4-hour target: until the project
+      moves to Pro (then `*/5 * * * *`), something else must call the run every few minutes, such as the hospital's
+      interface engine or scheduler with an integration key. Vercel Cron runs only on production deployments; on AWS a scheduled task (EventBridge) replaces it, and the outbox (ADR-001 item 11) would make page
+      delivery asynchronous. Paging is not acknowledged back: a page is "sent" once the gateway accepts it, and only
+      completing the task stops further levels. No gateway has been tested yet; the webhook is tested against a
+      local fake. Tested on SQLite and PostgreSQL 16.
 13. [ ] Discharge summary lifecycle: signed versions, addenda instead of edits after signature, and a sign-by deadline
     tracked against hospital policy.
 

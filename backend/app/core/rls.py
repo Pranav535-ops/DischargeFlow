@@ -26,6 +26,7 @@ TENANT_TABLES = (
     "access_grants",
     "downtime_periods",
     "encounters",
+    "escalations",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
