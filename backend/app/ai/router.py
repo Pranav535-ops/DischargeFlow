@@ -6,9 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.ai import instructions as instructions_service
 from app.ai import lifecycle
 from app.ai import service as ai_service
-from app.ai.models import AIGeneration, DischargeSummary
+from app.ai.models import AIGeneration, DischargeSummary, PatientInstructions
 from app.ai.prompts import ACTIVE
 from app.audit.service import audit_phi_read, write_audit
 from app.core.config import settings
@@ -17,7 +18,8 @@ from app.core.security import AuthUser, CurrentUser, requires
 from app.delivery import service as delivery_service
 from app.discharge import service as discharge_service
 from app.discharge.models import Task, Workflow
-from app.patients.models import Patient
+from app.identity.models import User
+from app.patients.models import LANGUAGE_TAG_PATTERN, Patient
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -142,6 +144,93 @@ async def get_summary(workflow_id: str, request: Request, db: DB, user: AuthUser
     workflow = await db.get(Workflow, workflow_id)
     await audit_phi_read(db, user, summary.patient_id, f"discharge summary {summary.summary_id}", request)
     return lifecycle.summary_view(summary, workflow)
+
+
+class GenerateInstructionsRequest(BaseModel):
+    workflow_id: str
+    # BCP 47 code. Omitted: the patient's preferred language, else English.
+    language: Optional[str] = Field(default=None, pattern=LANGUAGE_TAG_PATTERN)
+
+
+class ApproveInstructionsRequest(BaseModel):
+    # The reviewer's edited text. Omitted or blank: approve the draft as generated.
+    content: Optional[str] = Field(default=None, max_length=50000)
+
+
+async def _instructions_or_404(db, instructions_id: str) -> PatientInstructions:
+    row = await db.get(PatientInstructions, instructions_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Instructions not found")
+    return row
+
+
+@router.post("/patient-instructions")
+async def generate_patient_instructions(req: GenerateInstructionsRequest, request: Request, db: DB,
+                                        user: CurrentUser = Depends(requires("instructions:manage"))):
+    """Draft patient-facing instructions from the signed summary, in the patient's language (ADR-002 item 18)."""
+    summary = await db.scalar(select(DischargeSummary).where(DischargeSummary.workflow_id == req.workflow_id))
+    if summary is None:
+        raise HTTPException(status_code=404, detail="No discharge summary for this workflow")
+    language = req.language or summary.patient.preferred_language or instructions_service.DEFAULT_LANGUAGE
+    result, row = await instructions_service.generate(db, user, summary, language)
+    gen = result.generation
+    await write_audit(db, user, "AI_INSTRUCTIONS_GENERATED" if row else "AI_INSTRUCTIONS_FAILED",
+                      "patient_instructions", row.instructions_id if row else gen.generation_id,
+                      f"{gen.prompt_version} {gen.model_id} status={gen.status} language={language} "
+                      f"warnings={len(gen.grounding_warnings)} generation={gen.generation_id}", request)
+    if row is None:
+        # Returned, not raised, so the failed attempt's provenance and audit rows commit.
+        return JSONResponse(status_code=502, content={"detail": "Drafting the patient instructions failed; nothing "
+                                                                "was saved. Try again or write them by hand.",
+                                                      "generation_id": gen.generation_id, "status": gen.status})
+    return instructions_service.view(row, summary, gen)
+
+
+@router.get("/patient-instructions")
+async def list_patient_instructions(workflow_id: str, request: Request, db: DB, user: AuthUser):
+    """The workflow's patient instructions (one per language), with provenance and warnings."""
+    rows = list(await db.scalars(select(PatientInstructions).where(PatientInstructions.workflow_id == workflow_id)
+                                 .order_by(PatientInstructions.created_at)))
+    if not rows:
+        return []
+    summary = await db.scalar(select(DischargeSummary).where(DischargeSummary.workflow_id == workflow_id))
+    generations = {g.generation_id: g for g in await db.scalars(select(AIGeneration).where(
+        AIGeneration.generation_id.in_([r.generation_id for r in rows if r.generation_id])))}
+    await audit_phi_read(db, user, rows[0].patient_id, f"patient instructions ({len(rows)} records)", request)
+    return [instructions_service.view(r, summary, generations.get(r.generation_id or "")) for r in rows]
+
+
+@router.put("/patient-instructions/{instructions_id}/approve")
+async def approve_patient_instructions(instructions_id: str, request: Request, db: DB,
+                                       body: Optional[ApproveInstructionsRequest] = None,
+                                       user: CurrentUser = Depends(requires("instructions:manage"))):
+    row = await _instructions_or_404(db, instructions_id)
+    edited = instructions_service.approve(row, user, body.content if body else None)
+    await write_audit(db, user, "PATIENT_INSTRUCTIONS_APPROVED", "patient_instructions", instructions_id,
+                      f"language={row.language} edited={edited} similarity={row.edit_similarity} "
+                      f"grade={row.approved_reading_grade}", request)
+    return {"success": True, "approved_at": row.approved_at.isoformat(), "edited": edited,
+            "edit_similarity": row.edit_similarity, "approved_reading_grade": row.approved_reading_grade}
+
+
+@router.get("/patient-instructions/{instructions_id}/print")
+async def print_patient_instructions(instructions_id: str, request: Request, db: DB,
+                                     user: CurrentUser = Depends(requires("instructions:manage"))):
+    """The approved handout with the patient's name, for printing. Drafts can't be printed."""
+    row = await _instructions_or_404(db, instructions_id)
+    if not row.approved:
+        raise HTTPException(status_code=409, detail="Only approved instructions can be printed")
+    if row.patient.gdpr_erased:
+        raise HTTPException(status_code=410, detail="The patient's record was erased")
+    approver = await db.get(User, row.approved_by) if row.approved_by else None
+    summary = await db.get(DischargeSummary, row.summary_id)
+    await audit_phi_read(db, user, row.patient_id, f"patient instructions {instructions_id} printed", request)
+    return {"instructions_id": row.instructions_id, "workflow_id": row.workflow_id, "patient_id": row.patient_id,
+            "patient_name": row.patient.name, "language": row.language,
+            "language_name": instructions_service.language_name(row.language), "content": row.content,
+            "approved_at": row.approved_at.isoformat() if row.approved_at else None,
+            "approved_by_name": approver.name if approver else None,
+            "stale": instructions_service.view(row, summary)["stale"]}
 
 
 @router.get("/generations")

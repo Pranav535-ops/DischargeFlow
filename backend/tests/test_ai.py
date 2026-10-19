@@ -27,6 +27,7 @@ PROMPT_HASHES = {
     "discharge_summary@v1": "15acf765ac42c0570e67ad7e24c7e0ff1c5d14786c38756b03148a187acf88f8",
     "assistant@v1": "4140a6aa7316d38e6a579cef7c9b3602a2b589dc7c196a3a2d5ddc018bd77b44",
     "insights@v1": "55564b79e7f99df666f619a16f94d717ba7ba9d7e1dea3eb89b2d30421bef9c9",
+    "patient_instructions@v1": "e98e130c65dae57d28ef025f20e596f84b0fc2b406517b1de674c1d4778209f1",
 }
 
 

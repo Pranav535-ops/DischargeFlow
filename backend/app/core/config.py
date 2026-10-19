@@ -127,6 +127,9 @@ class Settings:
     # ADR-002 item 16: outbound delivery of signed discharge summaries. When set (at least 32 characters), each
     # HTTPS delivery carries an HMAC-SHA256 signature the receiver can check (delivery/transport.py).
     delivery_signing_secret: str | None = None
+    # ADR-002 item 18: reading grade (Flesch-Kincaid) that patient instructions in English should not exceed. A draft
+    # above it is retried once with a request to simplify, and flagged to the reviewer if it is still above.
+    instructions_target_grade: float = 6.0
 
     @property
     def is_production(self) -> bool:
@@ -153,6 +156,17 @@ def _database_url_from_parts() -> str:
     port = os.environ.get("DB_PORT", "5432").strip() or "5432"
     name = os.environ.get("DB_NAME", "dischargeflow").strip() or "dischargeflow"
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode=require"
+
+
+def _bounded(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number")
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return value
 
 
 def _hours(name: str, default: float, minimum: float, maximum: float) -> float:
@@ -288,6 +302,7 @@ def load_settings() -> Settings:
         adt_documentation_hours=_hours("ADT_DOCUMENTATION_HOURS", 24, 1, 24 * 30),
         hl7_park_hours=_hours("HL7_PARK_HOURS", 72, 1, 24 * 30),
         delivery_signing_secret=delivery_signing_secret,
+        instructions_target_grade=_bounded("PATIENT_INSTRUCTIONS_TARGET_GRADE", 6, 1, 16),
     )
 
 

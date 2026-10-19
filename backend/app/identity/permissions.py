@@ -52,6 +52,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "delivery:manage": ("nurse",),
     "delivery:run": (INTEGRATION_ROLE,),
     "delivery:acknowledge": (INTEGRATION_ROLE,),
+    # Draft, edit, approve and print patient-facing discharge instructions (ADR-002 item 18).
+    "instructions:manage": ("physician", "nurse"),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 
