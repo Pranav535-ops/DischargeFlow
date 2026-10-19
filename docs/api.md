@@ -54,6 +54,8 @@ Notifications about a patient on a unit go only to members of that unit.
 | Method | Path | Access | Notes |
 |---|---|---|---|
 | POST | `/auth/session` | public | Exchanges the Emergent OAuth `session_id` for an access token; sets the refresh cookie. Known (or invited) users sign in with their role. Unknown accounts become `pending` if `SELF_REGISTRATION` is on and their domain is in `ALLOWED_EMAIL_DOMAINS` (any domain when unset), otherwise 403. Admins are notified; audited (`REQUEST_ACCESS`) |
+| GET | `/auth/config` | public | Sign-in methods offered: `{"oidc": {"issuer", "client_id"}}` when hospital SSO is configured, else `{"oidc": null}` |
+| POST | `/auth/oidc` | public | Hospital SSO (ADR-002 item 2, seam): body `{id_token, nonce}`. Verifies the ID token against the provider's JWKS (issuer, audience, expiry, nonce, `token_use`, `email_verified`, `amr` when `OIDC_REQUIRE_MFA`), then signs in like `/auth/session`. 401 naming the failed check; 404 unless `OIDC_ISSUER` and `OIDC_CLIENT_ID` are set |
 | POST | `/auth/refresh` | refresh cookie | Rotates the refresh cookie and returns a new 15-minute access token. 401 (and the session is revoked) if it wasn't refreshed for `SESSION_IDLE_MINUTES` |
 | GET | `/auth/me` | signed in, including `pending` | The current user, role and tenant |
 | POST | `/auth/logout` | refresh cookie | Revokes the session. Optional body `{"reason": "idle"}` when the browser locked itself for inactivity (stored as `idle_lock`) |

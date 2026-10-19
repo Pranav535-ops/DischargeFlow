@@ -22,7 +22,7 @@ from app.core.security import (
     requires,
 )
 from app.core.tenancy import use_tenant
-from app.identity import integrations, sessions
+from app.identity import integrations, oidc, sessions
 from app.identity.models import AuthSession, IntegrationClient, Unit, User, UserUnit
 from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
@@ -44,6 +44,11 @@ class RoleUpdate(BaseModel):
 class Logout(BaseModel):
     # "idle" when the browser locked itself after IDLE_LOCK_MINUTES without input; kept as the revocation reason.
     reason: Literal["user", "idle"] = "user"
+
+
+class OidcSignIn(BaseModel):
+    id_token: str = Field(min_length=1, max_length=16384)
+    nonce: str = Field(min_length=16, max_length=256)
 
 
 class UserInvite(BaseModel):
@@ -119,20 +124,40 @@ async def create_session(request: Request, response: Response, db: DB):
         raise HTTPException(status_code=400, detail="session_id required")
 
     profile = await fetch_oauth_profile(session_id)
-    email = profile["email"].strip()
+    return await _sign_in(db, request, response, profile["email"], profile["name"], profile.get("picture"))
+
+
+@auth_router.get("/config")
+async def auth_config():
+    """Which sign-in methods this deployment offers (public: the login page reads it before anyone signs in)."""
+    return {"oidc": {"issuer": settings.oidc_issuer, "client_id": settings.oidc_client_id} if oidc.enabled() else None}
+
+
+@auth_router.post("/oidc")
+async def oidc_sign_in(body: OidcSignIn, request: Request, response: Response, db: DB):
+    """Hospital single sign-on (ADR-002 item 2): exchange a verified OIDC ID token for a session, under the same
+    user matching and approval rules as the Google login. 404 unless OIDC_ISSUER and OIDC_CLIENT_ID are set."""
+    if not oidc.enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    claims = await oidc.verify_id_token(body.id_token, body.nonce)
+    return await _sign_in(db, request, response, claims["email"], oidc.display_name(claims), claims.get("picture"))
+
+
+async def _sign_in(db, request: Request, response: Response, email: str, name: str, picture: str | None) -> dict:
+    email = email.strip()
     # Single-hospital deployment: new users join the default tenant. SSO per hospital decides this later.
     await use_tenant(db, sessions.default_tenant())
 
     user = await db.scalar(select(User).where(func.lower(User.email) == email.lower()))
     registered = user is None
     if user:
-        user.name = profile["name"]
-        user.picture = profile.get("picture")
+        user.name = name
+        user.picture = picture
     else:
         refusal = registration_refusal(email)
         if refusal:
             raise HTTPException(status_code=403, detail=refusal)
-        user = User(email=email, name=profile["name"], picture=profile.get("picture"), role=PENDING_ROLE)
+        user = User(email=email, name=name, picture=picture, role=PENDING_ROLE)
         db.add(user)
         await db.flush()
         await notify_role(db, "admin", "Access Request",

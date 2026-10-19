@@ -188,7 +188,24 @@ which needs monthly partitioning within a year or two.
     c. **Claim permissions.** Creating a claim and changing its status need the new `claim:manage` (nurse, who owns the billing-clearance task, and admin); reads stay open to signed-in users. The assistant's `submit_claim` tool checks the same permission. The insurance screen is read-only for other roles.
     d. **Audit coverage.** Patient create and update (field names only, never values), discharge initiation and completion (including completion by an HL7 A03), task creation, status changes, overrides and reassignments are now audited in the same transaction as the change. Patient-level PHI reads are audited too, with one `PHI_READ` entry per request and no PHI in the details: the patient list (one entry per list, with the record count), patient detail, both workflow-detail routes and the summary read. Reads use resource type `patient` with the patient id, so `GET /api/audit/patients/{id}` answers "who looked at this record". A read that fails is not logged. **Cost:** each audited read appends to the tenant's hash chain, which locks the chain-head row until the request commits, so PHI reads in one tenant now serialize on that lock. The audit call is placed last in each handler to keep the hold short (a few milliseconds plus the commit). At pilot scale this is fine. At hospital scale, read events should move to a separate append-only table, or be batched into the chain by a worker (ADR-001 item 11). SQLite ignores `FOR UPDATE`, so local SQLite request transactions now run one at a time (`core/db.get_db`); without that, concurrent reads appended duplicate sequence numbers, which the Playwright run caught. **Not done:** list endpoints that carry less identifying data (`/workflows`, `/tasks`, `/insurance/claims`) and the assistant's read tools are not read-audited, though every assistant tool call is already audited.
 2. [ ] Hospital single sign-on (OIDC or SAML against the hospital directory) with MFA, plus automated provisioning and
-   deprovisioning, replacing the Emergent demo login.
+   deprovisioning, replacing the Emergent demo login. **Deferred: needs an AWS account (Cognito) and a hospital
+   directory to federate with. The code seam is in place (2026-10-19).**
+    - **Built:** `POST /api/auth/oidc` (`identity/oidc.py`) takes an OIDC ID token and the nonce the browser generated,
+      and checks it locally: RS256 signature by a key from the provider's JWKS (`OIDC_JWKS_URL`, default the issuer's
+      `/.well-known/jwks.json`, Cognito's layout; keys cached an hour, refetched on an unknown `kid`), `iss` =
+      `OIDC_ISSUER`, `aud` = `OIDC_CLIENT_ID`, expiry, nonce, `token_use` = `id`, `email_verified`, and with
+      `OIDC_REQUIRE_MFA=true` an `amr` claim naming a second factor. A verified token signs the person in through the
+      same code as the Google login (match by email, invited role, `pending` for strangers, domain allow-list), so
+      approval, unit scope and idle lock apply unchanged. Off (404) until both variables are set;
+      `GET /api/auth/config` tells the login page whether SSO is offered. Tested with a local RSA key standing in for
+      the provider's JWKS.
+    - **Left for the AWS phase:** the Cognito user pool and its SAML/OIDC federation with the hospital directory
+      (Terraform), the login page's PKCE redirect to it, SCIM (or Cognito's directory sync) for provisioning and
+      deprovisioning, per-hospital tenant assignment from a token claim, and switching the Emergent login off once
+      SSO works. Until SCIM exists, deprovisioning is an admin setting the user to `pending`, which takes effect within
+      30 seconds. MFA is enforced at the hospital's identity provider; `OIDC_REQUIRE_MFA` only checks that the token
+      says so, and Cognito passes `amr` through only for some federation setups, so it must be tested against the
+      real provider before it is switched on.
 3. [x] Unit-scoped access with break-glass (design change 3; migration 0009, done 2026-10-19).
     - **Model:** `units` (code matching HL7 PV1-3.1, so an A01 lands the patient on its unit), `user_units`, `patients.unit_id` (NULL = unassigned) and `access_grants` (break-glass), all tenant-scoped. Admins create units, set memberships and patient units in the admin and patient screens.
     - **Enforcement:** RESTRICTIVE `unit_scope` RLS policies on patients, workflows, tasks, discharge_summaries and insurance_claims, active only when the request sets `app.unit_scope='on'`. The API does that for users whose role lacks the new `patient:read_all` (admin and the ADT `interface` hold it) when `UNIT_SCOPED_ACCESS=true`. Lists, detail routes, FHIR, analytics and the assistant all go through the same policies, so there is one enforcement point, as for tenants.
@@ -209,6 +226,21 @@ which needs monthly partitioning within a year or two.
    Google is still signed in on that browser it may re-enter without a password (hospital SSO, item 2, should require
    a fresh login or a badge tap); the URL path of the locked screen (opaque ids, no PHI) stays in the address bar.
 5. [ ] Hosting and model provider under a BAA; backups with at least 7 days of point-in-time recovery (finding 8).
+   **Deferred: needs an AWS account under a BAA (ECS, RDS with point-in-time recovery, Bedrock, KMS; the Terraform in
+   `infra/` is written but not applied). The key-management seam is in place (2026-10-19).**
+    - **Built:** `core/kms.KmsKeyProvider` implements `core/crypto.KeyProvider` with a KMS symmetric key
+      (`PHI_KEY_PROVIDER=kms`, `PHI_KMS_KEY_ID`). Data keys are wrapped by KMS `Encrypt` with a fixed encryption
+      context and marked with a prefix; the local KEK becomes a retired key, so existing rows still read and
+      `app.cli rewrap-deks` moves them to KMS like any rotation. Unwrapped keys are cached in memory for 5 minutes
+      (bounded), so a patient list does not make one KMS call per field. boto3 is imported lazily and only by this
+      module (an `.importlinter` exception next to the AI gateway's). Tested with a fake KMS client: wrap, unwrap,
+      cache, refusal mapping and a local-to-KMS rewrap of a stored patient.
+    - **What it changes:** with the KEK in KMS, scheduling the key's deletion makes every wrapped data key unreadable,
+      including copies in backups, and every unwrap is in CloudTrail. Per-patient erasure is still `Patient.shred()`;
+      the blind-index key (MRN lookup) is still derived from `PHI_KEK`, which therefore stays a secret.
+    - **Left for the AWS phase:** the BAA itself, applying `infra/` (KMS key and grants to the ECS task role, RDS
+      PITR of at least 7 days, Bedrock as the model provider), running the switch and `rewrap-deks` against real
+      KMS, and a restore drill.
 6. [x] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards
    (migration 0010, done 2026-10-19; procedure in `docs/runbooks/downtime.md`).
     - **Where the flag lives:** a per-tenant `downtime_periods` row that an admin opens and closes

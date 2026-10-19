@@ -19,6 +19,7 @@ forbidden_modules =
     botocore
 ignore_imports =
     app.ai.llm -> anthropic
+    app.core.kms -> boto3
 
 [importlinter:contract:core-foundation]
 name = app.core is the foundation and depends on no feature module except identity (auth)

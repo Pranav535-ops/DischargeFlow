@@ -83,6 +83,19 @@ class Settings:
     # refuses to refresh a session unused for session_idle_minutes, which catches tabs closed before they locked.
     idle_lock_minutes: float = 5.0
     session_idle_minutes: float = 20.0
+    # ADR-002 item 2 (code seam; needs the hospital's identity provider, e.g. Cognito federated with its directory).
+    # When oidc_issuer and oidc_client_id are set, POST /api/auth/oidc accepts an ID token signed by a key from
+    # oidc_jwks_url (default: the issuer's /.well-known/jwks.json, Cognito's layout). oidc_require_mfa refuses tokens
+    # whose `amr` claim does not show a second factor.
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_jwks_url: str | None = None
+    oidc_require_mfa: bool = False
+    # ADR-002 item 5 (code seam; needs AWS under a BAA). "kms" wraps new patient data keys with the KMS key
+    # phi_kms_key_id; PHI_KEK stays the key for blind indexes and for unwrapping data keys wrapped before the switch,
+    # until `app.cli rewrap-deks` has moved them all to KMS.
+    phi_key_provider: str = "local"
+    phi_kms_key_id: str | None = None
 
     @property
     def is_production(self) -> bool:
@@ -142,6 +155,16 @@ def load_settings() -> Settings:
 
     phi_kek_previous = tuple(_decode_kek(k) for k in _split_csv(os.environ.get("PHI_KEK_PREVIOUS", "")))
 
+    phi_key_provider = os.environ.get("PHI_KEY_PROVIDER", "").strip().lower() or "local"
+    phi_kms_key_id = os.environ.get("PHI_KMS_KEY_ID", "").strip() or None
+    if phi_key_provider not in ("local", "kms"):
+        raise RuntimeError("PHI_KEY_PROVIDER must be 'local' or 'kms'")
+    if phi_key_provider == "kms" and not phi_kms_key_id:
+        raise RuntimeError("PHI_KMS_KEY_ID must be set when PHI_KEY_PROVIDER is 'kms'")
+
+    # The issuer is compared with the token's `iss` claim exactly, so a trailing slash would refuse every token.
+    oidc_issuer = os.environ.get("OIDC_ISSUER", "").strip().rstrip("/") or None
+
     jwt_secret = os.environ.get("JWT_SECRET", "").strip() or None
     if not jwt_secret and is_dev:
         # Ephemeral per-process secret: dev sessions are invalidated on restart, which is fine locally.
@@ -177,6 +200,12 @@ def load_settings() -> Settings:
         # An open tab refreshes its 15-minute access token about a minute before expiry, so anything under 16 minutes
         # would sign out people who are working.
         session_idle_minutes=_minutes("SESSION_IDLE_MINUTES", 20, 16),
+        oidc_issuer=oidc_issuer,
+        oidc_client_id=os.environ.get("OIDC_CLIENT_ID", "").strip() or None,
+        oidc_jwks_url=os.environ.get("OIDC_JWKS_URL", "").strip() or None,
+        oidc_require_mfa=_bool("OIDC_REQUIRE_MFA"),
+        phi_key_provider=phi_key_provider,
+        phi_kms_key_id=phi_kms_key_id,
     )
 
 
