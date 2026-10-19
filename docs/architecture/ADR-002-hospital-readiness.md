@@ -52,7 +52,7 @@ ADR asks a different question: what would stop it, or make it unhelpful, in a re
 | 9 | Medium | The SSE notification stream holds one serverless invocation per open tab (~200 continuously running functions at the assumed peak) | `GET /api/notifications/stream` |
 | 10 | Medium | An A03 that arrives before its A01 is answered AE 204, which most interface engines do not retry, so the message is lost | `interop/adt.py` |
 
-Findings 1–4 are addressed by Phase 7, item 1 (PR #48).
+Findings 1–4 are addressed by Phase 7, item 1 (PR #48). Findings 6, 7 and 10 are addressed by Phase 8, item 11.
 
 ### Workflow gap
 
@@ -325,8 +325,38 @@ which needs monthly partitioning within a year or two.
     - **Limits:** one code per event, no hierarchy (no "placement: SNF bed vs. insurance denial" subcodes) and no
       attribution to a service or unit in the metrics yet (Phase 9 item 19). A late summary task completed by approval
       asks for no reason.
-11. [ ] A03 reconciliation (design change 2), the remaining ADT events (A02, A08, A11, A13, A40 with MRN merge), and
+11. [x] A03 reconciliation (design change 2), the remaining ADT events (A02, A08, A11, A13, A40 with MRN merge), and
     parking of out-of-order messages (findings 6, 7, 10).
+    - **Built:** an A03 the state machine refuses is now AA: the encounter closes at the departure time (PV1-45, else
+      EVN-6, EVN-2, MSH-7), the patient is discharged, and the workflow becomes `externally_discharged` with
+      `departed_at` and `documentation_due_at` (departure plus `ADT_DOCUMENTATION_HOURS`, default 24). Its open tasks
+      stay open; physicians and the unit's nurses are notified; the audit entry carries ids, times and the open-task
+      count. It is not an active status, so a readmission can start a new stay meanwhile, and `complete_discharge`
+      closes it once the tasks are done and the summary approved, at the departure time, without touching the new
+      stay. An A03 with no workflow closes the stay and tells physicians. A02 moves the patient and the current
+      encounter to the unit and room in PV1-3. A08 updates a whitelist (name, date of birth, attending, diagnosis).
+      A11 marks the encounter `cancelled` (a cancelled visit number can be admitted again). A13 reopens the last
+      stay and sends an `externally_discharged` workflow back to in progress. A40 merges the MRG-1 record into the
+      PID-3 one (`patients/merge.py`): encounters, workflows, tasks, summaries, claims, grants and HL7 records move,
+      visit numbers and summary texts are re-encrypted with the survivor's data key, the old record keeps
+      `merged_into` and loses its MRN blind index, and both records get a `MERGE_PATIENT` audit entry; when only the
+      MRG-1 record is known it simply takes the surviving MRN. Events for an MRN not seen yet are parked
+      (`hl7_parked_messages`, migration 0015): AA with a note, the message stored only as AES-GCM ciphertext under its
+      own wrapped key, replayed in arrival order when the A01 arrives, and expired after `HL7_PARK_HOURS` (default 72)
+      with admins notified. Admins list and discard them at `/api/hl7/parked`; the ciphertext is dropped once a
+      message is replayed, expired or discarded. FHIR `Patient.link` points a merged record to its survivor.
+      Tested on SQLite and PostgreSQL 16 (tenant isolation of parked messages).
+    - **Limits:** a task that no longer applies once the patient has left (for example patient education) can only be
+      closed through the existing override with a reason; there is no "not done" task status yet. Overdue
+      documentation is visible on the workflow (`documentation_due_at`) but not escalated; item 12 covers escalation.
+      A11 is refused (AE, physicians and admins notified) when a discharge workflow exists for the admission, since
+      workflows can't be cancelled. A40 is refused when both records have a stay or a discharge in progress, or one
+      was erased; admins merge those by hand. A08 ignores location (A02's job) and fields outside the whitelist, and
+      an A08 for an outpatient MRN DischargeFlow never admits is parked until it expires. Times without a UTC offset
+      are taken as UTC. Expiry runs on the next ADT request or admin listing, not on a timer. Parking only covers
+      an unknown MRN; other out-of-order cases (an A03 for a stay whose A01 readmission has not arrived) are still
+      decided against the current state. Tables added by unmerged items (summary versions and addenda, item 13)
+      are not moved by a merge yet.
 12. [x] Escalation of overdue tasks to secure messaging or paging (design change 4; migration 0012, done 2026-10-19).
     - **Policy:** a task breaches at its SLA target (`TASK_SLA_HOURS`, the operational metrics' targets: high 4 h,
       medium 12 h, low 24 h). Level 1, at the breach, notifies the assignee (the named user, or the assigned role on

@@ -1,6 +1,6 @@
 """Minimal HL7 v2 (ER7, pipe-delimited) reader and ACK writer for the inbound ADT feed.
 
-Only what ADT A01/A03 need: segments, fields, repetitions, components, sub-components and the standard escape
+Only what the ADT events need: segments, fields, repetitions, components, sub-components and the standard escape
 sequences. No HL7 library: the format is small, and one more dependency in the request path isn't worth it.
 
 Transport is HTTP: the hospital's interface engine (Mirth, Rhapsody, ...) receives MLLP from the ADT system and
@@ -8,7 +8,7 @@ POSTs each message here, which serverless hosts can serve (they can't hold an ML
 bytes are tolerated and stripped.
 """
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.core.ids import new_id
@@ -174,6 +174,31 @@ def parse_date(value: str) -> Optional[str]:
         return datetime.strptime(digits, "%Y%m%d").date().isoformat()
     except ValueError:
         return None
+
+
+def parse_datetime(value: str) -> Optional[datetime]:
+    """HL7 DTM (YYYYMMDD[HH[MM[SS[.S]]]][+/-ZZZZ]) to an aware datetime, or None if it isn't valid.
+
+    A time without an offset is taken as UTC: HL7 says it is the sender's local time, which this adapter can't know.
+    """
+    value = value.strip()
+    offset = timezone.utc
+    for sign in ("+", "-"):
+        if sign in value[8:]:
+            value, zone = value.rsplit(sign, 1)
+            if len(zone) != 4 or not zone.isdigit():
+                return None
+            minutes = int(zone[:2]) * 60 + int(zone[2:])
+            offset = timezone(timedelta(minutes=minutes if sign == "+" else -minutes))
+            break
+    digits = value.split(".", 1)[0]
+    if len(digits) < 8 or len(digits) > 14 or len(digits) % 2 or not digits.isdigit():
+        return None
+    try:
+        parsed = datetime.strptime(digits.ljust(14, "0"), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=offset).astimezone(timezone.utc)
 
 
 def build_ack(message: Optional[Message], ack_code: str, text: str = "", error_code: Optional[str] = None) -> str:

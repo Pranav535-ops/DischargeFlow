@@ -66,6 +66,23 @@ describe('WorkflowView (route /workflows/:workflowId)', () => {
     await userEvent.click(screen.getByTestId('approve-summary-btn'));
     await waitFor(() => expect(put).toHaveBeenCalledWith('/ai/approve-summary/sum_1', { content: 'Edited by physician' }));
   });
+
+  it('shows the departure and deadline of a workflow the ADT feed discharged', async () => {
+    const { default: WorkflowView } = await import('./WorkflowView');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => ({ data: url.startsWith('/workflows') ? {
+      workflow_id: 'wf_1', patient_id: 'pat_1', status: 'externally_discharged', started_at: '2026-10-18T10:00:00Z',
+      departed_at: '2026-10-19T10:00:00Z', documentation_due_at: '2026-10-20T10:00:00Z',
+      tasks: [{ task_id: 't1', title: 'Final Medication Review', status: 'pending', assigned_role: 'pharmacist',
+        priority: 1, category: 'medication' }],
+      discharge_summary: null,
+    } : { patient_id: 'pat_1', name: 'Jane Doe', room_number: '1' } }));
+    renderAt('/workflows/wf_1', '/workflows/:workflowId', <WorkflowView />);
+
+    expect(await screen.findByText('Patient Left, Tasks Open')).toBeInTheDocument();
+    const banner = screen.getByTestId('external-discharge-banner');
+    expect(banner).toHaveTextContent(new Date('2026-10-19T10:00:00Z').toLocaleString());
+    expect(banner).toHaveTextContent(new Date('2026-10-20T10:00:00Z').toLocaleString());
+  });
 });
 
 describe('WorkflowView summary lifecycle (ADR-002 item 13)', () => {

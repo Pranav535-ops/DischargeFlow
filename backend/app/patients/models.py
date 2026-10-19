@@ -14,7 +14,8 @@ REDACTED = "[REDACTED]"
 # Identifiers encrypted at rest. They can't be sorted or searched in SQL; filter in Python after decrypting.
 ENCRYPTED_FIELDS = ("name", "date_of_birth", "diagnosis")
 # Encounter (one hospital stay) states: `active` until the patient leaves; at most one active per patient.
-ENCOUNTER_STATUSES = ("active", "discharged")
+# `cancelled`: the admission was entered in error (HL7 A11).
+ENCOUNTER_STATUSES = ("active", "discharged", "cancelled")
 _ACTIVE_ENCOUNTER_SQL = text("status = 'active'")
 # Blind-index purpose for the MRN (crypto.blind_index). Changing it orphans every stored index.
 MRN_INDEX_PURPOSE = "mrn"
@@ -64,6 +65,9 @@ class Patient(TenantMixin, Base):
     status: Mapped[str] = mapped_column(String(30), default="admitted", index=True)
     gdpr_consent: Mapped[Optional[bool]] = mapped_column(Boolean)
     gdpr_erased: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Set when an HL7 A40 merged this record into another (the surviving MRN): its stays moved there, its MRN index
+    # was retired, and it is left out of the patient list. Kept for audit references.
+    merged_into: Mapped[Optional[str]] = mapped_column(String(40), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

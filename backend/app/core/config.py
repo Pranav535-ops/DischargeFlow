@@ -112,6 +112,11 @@ class Settings:
     # IANA time zone of the hospital (ADR-002 items 8-9): what "reviewed today" means for the daily plan review, and
     # where template due times ("10:00 on the expected discharge date") are anchored.
     hospital_timezone: str = "UTC"
+    # ADR-002 item 11 (HL7 ADT). When an A03 arrives before the discharge workflow is done, its remaining tasks stay
+    # open with a deadline this many hours after the patient left (hospital policy). Out-of-order messages (an A03
+    # before its A01) are parked, encrypted, for hl7_park_hours, then expire unapplied.
+    adt_documentation_hours: float = 24.0
+    hl7_park_hours: float = 72.0
 
     @property
     def is_production(self) -> bool:
@@ -261,6 +266,8 @@ def load_settings() -> Settings:
         escalation_webhook_secret=webhook_secret,
         app_base_url=os.environ.get("APP_BASE_URL", "").strip().rstrip("/"),
         hospital_timezone=hospital_timezone,
+        adt_documentation_hours=_hours("ADT_DOCUMENTATION_HOURS", 24, 1, 24 * 30),
+        hl7_park_hours=_hours("HL7_PARK_HOURS", 72, 1, 24 * 30),
     )
 
 

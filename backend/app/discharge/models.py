@@ -10,6 +10,9 @@ from app.core.tenancy import TenantMixin
 
 ACTIVE_WORKFLOW_STATUSES = ("in_progress", "pending_approval")
 _ACTIVE_SQL = text("status IN ('in_progress', 'pending_approval')")
+# The patient has left (HL7 A03) but tasks are still open (ADR-002 item 11). Not active: the stay is over, so the
+# patient can be readmitted and get a new workflow while this one's documentation is finished.
+EXTERNALLY_DISCHARGED = "externally_discharged"
 
 # Task SLA targets in hours by priority (1 high, 2 medium, 3 low), for tasks without a due time from a template.
 # Policy defaults, not measurements; a hospital would set its own.
@@ -65,6 +68,11 @@ class Workflow(TenantMixin, Base):
     # The template its tasks came from (ADR-002 item 9); NULL for the built-in standard checklist.
     template_id: Mapped[Optional[str]] = mapped_column(String(40))
     template_version: Mapped[Optional[int]] = mapped_column(Integer)
+    # Set when the hospital's ADT system discharged the patient (HL7 A03) before this workflow was done (status
+    # externally_discharged, ADR-002 item 11): when the patient actually left, and the policy deadline for the
+    # tasks still open.
+    departed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    documentation_due_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
 
 
 class Task(TenantMixin, Base):

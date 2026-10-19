@@ -31,6 +31,7 @@ TENANT_TABLES = (
     "discharge_summary_addenda",
     "workflow_templates",
     "delay_reasons",
+    "hl7_parked_messages",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")

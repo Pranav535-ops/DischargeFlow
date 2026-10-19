@@ -1,5 +1,8 @@
 """Discharge workflow state machine: in_progress -> pending_approval -> completed.
 
+When the hospital's ADT system discharges the patient first (HL7 A03, ADR-002 item 11): in_progress or
+pending_approval -> externally_discharged -> completed, and an A13 (cancel discharge) goes back to in_progress.
+
 A workflow discharges one encounter (stay): completing it closes the encounter (ADR-002 item 7). Its tasks come from
 the template for the stay's planned disposition (item 9, discharge.templates), with prerequisites that update_task
 enforces and due times; completing a task after its due time needs a delay reason (item 10, discharge.planning).
@@ -15,10 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import lifecycle
 from app.ai.models import AIGeneration, DischargeSummary
 from app.audit.service import write_audit
+from app.core.config import settings
 from app.core.db import utcnow
 from app.core.security import CurrentUser, ensure_permission
 from app.discharge import planning, templates
-from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, DelayReason, Task, Workflow, due_time
+from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, EXTERNALLY_DISCHARGED, DelayReason, Task, Workflow, due_time
 from app.downtime.service import backfill_period
 from app.identity.models import User
 from app.identity.permissions import PENDING_ROLE
@@ -333,8 +337,11 @@ async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUs
     workflow = await db.get(Workflow, workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    if workflow.status not in ACTIVE_WORKFLOW_STATUSES:
+    external = workflow.status == EXTERNALLY_DISCHARGED
+    if workflow.status not in ACTIVE_WORKFLOW_STATUSES and not external:
         raise HTTPException(status_code=400, detail=f"Workflow is already {workflow.status}")
+    if external and completed_at is not None:
+        raise HTTPException(status_code=400, detail="The patient's departure was already recorded by the ADT feed")
 
     pending = await open_task_count(db, workflow_id)
     if pending > 0:
@@ -353,13 +360,61 @@ async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUs
         workflow.backfilled_at = utcnow()
 
     set_workflow_status(workflow, "completed")
-    workflow.completed_at = done = completed_at or utcnow()
+    if external:
+        # The stay already ended when the patient left, and the patient may have been readmitted since: only the
+        # workflow closes, at the departure time.
+        workflow.completed_at = done = workflow.departed_at or utcnow()
+        details += " after external discharge"
+    else:
+        workflow.completed_at = done = completed_at or utcnow()
+        encounter = await encounter_for(db, workflow)
+        if encounter is not None and encounter.status == "active":
+            encounter.close(done, disposition)
+            details += f" encounter={encounter.encounter_id}"
+        patient = await db.get(Patient, workflow.patient_id)
+        if patient:
+            patient.status = "discharged"
+    await write_audit(db, user, "COMPLETE_DISCHARGE", "patient", workflow.patient_id, details, request)
+    return {"success": True, "completed_at": done.isoformat()}
+
+
+async def record_external_discharge(db: AsyncSession, workflow: Workflow, user: CurrentUser, departed_at: datetime,
+                                    disposition: Optional[str] = None, reason: str = "") -> None:
+    """The hospital's ADT system discharged the patient (HL7 A03) before this workflow could complete (ADR-002 item 11).
+
+    The patient has left, so the stay closes and the patient is discharged, matching the EHR. The workflow becomes
+    externally_discharged: its open tasks stay open, due adt_documentation_hours after departure, and it completes
+    through complete_discharge once they are done and the summary is approved. `reason` is why it could not complete
+    (open tasks, unapproved summary); it carries no patient data.
+    """
+    if workflow.status not in ACTIVE_WORKFLOW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Workflow is already {workflow.status}")
+    set_workflow_status(workflow, EXTERNALLY_DISCHARGED)
+    workflow.departed_at = departed_at
+    workflow.documentation_due_at = due = departed_at + timedelta(hours=settings.adt_documentation_hours)
+    details = f"workflow={workflow.workflow_id} departed={departed_at.isoformat()} due={due.isoformat()}"
     encounter = await encounter_for(db, workflow)
     if encounter is not None and encounter.status == "active":
-        encounter.close(done, disposition)
+        encounter.close(departed_at, disposition)
         details += f" encounter={encounter.encounter_id}"
     patient = await db.get(Patient, workflow.patient_id)
     if patient:
         patient.status = "discharged"
-    await write_audit(db, user, "COMPLETE_DISCHARGE", "patient", workflow.patient_id, details, request)
-    return {"success": True, "completed_at": done.isoformat()}
+    open_tasks = await open_task_count(db, workflow.workflow_id)
+    await write_audit(db, user, "EXTERNAL_DISCHARGE", "patient", workflow.patient_id,
+                      f"{details} open_tasks={open_tasks}")
+    message = (f"The hospital ADT system discharged {patient.name if patient else 'a patient'} before the discharge "
+               f"workflow was done ({reason}). Finish the remaining tasks by {due:%Y-%m-%d %H:%M} UTC.")
+    for role in ("physician", "nurse"):
+        await notify_role(db, role, "Patient Left Before Discharge Was Complete", message,
+                          f"/workflows/{workflow.workflow_id}", unit_id=patient.unit_id if patient else None)
+
+
+async def reopen_external_discharge(db: AsyncSession, workflow: Workflow, user: CurrentUser) -> None:
+    """HL7 A13 (cancel discharge) for a workflow the ADT feed discharged: back to the active state machine."""
+    workflow.status = "in_progress"  # not set_workflow_status: no pending_approval time to account for here
+    workflow.departed_at = None
+    workflow.documentation_due_at = None
+    await sync_workflow_status(db, workflow.workflow_id)
+    await write_audit(db, user, "REOPEN_DISCHARGE", "patient", workflow.patient_id,
+                      f"workflow={workflow.workflow_id} (ADT discharge cancelled)")

@@ -127,6 +127,17 @@ class _PatientKeyedText:
             if value is not None:
                 self._write_phi(field, value)
 
+    def rekey(self, patient: "Patient") -> None:
+        """Move the row to another patient (HL7 A40 merge): the same text, re-encrypted with that patient's key.
+
+        Writes through the base class on purpose: the text does not change, so the signed-summary guard (which
+        would decrypt the old ciphertext with the new key) does not apply."""
+        texts = {field: self._read_phi(field) for field in self._phi_fields}
+        self.patient = patient
+        self.patient_id = patient.patient_id  # type: ignore[attr-defined]
+        for field, value in texts.items():
+            _PatientKeyedText._write_phi(self, field, value)
+
     def shred(self) -> None:
         """Erasure: overwrite the text. Its ciphertext is already unreadable once the patient's key is gone."""
         for field in self._phi_fields:
