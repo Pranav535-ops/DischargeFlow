@@ -72,6 +72,10 @@ class Settings:
     # ADR-002 item 3: staff see only patients on their own units (plus unassigned patients and break-glass grants),
     # enforced by RLS on Postgres. Off by default, so units can be set up before anyone loses access.
     unit_scoped_access: bool = False
+    # ADR-002 item 6: refuse every write (503) on every instance, whatever the per-tenant downtime switch says. For
+    # outages where the database must not be written at all (restore, failover). The normal switch is an admin's
+    # POST /api/downtime/start, stored in the database so that every serverless instance sees it.
+    read_only_mode: bool = False
     # How long one notification stream (GET /api/notifications/stream) stays open before the client reconnects.
     # Kept under the serverless function limit on Vercel; a long-running host (ECS) can raise it.
     notification_stream_seconds: float = 25.0
@@ -152,6 +156,7 @@ def load_settings() -> Settings:
         allowed_email_domains=tuple(d.lower().lstrip("@") for d in _split_csv(os.environ.get("ALLOWED_EMAIL_DOMAINS", ""))),
         self_registration=_bool("SELF_REGISTRATION", True),
         unit_scoped_access=_bool("UNIT_SCOPED_ACCESS"),
+        read_only_mode=_bool("READ_ONLY_MODE"),
         notification_stream_seconds=float(os.environ.get("NOTIFICATION_STREAM_SECONDS", "").strip() or 25),
     )
 

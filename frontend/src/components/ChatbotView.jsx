@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '@/lib/api';
-import { invalidateDischarge } from '@/lib/queries';
+import { invalidateDischarge, useReadOnly } from '@/lib/queries';
 import { Bot, Send, User, Sparkles, RefreshCw, ShieldCheck, X, Check } from 'lucide-react';
 
 
@@ -25,6 +25,8 @@ const formatResponse = (text) => {
 };
 
 const ChatbotView = () => {
+  // The assistant records every turn and proposal, so it is off during a downtime.
+  const readOnly = useReadOnly();
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -133,7 +135,7 @@ const ChatbotView = () => {
           <button
             key={cmd}
             onClick={() => sendMessage(cmd)}
-            disabled={loading}
+            disabled={loading || readOnly}
             className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs hover:bg-zinc-700 hover:text-zinc-100 transition-colors disabled:opacity-50"
           >
             <Sparkles className="w-3 h-3 text-blue-400" />
@@ -192,7 +194,7 @@ const ChatbotView = () => {
                       <button
                         data-testid="confirm-action-btn"
                         onClick={() => resolveAction(action, 'confirm')}
-                        disabled={resolving === action.action_id}
+                        disabled={resolving === action.action_id || readOnly}
                         className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50"
                       >
                         <Check className="w-3.5 h-3.5" /> Confirm
@@ -257,7 +259,7 @@ const ChatbotView = () => {
         </div>
         <button
           onClick={() => sendMessage()}
-          disabled={loading || !input.trim()}
+          disabled={loading || readOnly || !input.trim()}
           className="w-10 h-10 flex items-center justify-center rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors flex-shrink-0"
         >
           <Send className="w-4 h-4" />

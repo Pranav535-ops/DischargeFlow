@@ -9,6 +9,12 @@ permission name (`workflow:manage`) means the user's role must hold it. The API 
 Accounts with the role `pending` (signed in, not yet approved) get `403 Account pending approval` from every route
 except `/auth/me`, `/auth/refresh` and `/auth/logout`.
 
+**Read-only (downtime) mode.** While an admin has switched it on (`POST /downtime/start`), or `READ_ONLY_MODE=true` is
+set, every POST, PUT, PATCH and DELETE answers `503` with header `X-Read-Only: true` and a `detail` telling staff to use
+the paper downtime forms, before the route runs or its body is validated. Exempt: `/auth/*` (sign-in, refresh,
+sign-out) and `POST /downtime/end`. Reads keep working, including their `PHI_READ` audit entries. HL7 ADT messages get
+the 503 too, so the interface engine queues and resends them. Procedure: [runbooks/downtime.md](runbooks/downtime.md).
+
 ## Roles and permissions
 
 Stored in the `role_permissions` table (seeded by migrations from `identity/permissions.py`). Admin holds every
@@ -32,6 +38,7 @@ suspend someone.
 | `adt:ingest` | interface |
 | `claim:manage` | nurse (create insurance claims, change their status) |
 | `patient:read_all` | interface (never unit-scoped; admin holds it too) |
+| `downtime:manage` | admin (read-only mode on and off, record outages) |
 
 ### Unit-scoped access
 
@@ -87,11 +94,12 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/workflows` | signed in | Optional `?status=` |
 | GET | `/workflows/patient/{patient_id}` | signed in | The active workflow, or `null`; `PHI_READ` audited when one is returned |
 | GET | `/workflows/{workflow_id}` | signed in | With tasks and summary; `PHI_READ` audited |
-| PUT | `/workflows/{workflow_id}/complete` | `workflow:manage` | Requires no open tasks and an approved summary; audited |
+| PUT | `/workflows/{workflow_id}/complete` | `workflow:manage` | Requires no open tasks and an approved summary; audited. Optional body `{completed_at}` back-enters a discharge done on paper: the time must be in the past, after the workflow started and inside a recorded downtime period; it becomes `completed_at`, `backfilled_at` records when it was entered, and the audit entry names the downtime |
 | POST | `/tasks` | `task:create` | Attached to the active workflow if there is one; audited |
 | GET | `/tasks` | signed in | |
 | GET | `/tasks/my` | signed in | Open tasks assigned to the user or the user's role |
 | PUT | `/tasks/{task_id}` | signed in | Body `{status?, assigned_to?, reason?}`. Status: the assignee (named user or assigned role); anyone else needs `task:override` and a `reason`, stored on the task as `override_reason`/`override_by`. `assigned_to`: needs `task:assign`, except claiming a task of your own role; the assignee must be an approved user. Each change is audited; moves the workflow between states |
+| PUT | `/tasks/{task_id}/backfill` | signed in | Body `{completed_at, reason?}` (timezone required). Completes a task done on paper during a downtime at the time it was done: in the past, after the task was created, inside a recorded downtime period. Same ownership rules as `PUT /tasks/{task_id}` (another role's task needs `task:override` and a `reason`). Sets `backfilled_at`; audited as `BACKFILL_TASK_STATUS` naming the downtime. 400 if already completed |
 
 ## AI
 
@@ -119,6 +127,17 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/notifications/stream` | signed in | Server-Sent Events; closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects |
 | PUT | `/notifications/{notification_id}/read` | signed in | |
 | PUT | `/notifications/read-all` | signed in | |
+
+## Downtime
+
+| Method | Path | Access | Notes |
+|---|---|---|---|
+| GET | `/downtime/status` | signed in | `{read_only, forced, period}`; `forced` means `READ_ONLY_MODE` is set. The UI polls it every 30 s |
+| POST | `/downtime/start` | `downtime:manage` | Body `{reason}` (3–300 characters, shown to every user, so never patient details). Opens a `read_only` period for the tenant; staff are notified; audited (`START_DOWNTIME`). Stored in the database, so every instance refuses writes on its next request |
+| POST | `/downtime/end` | `downtime:manage` | Works while read-only. Closes the open period; staff are notified to back-enter paper work; audited (`END_DOWNTIME`). 409 if none is open. Does not lift `READ_ONLY_MODE` |
+| POST | `/downtime/periods` | `downtime:manage` | Body `{started_at, ended_at, reason}`: records an unplanned outage after it is over, so work done on paper during it can be back-entered. 400 if it ends before it starts or in the future, 409 if it overlaps a recorded period; audited (`RECORD_OUTAGE`) |
+| GET | `/downtime/periods` | signed in | The latest 50 periods (`read_only` or `outage`), newest first |
+| GET | `/census` | signed in | Discharge census: patients not yet discharged (erased ones left out), by unit and room, with discharge status, estimated discharge, whether the summary is approved and the open tasks. `?unit_id=` (or `unassigned`; 404 for an unknown unit); `?format=csv` downloads it (spreadsheet formulas neutralised). Unit scope applies as for `/patients`. One `PHI_READ` entry per request with the scope and count |
 
 ## Insurance
 

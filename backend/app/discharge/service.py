@@ -1,5 +1,5 @@
 """Discharge workflow state machine: in_progress -> pending_approval -> completed."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -12,6 +12,7 @@ from app.audit.service import write_audit
 from app.core.db import utcnow
 from app.core.security import CurrentUser, ensure_permission
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
+from app.downtime.service import backfill_period
 from app.identity.models import User
 from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
@@ -124,13 +125,15 @@ def is_assignee(user: CurrentUser, task: Task) -> bool:
 
 async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, status: Optional[str] = None,
                       assigned_to: Optional[str] = None, reason: Optional[str] = None,
-                      request: Optional[Request] = None) -> Task:
+                      request: Optional[Request] = None,
+                      backfill: Optional[tuple[datetime, str]] = None) -> Task:
     """Change a task's status and/or named assignee.
 
     Only the assignee (the named user or anyone in the assigned role) changes the status. Someone holding
     `task:override` (physicians, admins) may change another role's task, but must give a reason, which is stored on
     the task. Assigning the task to a named user needs `task:assign`, except members of the assigned role claiming
-    it for themselves. Every change is audited.
+    it for themselves. Every change is audited. `backfill` (time done, downtime id; see backfill_task) records a
+    completion done on paper during a downtime at the time it was actually done.
     """
     task = await db.get(Task, task_id)
     if not task:
@@ -159,15 +162,24 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
         task.status = status
         if status == "completed":
             task.completed_by = user.user_id
-            task.completed_at = utcnow()
+            task.completed_at = backfill[0] if backfill else utcnow()
+            task.backfilled_at = utcnow() if backfill else None
         else:
             task.completed_by = None
             task.completed_at = None
+            task.backfilled_at = None
         if override:
-            # The reason stays on the task row, not in the audit entry: audit rows are immutable and survive erasure,
-            # and free text may name the patient.
             task.override_reason = reason
             task.override_by = user.user_id
+        if backfill:
+            override_note = (f"; override of assigned role {task.assigned_role}, reason stored on task"
+                             if override else "")
+            await write_audit(db, user, "BACKFILL_TASK_STATUS", "task", task_id,
+                              f"{previous} → {status}, done at {backfill[0].isoformat()} "
+                              f"(downtime {backfill[1]}{override_note})", request)
+        elif override:
+            # The reason stays on the task row, not in the audit entry: audit rows are immutable and survive erasure,
+            # and free text may name the patient.
             await write_audit(db, user, "OVERRIDE_TASK_STATUS", "task", task_id,
                               f"{previous} → {status} (assigned role {task.assigned_role}; reason stored on task)",
                               request)
@@ -177,6 +189,24 @@ async def update_task(db: AsyncSession, user: CurrentUser, task_id: str, *, stat
     await db.flush()
     await db.refresh(task)
     return task
+
+
+async def backfill_task(db: AsyncSession, user: CurrentUser, task_id: str, *, completed_at: datetime,
+                        reason: Optional[str] = None, request: Optional[Request] = None) -> Task:
+    """Complete a task that was done on paper during a downtime, at the time it was actually done (ADR-002 item 6).
+
+    The same ownership rules as update_task apply (an override needs `task:override` and a reason). The time must be
+    in the past, after the task was created and inside a recorded downtime period. `completed_at` keeps the real time,
+    `backfilled_at` says when it was entered, and the audit entry names the downtime.
+    """
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status == "completed":
+        raise HTTPException(status_code=400, detail="Task is already completed")
+    period = await backfill_period(db, user.tenant_id, completed_at, task.created_at)
+    return await update_task(db, user, task_id, status="completed", reason=reason, request=request,
+                             backfill=(completed_at, period.downtime_id))
 
 
 def set_workflow_status(workflow: Workflow, status: str) -> None:
@@ -212,7 +242,9 @@ async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> 
 
 
 async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUser,
-                            request: Optional[Request] = None) -> dict:
+                            request: Optional[Request] = None, completed_at: Optional[datetime] = None) -> dict:
+    """Discharge the patient. `completed_at` back-enters a discharge done on paper during a downtime: it must fall
+    inside a recorded downtime period, and the audit entry names it."""
     workflow = await db.get(Workflow, workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -229,10 +261,16 @@ async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUs
     if not approved:
         raise HTTPException(status_code=400, detail="Discharge summary not approved")
 
+    details = f"workflow={workflow_id}"
+    if completed_at is not None:
+        period = await backfill_period(db, user.tenant_id, completed_at, workflow.started_at)
+        details += f" backfilled: discharged at {completed_at.isoformat()} (downtime {period.downtime_id})"
+        workflow.backfilled_at = utcnow()
+
     set_workflow_status(workflow, "completed")
-    workflow.completed_at = now = utcnow()
+    workflow.completed_at = done = completed_at or utcnow()
     patient = await db.get(Patient, workflow.patient_id)
     if patient:
         patient.status = "discharged"
-    await write_audit(db, user, "COMPLETE_DISCHARGE", "patient", workflow.patient_id, f"workflow={workflow_id}", request)
-    return {"success": True, "completed_at": now.isoformat()}
+    await write_audit(db, user, "COMPLETE_DISCHARGE", "patient", workflow.patient_id, details, request)
+    return {"success": True, "completed_at": done.isoformat()}

@@ -198,7 +198,31 @@ which needs monthly partitioning within a year or two.
     - **Limits:** physicians and pharmacists are unit-scoped like nurses; hospitals whose physicians or central pharmacy work across units should give them those units, or grant `patient:read_all` to the role by migration. Break-glass works from a link to the patient (patient id); there is no search across hidden patients yet (the MRN blind index could support one). A hidden workflow link answers 404 rather than offering break-glass. SQLite does not enforce unit scope (tests are `requires_postgres`). Tested on PostgreSQL 16 locally and in CI.
 4. [ ] Shared-workstation safety: idle lock after a few minutes and fast re-login (tokens already live in memory only).
 5. [ ] Hosting and model provider under a BAA; backups with at least 7 days of point-in-time recovery (finding 8).
-6. [ ] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards.
+6. [x] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards
+   (migration 0010, done 2026-10-19; procedure in `docs/runbooks/downtime.md`).
+    - **Where the flag lives:** a per-tenant `downtime_periods` row that an admin opens and closes
+      (`POST /api/downtime/start` / `end`, new permission `downtime:manage`). It is in the database because production
+      runs on serverless instances: an environment variable would need a redeploy and could disagree between
+      instances, while every instance reads the row on its next write. `READ_ONLY_MODE=true` forces read-only for every
+      tenant without touching the database, for restores and failovers.
+    - **Enforcement:** one dependency on the whole `/api` router refuses POST, PUT, PATCH and DELETE with 503 and
+      `X-Read-Only: true` before the route runs, so a new write route is covered without changes (a test walks every
+      route). It reads the tenant from the bearer token or the integration key prefix; only writes pay the one indexed
+      query. Exempt: `/api/auth/*` and ending the downtime. Reads keep working and stay audited. HL7 ADT gets the 503,
+      so the interface engine queues messages. The frontend polls `/api/downtime/status` (and refetches it on a 503),
+      shows a banner on every screen, and disables write controls, the assistant included.
+    - **Census:** `GET /api/census` per unit (or unassigned, or all the user can see), JSON or CSV, and a print layout
+      at `/census` with a tick box per open task for the paper record. Unit scope (item 3) applies. One `PHI_READ` entry
+      per request with the scope and count. CSV cells that start like a formula are neutralised.
+    - **Backfill:** `PUT /api/tasks/{id}/backfill` and `PUT /api/workflows/{id}/complete` with `completed_at` record paper
+      work at the time it was done. The time must be in the past, after the record was created and inside a recorded
+      downtime period; an outage nobody switched read-only for is recorded afterwards (`POST /api/downtime/periods`).
+      Ownership rules are those of live updates. `completed_at` keeps the real time (so SLA and duration metrics stay
+      right), `backfilled_at` marks the row, and the audit entry names the downtime.
+    - **Limits:** the person entering is recorded as `completed_by`, so the paper form stays the source until checked.
+      Paper admissions arrive only through the queued ADT feed or manual entry. Summaries can't be generated or approved
+      while read-only. If the database itself is down, only a census printed beforehand is available, so units should
+      print one at each shift change (a scheduled export is a possible follow-up). Tested on SQLite and PostgreSQL 16.
 
 **Phase 8: Workflow fit**
 7. [ ] Patient/Encounter split (design change 1).

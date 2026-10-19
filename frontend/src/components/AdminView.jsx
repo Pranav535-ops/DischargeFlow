@@ -21,6 +21,7 @@ import {
 } from '../components/ui/select';
 import { toast } from 'sonner';
 import { BreakGlassReview, UnitsCard, UserUnitsPicker } from './AdminUnits';
+import AdminDowntime from './AdminDowntime';
 
 
 const AdminView = () => {
@@ -177,6 +178,8 @@ const AdminView = () => {
           {inviting ? <Loader2 className="w-4 h-4 animate-spin" /> : <><UserPlus className="w-4 h-4 mr-1" />Invite</>}
         </Button>
       </form>
+
+      <AdminDowntime />
 
       <UnitsCard />
 

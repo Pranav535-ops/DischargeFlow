@@ -125,3 +125,14 @@ code, pre {
     display: contents !important;
   }
 }
+
+/* Printing (the discharge census, ADR-002 item 6): black on white, whatever the forced dark theme says. */
+@media print {
+  body, .dark {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  @page {
+    margin: 12mm;
+  }
+}

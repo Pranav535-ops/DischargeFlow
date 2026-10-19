@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
-import { keys, queryClient, usePatients, useUnits } from '@/lib/queries';
+import { keys, queryClient, usePatients, useReadOnly, useUnits } from '@/lib/queries';
 import { 
   Search, 
   Plus, 
@@ -29,6 +29,7 @@ import { Label } from '../components/ui/label';
 
 const PatientList = () => {
   const { user } = useAuth();
+  const readOnly = useReadOnly();
   const navigate = useNavigate();
   const { data: patients = [], isLoading: loading } = usePatients();
   const { data: units = [] } = useUnits();
@@ -123,6 +124,7 @@ const PatientList = () => {
             <DialogTrigger asChild>
               <Button 
                 data-testid="add-patient-btn"
+                disabled={readOnly}
                 className="bg-blue-600 hover:bg-blue-500 text-white"
               >
                 <Plus className="w-4 h-4 mr-2" />

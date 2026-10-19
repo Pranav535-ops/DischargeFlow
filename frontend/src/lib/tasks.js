@@ -17,3 +17,15 @@ export const taskStatusBody = (task, user, status, ask = window.prompt) => {
   if (!reason || !reason.trim()) return null;
   return { status, reason: reason.trim() };
 };
+
+// The PUT /tasks/:id/backfill body for a task done on paper during a downtime. `localTime` is a datetime-local input
+// value, read as the browser's local time and sent with its offset (UTC). Returns null if cancelled or invalid.
+export const taskBackfillBody = (task, user, localTime, ask = window.prompt) => {
+  const when = localTime ? new Date(localTime) : null;
+  if (!when || Number.isNaN(when.getTime())) return null;
+  const completed_at = when.toISOString();
+  if (isTaskAssignee(task, user)) return { completed_at };
+  const reason = ask(`"${task.title}" is assigned to the ${task.assigned_role} team. Why are you entering it?`);
+  if (!reason || !reason.trim()) return null;
+  return { completed_at, reason: reason.trim() };
+};

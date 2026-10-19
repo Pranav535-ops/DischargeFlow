@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, errorMessage, setAccessToken } from './api';
+import { READ_ONLY_EVENT, api, errorMessage, isReadOnlyError, setAccessToken } from './api';
 
 // Replaces the network: each call to the adapter returns the next scripted response.
 const script = (responses) => {
@@ -7,7 +7,7 @@ const script = (responses) => {
   api.defaults.adapter = async (config) => {
     calls.push({ url: config.url, auth: config.headers.get('Authorization') ?? null });
     const next = responses.shift();
-    const response = { data: next.data ?? {}, status: next.status, statusText: '', headers: {}, config };
+    const response = { data: next.data ?? {}, status: next.status, statusText: '', headers: next.headers ?? {}, config };
     if (next.status >= 400) {
       const error = new Error(`status ${next.status}`);
       Object.assign(error, { config, response, isAxiosError: true });
@@ -51,6 +51,19 @@ describe('api client', () => {
     await expect(api.get('/patients')).rejects.toThrow();
     expect(expired).toHaveBeenCalledOnce();
     window.removeEventListener('df:session-expired', expired);
+  });
+
+  it('announces read-only mode when a write is refused for a downtime', async () => {
+    script([{ status: 503, headers: { 'x-read-only': 'true' }, data: { detail: 'read-only' } }, { status: 503 }]);
+    const readOnly = vi.fn();
+    window.addEventListener(READ_ONLY_EVENT, readOnly);
+    const refused = await api.post('/patients', {}).catch(e => e);
+    expect(isReadOnlyError(refused)).toBe(true);
+    expect(readOnly).toHaveBeenCalledOnce();
+    // Any other 503 (a migration in progress, say) is not a downtime.
+    expect(isReadOnlyError(await api.get('/patients').catch(e => e))).toBe(false);
+    expect(readOnly).toHaveBeenCalledOnce();
+    window.removeEventListener(READ_ONLY_EVENT, readOnly);
   });
 
   it('reads FastAPI error details', () => {
