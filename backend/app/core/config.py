@@ -96,6 +96,15 @@ class Settings:
     # until `app.cli rewrap-deks` has moved them all to KMS.
     phi_key_provider: str = "local"
     phi_kms_key_id: str | None = None
+    # ADR-002 item 12: escalation of overdue tasks. There is no scheduler on Vercel, so something calls
+    # /api/escalations/run: Vercel Cron (GET with `Authorization: Bearer <CRON_SECRET>`), an integration client, an
+    # admin, or `python -m app.cli escalate`. escalation_pager "webhook" also sends each page to the hospital's
+    # secure-messaging or paging gateway, signed with escalation_webhook_secret. app_base_url makes page links absolute.
+    cron_secret: str | None = None
+    escalation_pager: str = "none"
+    escalation_webhook_url: str | None = None
+    escalation_webhook_secret: str | None = None
+    app_base_url: str = ""
 
     @property
     def is_production(self) -> bool:
@@ -165,6 +174,21 @@ def load_settings() -> Settings:
     # The issuer is compared with the token's `iss` claim exactly, so a trailing slash would refuse every token.
     oidc_issuer = os.environ.get("OIDC_ISSUER", "").strip().rstrip("/") or None
 
+    escalation_pager = os.environ.get("ESCALATION_PAGER", "").strip().lower() or "none"
+    webhook_url = os.environ.get("ESCALATION_WEBHOOK_URL", "").strip() or None
+    webhook_secret = os.environ.get("ESCALATION_WEBHOOK_SECRET", "").strip() or None
+    if escalation_pager not in ("none", "webhook"):
+        raise RuntimeError("ESCALATION_PAGER must be 'none' or 'webhook'")
+    if escalation_pager == "webhook":
+        if not webhook_url or not webhook_secret or len(webhook_secret) < 32:
+            raise RuntimeError("ESCALATION_PAGER=webhook needs ESCALATION_WEBHOOK_URL and an ESCALATION_WEBHOOK_SECRET "
+                               "of at least 32 characters")
+        if not is_dev and not webhook_url.startswith("https://"):
+            raise RuntimeError("ESCALATION_WEBHOOK_URL must be https outside development/test")
+    cron_secret = os.environ.get("CRON_SECRET", "").strip() or None
+    if cron_secret and len(cron_secret) < 32:
+        raise RuntimeError("CRON_SECRET must be at least 32 characters")
+
     jwt_secret = os.environ.get("JWT_SECRET", "").strip() or None
     if not jwt_secret and is_dev:
         # Ephemeral per-process secret: dev sessions are invalidated on restart, which is fine locally.
@@ -206,6 +230,11 @@ def load_settings() -> Settings:
         oidc_require_mfa=_bool("OIDC_REQUIRE_MFA"),
         phi_key_provider=phi_key_provider,
         phi_kms_key_id=phi_kms_key_id,
+        cron_secret=cron_secret,
+        escalation_pager=escalation_pager,
+        escalation_webhook_url=webhook_url,
+        escalation_webhook_secret=webhook_secret,
+        app_base_url=os.environ.get("APP_BASE_URL", "").strip().rstrip("/"),
     )
 
 

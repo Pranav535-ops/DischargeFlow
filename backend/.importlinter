@@ -33,6 +33,7 @@ forbidden_modules =
     app.chatbot
     app.discharge
     app.downtime
+    app.escalations
     app.insurance
     app.interop
     app.notifications
@@ -57,6 +58,7 @@ forbidden_modules =
     app.analytics
     app.chatbot
     app.discharge
+    app.escalations
     app.insurance
     app.interop
     app.patients
@@ -71,6 +73,7 @@ source_modules =
     app.core
     app.discharge
     app.downtime
+    app.escalations
     app.identity
     app.insurance
     app.notifications
@@ -90,6 +93,7 @@ source_modules =
     app.core
     app.discharge
     app.downtime
+    app.escalations
     app.identity
     app.insurance
     app.interop
@@ -102,6 +106,7 @@ forbidden_modules =
     app.chatbot.router
     app.discharge.router
     app.downtime.router
+    app.escalations.router
     app.identity.router
     app.insurance.router
     app.interop.router

@@ -22,6 +22,7 @@ import {
 import { toast } from 'sonner';
 import { BreakGlassReview, UnitsCard, UserUnitsPicker } from './AdminUnits';
 import AdminDowntime from './AdminDowntime';
+import AdminEscalations from './AdminEscalations';
 
 
 const AdminView = () => {
@@ -180,6 +181,8 @@ const AdminView = () => {
       </form>
 
       <AdminDowntime />
+
+      <AdminEscalations />
 
       <UnitsCard />
 

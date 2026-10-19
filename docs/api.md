@@ -39,6 +39,7 @@ suspend someone.
 | `claim:manage` | nurse (create insurance claims, change their status) |
 | `patient:read_all` | interface (never unit-scoped; admin holds it too) |
 | `downtime:manage` | admin (read-only mode on and off, record outages) |
+| `escalation:run` | interface (a hospital scheduler running the escalation of overdue tasks) |
 
 ### Unit-scoped access
 
@@ -140,6 +141,29 @@ Notifications about a patient on a unit go only to members of that unit.
 | POST | `/downtime/periods` | `downtime:manage` | Body `{started_at, ended_at, reason}`: records an unplanned outage after it is over, so work done on paper during it can be back-entered. 400 if it ends before it starts or in the future, 409 if it overlaps a recorded period; audited (`RECORD_OUTAGE`) |
 | GET | `/downtime/periods` | signed in | The latest 50 periods (`read_only` or `outage`), newest first |
 | GET | `/census` | signed in | Discharge census: patients not yet discharged (erased ones left out), by unit and room, with discharge status, estimated discharge, whether the summary is approved and the open tasks. `?unit_id=` (or `unassigned`; 404 for an unknown unit); `?format=csv` downloads it (spreadsheet formulas neutralised). Unit scope applies as for `/patients`. One `PHI_READ` entry per request with the scope and count |
+
+## Escalations
+
+Escalation of overdue tasks (ADR-002 item 12). A task breaches when it is open longer than its SLA target (high 4 h,
+medium 12 h, low 24 h). Level 1, at the breach, notifies the assignee (the named user, or the assigned role on the
+patient's unit); level 2, a further 1 h (high) or 4 h (medium) later and never sooner than that after level 1,
+notifies the supervising role (nurse and pharmacist tasks: physician; physician tasks: admin). Low priority has level 1
+only. High priority is paged at both levels and medium at level 2, through `ESCALATION_PAGER` (`none` default, or
+`webhook`). Each step is audited (`ESCALATE_TASK`, and `PAGE_ESCALATION` per page attempt). Notifications and pages
+carry ids, category, priority, unit code, minutes overdue and a link, never the task title or patient data.
+
+| Method | Path | Access | Notes |
+|---|---|---|---|
+| GET | `/escalations/run` | `Authorization: Bearer <CRON_SECRET>` | Vercel Cron's call (cron jobs send GET; schedule in `vercel.json`). Runs every tenant, each in its own transaction. 401 for anything else, and always while `CRON_SECRET` is unset |
+| POST | `/escalations/run` | cron secret, or `escalation:run` (API key or signed in) | Idempotent: takes only the steps that are due and missing (at most one new step per task per run, 100 per run, 20 pages per run), resolves escalations of completed tasks, retries failed pages up to 3 times. The cron secret runs every tenant; a key or user runs their own. Returns `{tenants: [{tenant_id, escalated, resolved, paged, page_failures, skipped}]}`; `skipped` is `read_only` (a downtime: tasks can't be completed, so nothing escalates) or `already_running` (another run holds the tenant's lock, Postgres). Refused with 503 in read-only mode like any write, except with the cron secret, where the run skips the tenant instead |
+| GET | `/escalations` | `insights:read` | Active escalations (task still open), newest first, `?limit=` (≤500): ids, level, priority, category, unit code, who was told and how many (`recipients`; 0 means nobody holds that role on the unit), page status (`not_required`, `disabled`, `pending`, `sent`, `failed`, `cancelled`) and a link; plus the policy, the supervisor roles, the pager and whether a schedule is configured |
+
+**Webhook pages.** `POST ESCALATION_WEBHOOK_URL` with JSON `{type: "task.escalated", escalation_id, idempotency_key,
+tenant_id, task_id, level, priority, category, unit, target_role, overdue_minutes, link}`, headers `Idempotency-Key`
+(stable per tenant, task and level; drop repeats) and `X-DischargeFlow-Signature: t=<unix seconds>,v1=<hex>`, where
+`v1` is HMAC-SHA256 of `<t>.<raw body>` with `ESCALATION_WEBHOOK_SECRET`. Verify the signature, refuse old `t`, and
+answer 2xx to accept; anything else (or a 5 s timeout) counts as a failed attempt. `link` is absolute when
+`APP_BASE_URL` is set.
 
 ## Insurance
 
