@@ -96,6 +96,11 @@ class Settings:
     # until `app.cli rewrap-deks` has moved them all to KMS.
     phi_key_provider: str = "local"
     phi_kms_key_id: str | None = None
+    # ADR-002 item 11 (HL7 ADT). When an A03 arrives before the discharge workflow is done, its remaining tasks stay
+    # open with a deadline this many hours after the patient left (hospital policy). Out-of-order messages (an A03
+    # before its A01) are parked, encrypted, for hl7_park_hours, then expire unapplied.
+    adt_documentation_hours: float = 24.0
+    hl7_park_hours: float = 72.0
 
     @property
     def is_production(self) -> bool:
@@ -132,6 +137,17 @@ def _minutes(name: str, default: float, minimum: float) -> float:
         raise RuntimeError(f"{name} must be a number of minutes")
     if not minimum <= value <= 24 * 60:
         raise RuntimeError(f"{name} must be between {minimum:g} and 1440 minutes")
+    return value
+
+
+def _hours(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of hours")
+    if not 1 <= value <= 24 * 30:
+        raise RuntimeError(f"{name} must be between 1 and 720 hours")
     return value
 
 
@@ -206,6 +222,8 @@ def load_settings() -> Settings:
         oidc_require_mfa=_bool("OIDC_REQUIRE_MFA"),
         phi_key_provider=phi_key_provider,
         phi_kms_key_id=phi_kms_key_id,
+        adt_documentation_hours=_hours("ADT_DOCUMENTATION_HOURS", 24),
+        hl7_park_hours=_hours("HL7_PARK_HOURS", 72),
     )
 
 

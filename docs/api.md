@@ -170,6 +170,8 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/fhir/R4/Task`, `/fhir/R4/Task/{id}` | signed in | |
 | GET | `/fhir/R4/DocumentReference`, `/fhir/R4/DocumentReference/{id}` | signed in | Approved discharge summaries |
 | POST | `/hl7/adt` | integration key with `adt:ingest` | See below |
+| GET | `/hl7/parked` | `user:manage` | Parked out-of-order ADT messages, newest first (at most 500); `?status=parked\|replayed\|expired\|discarded`. Ids, event, control id, times and replay outcome only, never the message. Expires overdue ones first |
+| POST | `/hl7/parked/{parked_id}/discard` | `user:manage` | Drops a parked message unapplied (its ciphertext and key are deleted); 400 unless still parked |
 
 ### HL7 v2 ADT
 
@@ -178,17 +180,28 @@ response is the ACK (`x-application/hl7-v2+er7`) with HTTP 200 for every outcome
 
 | ACK | When |
 |---|---|
-| AA | A01 admitted a new MRN or readmitted a discharged patient (each opens a new encounter); A03 completed the discharge and closed the encounter, or the patient was already discharged |
-| AE | Unknown MRN (204), MRN already admitted or PV1-19 visit number already admitted (205), required field missing (101) or invalid (102), the discharge workflow can't complete or PV1-19 names another visit than the current encounter (207, with the reason; physicians are notified when the workflow refuses) |
-| AR | Not ADT (200), an event other than A01/A03 (201), MSH-11 not `P` (202), unparseable message (100), no control id (101) |
+| AA | **A01** admitted a new MRN or readmitted a discharged patient (each opens a new encounter). **A02** moved the patient to the unit and room/bed in PV1-3. **A03** completed the discharge workflow; or, when the workflow can't complete yet (open tasks, unapproved summary), recorded the discharge anyway: the encounter closes at the departure time, the patient is discharged and the workflow becomes `externally_discharged` with its tasks still open (text "Discharge recorded; workflow left open (reason)"); or closed the stay when no workflow had been started; or the patient was already discharged. **A08** updated the whitelisted fields it carries (name, date of birth, attending, diagnosis; the text lists field names). **A11** cancelled the current encounter (status `cancelled`). **A13** reopened the last stay, and an `externally_discharged` workflow went back to in progress. **A40** merged the MRG-1 record into the PID-3 one, or gave the MRG-1 record the surviving MRN when only it was known, or found nothing to merge. **Any event but A01/A40 for an MRN not seen yet** was parked (text starts "Parked:"). An A01 whose MRN had parked messages adds "; N parked message(s) applied" |
+| AE | MRN already admitted or PV1-19 visit number already admitted (205), required field missing (101) or invalid (102), PV1-19 names another visit than the patient's encounter (207), A02 for a patient not admitted (207), A11 for an admission with a discharge workflow (207; physicians and admins are notified), A11 with no admission in progress (207), A40 without MRG (100) or naming the survivor itself (102), A40 that can't merge automatically, e.g. both records have a stay in progress or one was erased (207; admins are notified) |
+| AR | Not ADT (200), an event other than A01, A02, A03, A08, A11, A13, A40 (201), MSH-11 not `P` (202), unparseable message (100), no control id (101) |
 
 HTTP errors are reserved for problems below HL7: 401 (missing, invalid or revoked key), 403 (no `adt:ingest`), 413
 (over 256 KB), 409 (the same control id is being processed concurrently; retry). A resent message with the same
-MSH-10 control id gets its original ACK and is not applied again.
+MSH-10 control id gets its original ACK and is not applied again (a parked message is not parked twice).
 
 Patients are matched on PID-3 (the repetition typed `MR`, else the first) plus its assigning authority. Fields read:
 PID-5 name, PID-7 date of birth, PV1-3 location, PV1-7 attending, PV1-19 visit number (stored encrypted on the
-encounter), PV1-36 discharge disposition (A03), PV1-44 admit time (else EVN-2 or MSH-7), DG1-3 or PV2-3 diagnosis. Missing optional fields are stored as "Not provided by ADT".
+encounter), PV1-36 discharge disposition (A03), PV1-44 admit time (else EVN-2 or MSH-7), PV1-45 discharge time (A03;
+else EVN-6, EVN-2, MSH-7; a time without offset is taken as UTC), DG1-3 or PV2-3 diagnosis, MRG-1 prior MRN (A40).
+Missing optional fields are stored as "Not provided by ADT".
+
+**Externally discharged workflows.** `documentation_due_at` is `departed_at` plus `ADT_DOCUMENTATION_HOURS` (default
+24). Physicians and the unit's nurses are notified. `PUT /workflows/{id}/complete` completes it once the tasks are done
+and the summary is approved, with `completed_at` = the departure time (a `completed_at` in the body is refused).
+
+**Parking.** A message parked for an unknown MRN is stored as AES-256-GCM ciphertext under its own data key, with the
+blind index of the MRN it waits for. It is replayed, in arrival order and in the same transaction, when an A01 (or an
+A40 re-key) brings that MRN in; the replay is audited as `HL7_ADT_REPLAYED`. After `HL7_PARK_HOURS` (default 72) it
+expires unapplied and admins are notified. Replayed, expired and discarded messages keep only their metadata.
 
 ## Health
 

@@ -10,6 +10,9 @@ from app.core.tenancy import TenantMixin
 
 ACTIVE_WORKFLOW_STATUSES = ("in_progress", "pending_approval")
 _ACTIVE_SQL = text("status IN ('in_progress', 'pending_approval')")
+# The patient has left (HL7 A03) but tasks are still open (ADR-002 item 11). Not active: the stay is over, so the
+# patient can be readmitted and get a new workflow while this one's documentation is finished.
+EXTERNALLY_DISCHARGED = "externally_discharged"
 
 
 class Workflow(TenantMixin, Base):
@@ -51,6 +54,11 @@ class Workflow(TenantMixin, Base):
     # Set when the discharge was done on paper during a downtime and entered afterwards: completed_at keeps the real
     # time, this is when it was entered (ADR-002 item 6).
     backfilled_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    # Set when the hospital's ADT system discharged the patient (HL7 A03) before this workflow was done (status
+    # externally_discharged, ADR-002 item 11): when the patient actually left, and the policy deadline for the
+    # tasks still open.
+    departed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    documentation_due_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
 
 
 class Task(TenantMixin, Base):

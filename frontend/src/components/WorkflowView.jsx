@@ -194,9 +194,18 @@ const WorkflowView = () => {
           }`}>
             {workflow.status === 'in_progress' ? 'In Progress' :
              workflow.status === 'pending_approval' ? 'Pending Approval' :
+             workflow.status === 'externally_discharged' ? 'Patient Left, Tasks Open' :
              workflow.status === 'completed' ? 'Completed' : workflow.status}
           </span>
         </div>
+
+        {workflow.status === 'externally_discharged' && (
+          <div data-testid="external-discharge-banner"
+               className="mt-4 rounded border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+            The hospital ADT system discharged this patient at {new Date(workflow.departed_at).toLocaleString()}.
+            Finish the remaining tasks by {new Date(workflow.documentation_due_at).toLocaleString()}.
+          </div>
+        )}
 
         <div className="flex items-center gap-6 mt-4 text-sm text-zinc-400">
           <div className="flex items-center gap-2">
@@ -243,7 +252,7 @@ const WorkflowView = () => {
             )}
             {paperDischargeTime ? 'Enter Paper Discharge' : 'Complete Discharge'}
           </Button>
-          {canBackfill && (
+          {canBackfill && workflow.status !== 'externally_discharged' && (
             <label className="flex items-center gap-2 text-xs text-zinc-400">
               Discharged on paper during a downtime at
               <input

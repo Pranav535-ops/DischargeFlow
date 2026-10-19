@@ -191,7 +191,7 @@ async def test_a01_missing_required_fields_is_ae(make_client, send, db):
 
 
 @pytest.mark.parametrize("kwargs,code", [
-    ({"event": "A08"}, "201"),
+    ({"event": "A04"}, "201"),
     ({"msg_type": "ORU"}, "200"),
     ({"processing": "T"}, "202"),
 ])
@@ -222,15 +222,18 @@ async def _admit_and_start_discharge(client, make_user, send, key) -> tuple[str,
     return pid, resp.json()["workflow"]["workflow_id"], physician
 
 
-async def test_a03_refused_by_state_machine_is_ae_and_notifies(client, make_client, make_user, send, db):
+async def test_a03_refused_by_state_machine_is_reconciled(client, make_client, make_user, send, db):
+    """ADR-002 item 11: the patient has left, so the A03 is accepted and the remaining work stays open."""
     _, key, _ = await make_client()
     pid, wf_id, physician = await _admit_and_start_discharge(client, make_user, send, key)
 
     ack = await send(key, adt("A03", "DIS1"))
-    assert (ack["code"], ack["error"], ack["text"]) == ("AE", "207", "8 tasks still pending")
-    assert (await db.get(Workflow, wf_id)).status == "in_progress"
+    assert (ack["code"], ack["error"]) == ("AA", None)
+    assert ack["text"] == "Discharge recorded; workflow left open (8 tasks still pending)"
+    db.expire_all()
+    assert (await db.get(Workflow, wf_id)).status == "externally_discharged"
     notes = (await client.get("/api/notifications", headers=physician)).json()
-    note = next(n for n in notes if n["title"] == "ADT Discharge Not Applied")
+    note = next(n for n in notes if n["title"] == "Patient Left Before Discharge Was Complete")
     assert "8 tasks still pending" in note["message"] and note["link"] == f"/workflows/{wf_id}"
 
 
@@ -261,15 +264,15 @@ async def test_a03_completes_ready_workflow_then_a01_readmits(client, make_clien
     assert len(list(await db.scalars(select(Patient)))) == 1
 
 
-async def test_a03_unknown_mrn_or_no_workflow_is_ae(client, make_client, make_user, send, db):
+async def test_a03_without_workflow_closes_the_stay(client, make_client, make_user, send, db):
     _, key, _ = await make_client()
-    assert (await send(key, adt("A03", "X1", mrn="NOPE")))["error"] == "204"
-
     await send(key, adt("A01", "X2"))
     await make_user("physician")
     ack = await send(key, adt("A03", "X3"))
-    assert (ack["code"], ack["text"]) == ("AE", "No discharge workflow has been started")
-    assert await db.scalar(select(Notification).where(Notification.title == "ADT Discharge Not Applied"))
+    assert (ack["code"], ack["text"]) == ("AA", "Discharge recorded; no discharge workflow had been started")
+    db.expire_all()
+    assert (await db.scalar(select(Patient))).status == "discharged"
+    assert await db.scalar(select(Notification).where(Notification.title == "Patient Left Without a Discharge Workflow"))
 
 
 async def test_erasure_drops_the_mrn_index(client, make_client, send, db):
@@ -281,7 +284,8 @@ async def test_erasure_drops_the_mrn_index(client, make_client, send, db):
     db.expire_all()
     erased = await db.get(Patient, pid)
     assert erased.mrn_index is None and erased.mrn_authority is None and erased.mrn == "[REDACTED]"
-    assert (await send(key, adt("A03", "E2")))["error"] == "204"
+    # The erased record no longer matches its MRN: a later event about it is parked, not applied to it.
+    assert (await send(key, adt("A03", "E2")))["text"].startswith("Parked")
 
 
 # ---------- tenant isolation ----------
@@ -322,7 +326,9 @@ def with_pv1(message: str, **fields: str) -> str:
     """The message with PV1 fields set, e.g. with_pv1(msg, f19="V1") for the visit number."""
     pv1 = list(PV1)
     for name, value in fields.items():
-        pv1[int(name[1:])] = value
+        n = int(name[1:])
+        pv1 += [""] * (n + 1 - len(pv1))
+        pv1[n] = value
     return message.replace("|".join(PV1), "|".join(pv1))
 
 

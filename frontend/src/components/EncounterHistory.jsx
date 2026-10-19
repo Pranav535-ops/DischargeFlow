@@ -5,7 +5,11 @@ import { useEncounters, useUnits } from '@/lib/queries';
 
 const fmtDate = (value) => (value ? new Date(value).toLocaleDateString() : null);
 
-const WORKFLOW_LABELS = { in_progress: 'In progress', pending_approval: 'Pending approval', completed: 'Completed' };
+const WORKFLOW_LABELS = {
+  in_progress: 'In progress', pending_approval: 'Pending approval', completed: 'Completed',
+  externally_discharged: 'Patient left, tasks open',
+};
+const ENCOUNTER_LABELS = { active: 'Current stay', discharged: 'Discharged', cancelled: 'Admission cancelled' };
 
 // Every stay of one patient, newest first (ADR-002 item 7): a readmission is a new encounter, so earlier stays keep
 // their dates, location and discharge workflow.
@@ -32,7 +36,7 @@ const EncounterHistory = ({ patientId }) => {
               <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                 e.status === 'active' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'status-discharged'
               }`}>
-                {e.status === 'active' ? 'Current stay' : 'Discharged'}
+                {ENCOUNTER_LABELS[e.status] || e.status}
               </span>
               <span className="text-zinc-200">
                 {fmtDate(e.admitted_at) || 'Admission date unknown'}

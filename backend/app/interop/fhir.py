@@ -18,7 +18,7 @@ FHIR_JSON = "application/fhir+json"
 ID_SYSTEM = "urn:dischargeflow:id"
 VISIT_SYSTEM = "urn:dischargeflow:visit-number"
 
-ENCOUNTER_STATUS = {"active": "in-progress", "discharged": "finished"}
+ENCOUNTER_STATUS = {"active": "in-progress", "discharged": "finished", "cancelled": "cancelled"}
 TASK_STATUS = {"pending": "requested", "in_progress": "in-progress", "completed": "completed"}
 TASK_PRIORITY = {1: "urgent", 2: "routine", 3: "routine"}
 ROLE_DISPLAY = {"physician": "Physician", "nurse": "Nurse", "pharmacist": "Pharmacist", "admin": "Administrator"}
@@ -58,6 +58,9 @@ def patient(p) -> dict:
         "active": p.status != "discharged" and not erased,
         "name": None if erased else [{"text": p.name}],
         "birthDate": None if erased else _date(p.date_of_birth),
+        # Merged by an HL7 A40 (ADR-002 item 11): the surviving record.
+        "link": [{"other": {"reference": f"Patient/{p.merged_into}"}, "type": "replaced-by"}]
+        if p.merged_into else None,
     })
 
 

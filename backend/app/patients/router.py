@@ -57,7 +57,8 @@ async def get_patient_or_404(db, patient_id: str) -> Patient:
 
 @router.get("")
 async def get_patients(request: Request, db: DB, user: AuthUser, status: Optional[str] = None):
-    stmt = select(Patient).order_by(Patient.admission_date.desc())
+    # Records merged into another by an HL7 A40 stay for audit references but are not listed.
+    stmt = select(Patient).where(Patient.merged_into.is_(None)).order_by(Patient.admission_date.desc())
     if status:
         stmt = stmt.where(Patient.status == status)
     patients = [p.to_dict() for p in (await db.scalars(stmt))]
