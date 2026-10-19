@@ -1,13 +1,17 @@
+import json
 from datetime import date, datetime, time, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, LargeBinary, String, Text, text
+from sqlalchemy import JSON, Boolean, Date, ForeignKey, Index, Integer, LargeBinary, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.core import crypto
+from app.core.config import settings
 from app.core.db import Base, UTCDateTime, utcnow
 from app.core.ids import new_id
 from app.core.tenancy import TenantMixin
+from app.risk import lace
 
 PATIENT_STATUSES = ("admitted", "pending_discharge", "discharged")
 REDACTED = "[REDACTED]"
@@ -204,11 +208,96 @@ class Encounter(TenantMixin, Base):
     planned_disposition: Mapped[Optional[str]] = mapped_column(String(30))
     plan_reviewed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     plan_reviewed_by: Mapped[Optional[str]] = mapped_column(String(40))
+    # Readmission risk inputs (ADR-002 item 20, app.risk). Admission type is HL7 table 0007 (PV1-4, or set on the
+    # plan); patient class is PV1-2 (E = emergency, which counts as a prior ED visit). The Charlson comorbidity flags
+    # are health information, so they are a JSON list encrypted with the patient's data key (AAD: encounter id +
+    # field); NULL means not recorded. `ed_visits_recorded` is a count staff took from the hospital's records, used
+    # instead of counting this system's encounters (which only include stays the ADT feed sends).
+    admission_type: Mapped[Optional[str]] = mapped_column(String(2))
+    patient_class: Mapped[Optional[str]] = mapped_column(String(2))
+    _comorbidities: Mapped[Optional[str]] = mapped_column("comorbidities", Text)
+    ed_visits_recorded: Mapped[Optional[int]] = mapped_column(Integer)
+    # The LACE score as last computed: total, version, and the detail (points per component and the non-identifying
+    # inputs behind them: day counts, the admission type code, the Charlson index, visit counts; never condition names).
+    readmission_score: Mapped[Optional[int]] = mapped_column(Integer)
+    readmission_score_version: Mapped[Optional[str]] = mapped_column(String(20))
+    readmission_score_detail: Mapped[Optional[dict]] = mapped_column(JSON)
+    readmission_scored_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
-    def _aad(self) -> str:
-        return f"{self.encounter_id}:visit_number"
+    def _aad(self, field: str = "visit_number") -> str:
+        return f"{self.encounter_id}:{field}"
+
+    def _patient_key(self) -> bytes:
+        if self.patient is None:
+            raise ValueError("Set Encounter.patient first: its identifiers are encrypted with the patient's key")
+        if self.patient.phi_dek is None:
+            self.patient.phi_dek = crypto.new_wrapped_dek()
+        if self.encounter_id is None:
+            self.encounter_id = new_id("enc")  # the id is part of the ciphertext's associated data
+        return self.patient.phi_dek
+
+    @property
+    def comorbidities(self) -> Optional[list[str]]:
+        """The recorded Charlson condition keys (app.risk.lace.COMORBIDITIES); None when not recorded or erased."""
+        raw = self._comorbidities
+        if raw is None or not crypto.is_encrypted(raw) or self.patient.phi_dek is None:
+            return None
+        return json.loads(crypto.decrypt_field(self.patient.phi_dek, raw, self._aad("comorbidities")))
+
+    @comorbidities.setter
+    def comorbidities(self, value: Optional[list[str]]) -> None:
+        if value is None:
+            self._comorbidities = None
+            return
+        keys = json.dumps(sorted(set(value)))
+        self._comorbidities = crypto.encrypt_field(self._patient_key(), keys, self._aad("comorbidities"))
+
+    def length_of_stay(self, today: Optional[date] = None) -> tuple[Optional[int], str]:
+        """Days for the LACE L component and what they are: `actual` once the stay has ended; while in, `expected`
+        (to the expected discharge date) or `so_far` (to today: no expected date, or it has passed). Calendar days in
+        hospital time, so a same-day stay is 0. None without an admission time."""
+        if self.admitted_at is None:
+            return None, "unknown"
+        zone = ZoneInfo(settings.hospital_timezone)
+        admitted = self.admitted_at.astimezone(zone).date()
+        if self.status != "active" and self.discharged_at is not None:
+            return max((self.discharged_at.astimezone(zone).date() - admitted).days, 0), "actual"
+        today = today or utcnow().astimezone(zone).date()
+        expected = self.expected_discharge_date
+        if expected is not None and expected >= today:
+            return max((expected - admitted).days, 0), "expected"
+        return max((today - admitted).days, 0), "so_far"
+
+    def rescore(self, ed_visits_counted: Optional[int] = None, today: Optional[date] = None) -> lace.LaceScore:
+        """Recompute the LACE score from this stay's fields and store it (only when it changed). Counting prior ED
+        visits in this system needs a query, which app.risk.service.recompute runs and passes in; without it the
+        count from the last full computation is reused, so a discharge or a plan change rescores without one."""
+        stored = self.readmission_score_detail or {}
+        if ed_visits_counted is None:
+            ed_visits_counted = stored.get("ed_visits_counted")
+        recorded = self.ed_visits_recorded
+        visits = recorded if recorded is not None else ed_visits_counted
+        days, basis = self.length_of_stay(today)
+        result = lace.score(lace.LaceInputs(length_of_stay_days=days, admission_type=self.admission_type,
+                                            comorbidities=self.comorbidities, ed_visits=visits))
+        detail = {
+            "length_of_stay": {"points": result.length_of_stay, "days": days, "basis": basis},
+            "acuity": {"points": result.acuity, "admission_type": self.admission_type},
+            "comorbidity": {"points": result.comorbidity, "charlson_index": result.charlson_index},
+            "ed_visits": {"points": result.ed_visits, "visits": visits,
+                          "source": "recorded" if recorded is not None else "encounters"},
+            "ed_visits_counted": ed_visits_counted,
+            "missing": result.missing,
+        }
+        if (self.readmission_score, self.readmission_score_version, self.readmission_score_detail) != (
+                result.score, result.version, detail):
+            self.readmission_score = result.score
+            self.readmission_score_version = result.version
+            self.readmission_score_detail = detail
+            self.readmission_scored_at = utcnow()
+        return result
 
     @property
     def visit_number(self) -> Optional[str]:
@@ -225,21 +314,26 @@ class Encounter(TenantMixin, Base):
         if value is None:
             self._visit_number = None
             return
-        if self.patient is None:
-            raise ValueError("Set Encounter.patient before its visit number: it is encrypted with the patient's key")
-        if self.patient.phi_dek is None:
-            self.patient.phi_dek = crypto.new_wrapped_dek()
-        if self.encounter_id is None:
-            self.encounter_id = new_id("enc")  # the id is part of the ciphertext's associated data
-        self._visit_number = crypto.encrypt_field(self.patient.phi_dek, value, self._aad())
+        self._visit_number = crypto.encrypt_field(self._patient_key(), value, self._aad())
 
     def close(self, discharged_at: datetime, disposition: Optional[str] = None) -> None:
         self.status = "discharged"
         self.discharged_at = discharged_at
         if disposition:
             self.disposition = disposition
+        if self.readmission_score_detail is not None:
+            self.rescore()  # the actual length of stay replaces the expected one
+
+    def reopen(self) -> None:
+        """HL7 A13: the discharge was cancelled and the stay is open again."""
+        self.status, self.discharged_at, self.disposition = "active", None, None
+        if self.readmission_score_detail is not None:
+            self.rescore()
 
     def shred(self) -> None:
-        """Erasure: the visit number links back to the hospital's account records, so overwrite it."""
+        """Erasure: the visit number links back to the hospital's account records, so overwrite it, and the
+        comorbidity flags are health information. The score's numbers stay: they identify no one."""
         if self._visit_number is not None:
             self._visit_number = REDACTED
+        if self._comorbidities is not None:
+            self._comorbidities = REDACTED

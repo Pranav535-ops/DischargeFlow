@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { api, errorMessage } from '@/lib/api';
 import { invalidateDischarge, usePlanReview, useReadOnly, useUnits } from '@/lib/queries';
-import { DISPOSITION_LABELS, canManagePlan, formatPlanDate, planReviewBody } from '@/lib/plans';
+import { DISPOSITION_LABELS, canManagePlan, formatPlanDate, planReviewBody, riskLabel } from '@/lib/plans';
 import { Button } from './ui/button';
 
 // Route: /plans. The daily review of discharge plans in rounds (ADR-002 item 8): every stay in progress, per unit,
@@ -91,6 +91,7 @@ const PlanReviewView = () => {
                   <th className="py-1 font-normal">Room</th>
                   <th className="py-1 font-normal">Expected</th>
                   <th className="py-1 font-normal">Disposition</th>
+                  <th className="py-1 font-normal">Readmission risk</th>
                   <th className="py-1 font-normal">Last review</th>
                   <th />
                 </tr>
@@ -108,6 +109,10 @@ const PlanReviewView = () => {
                     </td>
                     <td className="py-2 text-zinc-300">
                       {DISPOSITION_LABELS[plan.planned_disposition] || plan.planned_disposition || '-'}
+                    </td>
+                    <td className={`py-2 ${plan.readmission_risk?.high_risk ? 'text-red-400' : 'text-zinc-400'}`}
+                      data-testid={`plan-risk-${plan.patient_id}`}>
+                      {riskLabel(plan.readmission_risk) || '-'}
                     </td>
                     <td className="py-2 text-zinc-500">
                       {plan.plan_reviewed_at

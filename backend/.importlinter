@@ -38,6 +38,7 @@ forbidden_modules =
     app.interop
     app.notifications
     app.patients
+    app.risk
     app.main
     app.models
     app.seed
@@ -62,6 +63,7 @@ forbidden_modules =
     app.insurance
     app.interop
     app.patients
+    app.risk
 
 [importlinter:contract:consumers]
 name = interop (FHIR) and chatbot only consume other modules; nothing imports them
@@ -78,6 +80,7 @@ source_modules =
     app.insurance
     app.notifications
     app.patients
+    app.risk
 forbidden_modules =
     app.chatbot
     app.interop
@@ -113,3 +116,34 @@ forbidden_modules =
     app.interop.hl7_router
     app.notifications.router
     app.patients.router
+
+[importlinter:contract:risk-score]
+name = The LACE score (app.risk.lace) is pure: it imports no app module, so it stays a published formula over inputs
+type = forbidden
+source_modules =
+    app.risk.lace
+forbidden_modules =
+    app.ai
+    app.analytics
+    app.audit
+    app.chatbot
+    app.core
+    app.discharge
+    app.downtime
+    app.escalations
+    app.identity
+    app.insurance
+    app.interop
+    app.notifications
+    app.patients
+
+[importlinter:contract:risk-not-for-models]
+name = Readmission risk is never sent to a model: the AI layer and the assistant don't import app.risk
+type = forbidden
+source_modules =
+    app.ai
+    app.chatbot
+forbidden_modules =
+    app.risk
+# Direct imports only: both reach Encounter (which scores itself with app.risk.lace) through app.patients.models.
+allow_indirect_imports = True

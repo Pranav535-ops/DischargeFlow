@@ -37,6 +37,27 @@ export const planUpdateBody = (plan, form, ask = window.prompt) => {
   return body;
 };
 
+// Readmission risk (ADR-002 item 20): the LACE score, computed by the API (app/risk). A short label for lists.
+export const riskLabel = (risk) => {
+  if (!risk) return null;
+  return `LACE ${risk.score}${risk.high_risk ? ' high' : ''}${risk.complete ? '' : ' (partial)'}`;
+};
+
+// The PUT /encounters/:id/risk-inputs body from the edit form ({admission_type: '' | code, comorbidities: [keys],
+// ed_visits_recorded: '' | number string}). Only what changed; null for a cleared value. Null if nothing changed.
+export const riskInputsBody = (inputs, form) => {
+  const body = {};
+  const admissionType = form.admission_type || null;
+  if (admissionType !== (inputs?.admission_type ?? null)) body.admission_type = admissionType;
+  const before = [...(inputs?.comorbidities ?? [])].sort();
+  const after = [...form.comorbidities].sort();
+  // Saving the form records the comorbidities, even "none of them": an empty list is different from not recorded.
+  if (inputs?.comorbidities == null || before.join() !== after.join()) body.comorbidities = after;
+  const visits = form.ed_visits_recorded === '' ? null : Number(form.ed_visits_recorded);
+  if (visits !== (inputs?.ed_visits_recorded ?? null)) body.ed_visits_recorded = visits;
+  return Object.keys(body).length ? body : null;
+};
+
 // The POST /encounters/:id/plan/review body: a delay reason on the first review of a day after the expected date
 // has passed. Returns null if the user cancels.
 export const planReviewBody = (plan, ask = window.prompt) => {
