@@ -40,6 +40,8 @@ suspend someone.
 | `patient:read_all` | interface (never unit-scoped; admin holds it too) |
 | `downtime:manage` | admin (read-only mode on and off, record outages) |
 | `escalation:run` | interface (a hospital scheduler running the escalation of overdue tasks) |
+| `plan:manage` | physician, nurse (set and review a patient's discharge plan) |
+| `template:manage` | admin (create and edit workflow templates) |
 
 ### Unit-scoped access
 
@@ -94,16 +96,35 @@ Notifications about a patient on a unit go only to members of that unit.
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| POST | `/workflows/initiate/{patient_id}` | `workflow:manage` | Creates the eight standard tasks; audited |
+| POST | `/workflows/initiate/{patient_id}` | `workflow:manage` | Creates the tasks of the active template for the stay's `planned_disposition` (with prerequisites and due times from the expected discharge date), or the eight standard tasks when there is no plan or template. Returns `{workflow, tasks_created, template}` (`template` null for the standard tasks); audited with the template id and version |
 | GET | `/workflows` | signed in | Optional `?status=` |
 | GET | `/workflows/patient/{patient_id}` | signed in | The active workflow, or `null`; `PHI_READ` audited when one is returned |
-| GET | `/workflows/{workflow_id}` | signed in | With tasks and summary (as `GET /ai/summary`), plus `summary_sign_by` and `summary_overdue`; `PHI_READ` audited |
+| GET | `/workflows/{workflow_id}` | signed in | With tasks and summary (as `GET /ai/summary`), plus `summary_sign_by` and `summary_overdue`; `PHI_READ` audited. Each task adds `due` (its due time: `due_at` from the template, else the SLA target for its priority after creation), `overdue`, and `blocked_by` (prerequisites not yet completed, `{task_id, title}`); the workflow adds `plan` (the stay's discharge plan) |
 | PUT | `/workflows/{workflow_id}/complete` | `workflow:manage` | Requires no open tasks and an approved summary; audited. Optional body `{completed_at}` back-enters a discharge done on paper: the time must be in the past, after the workflow started and inside a recorded downtime period; it becomes `completed_at`, `backfilled_at` records when it was entered, and the audit entry names the downtime |
 | POST | `/tasks` | `task:create` | Attached to the active workflow if there is one; audited |
 | GET | `/tasks` | signed in | |
 | GET | `/tasks/my` | signed in | Open tasks assigned to the user or the user's role |
-| PUT | `/tasks/{task_id}` | signed in | Body `{status?, assigned_to?, reason?}`. Status: the assignee (named user or assigned role); anyone else needs `task:override` and a `reason`, stored on the task as `override_reason`/`override_by`. `assigned_to`: needs `task:assign`, except claiming a task of your own role; the assignee must be an approved user. Each change is audited; moves the workflow between states |
-| PUT | `/tasks/{task_id}/backfill` | signed in | Body `{completed_at, reason?}` (timezone required). Completes a task done on paper during a downtime at the time it was done: in the past, after the task was created, inside a recorded downtime period. Same ownership rules as `PUT /tasks/{task_id}` (another role's task needs `task:override` and a `reason`). Sets `backfilled_at`; audited as `BACKFILL_TASK_STATUS` naming the downtime. 400 if already completed |
+| PUT | `/tasks/{task_id}` | signed in | Body `{status?, assigned_to?, reason?, delay_code?, delay_note?}`. Status: the assignee (named user or assigned role); anyone else needs `task:override` and a `reason`, stored on the task as `override_reason`/`override_by`. `assigned_to`: needs `task:assign`, except claiming a task of your own role; the assignee must be an approved user. Starting or completing a task whose prerequisites (`depends_on`) are not all completed answers 409 `Waiting on: …`, for overrides too. Completing a task after its due time needs a `delay_code` (400 otherwise) unless one is on record; it is stored as a delay reason and audited as `RECORD_DELAY_REASON`. Each change is audited; moves the workflow between states |
+| POST | `/tasks/{task_id}/delay-reason` | signed in | Body `{code, note?}`: why an open task is past its due time, so completing it needs no further reason. The assignee, or anyone holding `task:override`. 400 if the task is not open and late, 409 if a reason is already recorded |
+| PUT | `/tasks/{task_id}/backfill` | signed in | Body `{completed_at, reason?, delay_code?, delay_note?}` (timezone required). Completes a task done on paper during a downtime at the time it was done: in the past, after the task was created, inside a recorded downtime period. Same ownership rules as `PUT /tasks/{task_id}` (another role's task needs `task:override` and a `reason`). Sets `backfilled_at`; audited as `BACKFILL_TASK_STATUS` naming the downtime. 400 if already completed |
+
+## Discharge plans and workflow templates
+
+The plan lives on the encounter (ADR-002 items 8-10). "Today" is the date in `HOSPITAL_TIMEZONE`. Delay codes:
+`medical`, `social`, `placement`, `insurance`, `transport`, `pharmacy`, `documentation`, `other` (`other` needs a
+note). Notes stay on the delay row (never in audit entries) and erasure redacts them. Dispositions: `home`,
+`home_services`, `snf`, `rehab`, `hospice`, `ama`, `transfer`, `expired`.
+
+| Method | Path | Access | Notes |
+|---|---|---|---|
+| GET | `/discharge-plans/codes` | signed in | `{dispositions, delay_codes, roles}` for the plan and template screens |
+| GET | `/discharge-plans/review` | signed in | Active stays grouped by unit (`unit_id`, `unit_code`, `unit_name`, `total`, `not_reviewed_today`, `plans`), not-reviewed first. Each plan: patient name and room, `expected_discharge_date`, `planned_disposition`, `plan_reviewed_at`/`_by`/`_by_name`, `reviewed_today`, `expected_date_passed`, `workflow_status`. `?unit_id=` (or `unassigned`), `?pending_only=true`. Unit scope applies; one `PHI_READ` entry per request |
+| GET | `/encounters/{encounter_id}/plan` | signed in | The plan with its review state and `delays`; `PHI_READ` audited |
+| PUT | `/encounters/{encounter_id}/plan` | `plan:manage` | Body `{expected_discharge_date?, planned_disposition?, delay_code?, delay_note?}`; fields left out stay, null clears. Moving the date later needs a `delay_code` (recorded as an `expected_date_slip` with `slip_days`). Moves the due times of the open template tasks of the active workflow. Counts as today's review. 400 for a discharged stay. Audited as `UPDATE_DISCHARGE_PLAN` with field names and the delay code only |
+| POST | `/encounters/{encounter_id}/plan/review` | `plan:manage` | Optional body `{delay_code?, delay_note?}`. Records today's review (who and when). When the expected date has passed, the first review of the day needs a `delay_code`. Audited as `REVIEW_DISCHARGE_PLAN` |
+| GET | `/workflow-templates` | signed in | Every template of the tenant: `disposition`, `name`, `version`, `active`, `tasks` (`key`, `title`, `description`, `category`, `assigned_role`, `priority`, `due_offset_hours` from 00:00 on the expected date, `depends_on` keys) |
+| POST | `/workflow-templates` | `template:manage` | Body as a template above (without id and version). 409 if the disposition already has one; 422 for unknown roles, dispositions or prerequisites, duplicate keys or a dependency cycle. Audited |
+| PUT | `/workflow-templates/{template_id}` | `template:manage` | Replaces name, tasks and `active`; the version goes up. Running workflows keep their tasks. The disposition can't change (400). Audited |
 
 ## AI
 
@@ -128,7 +149,7 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/analytics/dashboard` | signed in | KPIs |
 | GET | `/analytics/tasks-by-role` | signed in | |
 | GET | `/analytics/aggregates` | `insights:read` | Aggregate-only metrics sent to the insights model |
-| GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA, summary signing against the sign-by policy, and `stays`: length of stay of encounters discharged in the window and readmissions within 30 days (`?days=30`) |
+| GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA (a task is late after its template due time, else its priority's SLA target), summary signing against the sign-by policy, `stays`: length of stay of encounters discharged in the window and readmissions within 30 days, and `delays`: delay reasons recorded in the window, by kind (`expected_date_slip`, `task_sla_breach`) and code, with the average slip in days only for groups of 3 or more (`?days=30`) |
 | POST | `/analytics/insights` | `insights:read` | AI explanation of the aggregates |
 | GET | `/notifications` | signed in | |
 | GET | `/notifications/stream` | signed in | Server-Sent Events; closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects |

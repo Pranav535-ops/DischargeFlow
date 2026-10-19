@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -108,6 +109,9 @@ class Settings:
     escalation_webhook_url: str | None = None
     escalation_webhook_secret: str | None = None
     app_base_url: str = ""
+    # IANA time zone of the hospital (ADR-002 items 8-9): what "reviewed today" means for the daily plan review, and
+    # where template due times ("10:00 on the expected discharge date") are anchored.
+    hospital_timezone: str = "UTC"
 
     @property
     def is_production(self) -> bool:
@@ -185,6 +189,12 @@ def load_settings() -> Settings:
     if phi_key_provider == "kms" and not phi_kms_key_id:
         raise RuntimeError("PHI_KMS_KEY_ID must be set when PHI_KEY_PROVIDER is 'kms'")
 
+    hospital_timezone = os.environ.get("HOSPITAL_TIMEZONE", "").strip() or "UTC"
+    try:
+        ZoneInfo(hospital_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise RuntimeError(f"HOSPITAL_TIMEZONE is not a known time zone: {hospital_timezone!r}")
+
     # The issuer is compared with the token's `iss` claim exactly, so a trailing slash would refuse every token.
     oidc_issuer = os.environ.get("OIDC_ISSUER", "").strip().rstrip("/") or None
 
@@ -250,6 +260,7 @@ def load_settings() -> Settings:
         escalation_webhook_url=webhook_url,
         escalation_webhook_secret=webhook_secret,
         app_base_url=os.environ.get("APP_BASE_URL", "").strip().rstrip("/"),
+        hospital_timezone=hospital_timezone,
     )
 
 

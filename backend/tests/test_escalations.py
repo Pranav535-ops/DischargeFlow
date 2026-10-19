@@ -105,6 +105,24 @@ async def test_high_priority_task_escalates_to_role_then_supervisor_once_each(
     assert all(e.resolved_at is not None for e in await _escalations(db, task_id))
 
 
+async def test_template_due_times_decide_the_breach(db, session_factory, make_user, create_patient):
+    """A task with a template due time (ADR-002 item 9) breaches at that time, not at its SLA after creation."""
+    _, admin = await make_user("admin")
+    await make_user("nurse")
+    pid = (await create_patient(admin))["patient_id"]
+    early = await _task(db, pid, hours_old=0.5, priority=1)  # due 10 minutes ago, though created only 30 minutes ago
+    late = await _task(db, pid, hours_old=30, priority=3)  # past its 24 h SLA, but its due time is tomorrow
+    for task_id, due in ((early, utcnow() - timedelta(minutes=10)), (late, utcnow() + timedelta(days=1))):
+        (await db.get(Task, task_id)).due_at = due
+    await db.commit()
+
+    assert (await _run(session_factory))["escalated"] == 1
+    [e1] = await _escalations(db, early)
+    assert e1.level == 1 and await _escalations(db, late) == []
+    note = await db.scalar(select(Notification).where(Notification.message.contains(early)))
+    assert "past its due time" in note.message
+
+
 async def test_policy_by_priority_and_named_assignee(db, session_factory, make_user, create_patient):
     _, admin = await make_user("admin")
     owner, _ = await make_user("nurse")

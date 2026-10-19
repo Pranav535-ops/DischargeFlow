@@ -41,6 +41,10 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "downtime:manage": (),
     # Run the escalation of overdue tasks (ADR-002 item 12): the hospital's scheduler as an integration client.
     "escalation:run": (INTEGRATION_ROLE,),
+    # Set and review a patient's discharge plan: expected date and disposition (ADR-002 item 8).
+    "plan:manage": ("physician", "nurse"),
+    # Create and edit workflow templates per disposition (ADR-002 item 9). Admin only.
+    "template:manage": (),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

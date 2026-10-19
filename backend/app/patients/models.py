@@ -195,6 +195,11 @@ class Encounter(TenantMixin, Base):
     # Where the patient went (HL7 PV1-36 code, e.g. 01 home) and the planned discharge date (ADR-002 item 8).
     disposition: Mapped[Optional[str]] = mapped_column(String(40))
     expected_discharge_date: Mapped[Optional[date]] = mapped_column(Date)
+    # The discharge plan (ADR-002 item 8): where the patient is expected to go (discharge.models.DISPOSITIONS, which
+    # picks the workflow template), and the last daily review of the plan.
+    planned_disposition: Mapped[Optional[str]] = mapped_column(String(30))
+    plan_reviewed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    plan_reviewed_by: Mapped[Optional[str]] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

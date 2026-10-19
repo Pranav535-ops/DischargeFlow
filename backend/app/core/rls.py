@@ -29,6 +29,8 @@ TENANT_TABLES = (
     "escalations",
     "discharge_summary_versions",
     "discharge_summary_addenda",
+    "workflow_templates",
+    "delay_reasons",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
@@ -50,7 +52,8 @@ PATIENT_VISIBLE = (
 )
 # Rows about one patient are visible when the patient is: the subquery itself runs under the patients policies.
 UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims", "encounters",
-                            "discharge_summary_versions", "discharge_summary_addenda")
+                            "discharge_summary_versions", "discharge_summary_addenda",
+                            "delay_reasons")
 UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES
 
 

@@ -12,7 +12,8 @@ import {
   DollarSign,
   Bot,
   Sparkles,
-  ClipboardList
+  ClipboardList,
+  CalendarCheck
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 
@@ -22,6 +23,7 @@ const Sidebar = ({ user }) => {
   const navItems = [
     { id: 'home',      to: '/dashboard', label: 'Home',         icon: LayoutDashboard, roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'patients',  to: '/patients',  label: 'Patients',     icon: Users,           roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'plans',     to: '/plans',     label: 'Plan Review',  icon: CalendarCheck,   roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'tasks',     to: '/tasks',     label: 'My Tasks',     icon: CheckSquare,     roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'insurance', to: '/insurance', label: 'Insurance',    icon: DollarSign,      roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'chatbot',   to: '/assistant', label: 'AI Assistant', icon: Bot,             roles: ['physician', 'nurse', 'pharmacist', 'admin'] },

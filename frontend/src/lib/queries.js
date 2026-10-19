@@ -42,6 +42,11 @@ export const keys = {
   downtimePeriods: ['downtime', 'periods'],
   census: (unitId, at) => ['census', unitId || 'all', at],
   escalations: ['escalations'],
+  // Discharge plans (ADR-002 items 8-10). Under ['patients'] so a discharge change refreshes them too.
+  plan: (encounterId) => ['patients', 'plans', encounterId],
+  planReview: (unitId) => ['patients', 'plans', 'review', unitId || 'all'],
+  planCodes: ['discharge-plans', 'codes'],
+  templates: ['workflow-templates'],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -100,6 +105,14 @@ export const useCensus = (unitId, at) => useQuery({
   staleTime: Infinity,
   refetchOnWindowFocus: false,
 });
+export const usePlan = (encounterId) =>
+  useQuery({ queryKey: keys.plan(encounterId), queryFn: get(`/encounters/${encounterId}/plan`), enabled: !!encounterId });
+export const usePlanReview = (unitId) => useQuery({
+  queryKey: keys.planReview(unitId),
+  queryFn: () => api.get('/discharge-plans/review', { params: unitId ? { unit_id: unitId } : {} }).then(res => res.data),
+});
+export const usePlanCodes = () => useQuery({ queryKey: keys.planCodes, queryFn: get('/discharge-plans/codes'), staleTime: Infinity });
+export const useTemplates = () => useQuery({ queryKey: keys.templates, queryFn: get('/workflow-templates') });
 if (typeof window !== 'undefined') {
   window.addEventListener(READ_ONLY_EVENT, () => queryClient.invalidateQueries({ queryKey: keys.downtime }));
 }
