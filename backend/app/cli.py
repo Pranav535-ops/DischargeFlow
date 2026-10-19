@@ -1,4 +1,4 @@
-"""Operational commands: `python -m app.cli {migrate,encrypt-phi,rewrap-deks,seed,summary-deadlines}`."""
+"""Operational commands: `python -m app.cli {migrate,encrypt-phi,rewrap-deks,seed,summary-deadlines,escalate}`."""
 import argparse
 import asyncio
 import json
@@ -10,6 +10,7 @@ from app.ai import lifecycle
 from app.core.config import settings
 from app.core.db import SessionLocal, engine
 from app.core.migrate import encrypt_legacy_phi, migrate_all, rewrap_deks
+from app.escalations.service import run_all_tenants
 from app.core.tenancy import current_tenant_id, use_tenant
 from app.identity.models import Tenant
 from app.seed import seed_demo_data
@@ -47,6 +48,7 @@ def main() -> int:
     seed.add_argument("--force", action="store_true", help="Allow seeding when APP_ENV=production")
     sub.add_parser("summary-deadlines",
                    help="Notify physicians of discharge summaries unsigned past SUMMARY_SIGN_HOURS (run on a schedule)")
+    sub.add_parser("escalate", help="Escalate overdue tasks in every tenant (idempotent; run every few minutes)")
     args = parser.parse_args()
 
     if args.command == "migrate":
@@ -59,6 +61,8 @@ def main() -> int:
         return asyncio.run(_run(_seed(args.force)))
     if args.command == "summary-deadlines":
         return asyncio.run(_run(_summary_deadlines()))
+    if args.command == "escalate":
+        return asyncio.run(_run(run_all_tenants(SessionLocal)))
     return 2
 
 

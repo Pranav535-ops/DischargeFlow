@@ -1,7 +1,9 @@
 """Inbound HL7 v2 ADT: A01 (admit) creates or readmits a patient, A03 (discharge) completes the discharge workflow.
 
 Patients are matched by MRN (PID-3) through the keyed blind index on `patients.mrn_index`, since the MRN itself is
-encrypted. A03 goes through the same state machine as the UI: when open tasks or an unapproved summary stop
+encrypted. Each A01 opens an encounter (one stay, with the visit number from PV1-19); a readmission is a new
+encounter, so earlier stays are kept. A03 closes the current encounter through the discharge workflow, so it goes
+through the same state machine as the UI: when open tasks or an unapproved summary stop
 `complete_discharge`, nothing changes, the ACK is AE with the reason, and physicians are notified that the
 hospital's ADT system already considers the patient discharged.
 
@@ -21,7 +23,8 @@ from app.discharge.service import active_workflow_for, complete_discharge
 from app.identity.models import Unit
 from app.interop.hl7 import HL7Error, Message, Segment, parse_date
 from app.notifications.service import notify_role
-from app.patients.models import MRN_INDEX_PURPOSE, Patient, mrn_index_parts
+from app.patients.models import MRN_INDEX_PURPOSE, Encounter, Patient, mrn_index_parts
+from app.patients.service import current_encounter, open_encounter
 
 SUPPORTED_EVENTS = ("A01", "A03")
 # Stored when an A01 leaves a required column empty, so nobody mistakes it for clinical information.
@@ -106,21 +109,46 @@ async def unit_for(db: AsyncSession, message: Message) -> Optional[str]:
     return await db.scalar(select(Unit.unit_id).where(Unit.code == code)) if code else None
 
 
+def visit_number_from(message: Message) -> Optional[str]:
+    """PV1-19, the visit (account) number the hospital gives this stay."""
+    pv1 = message.segment("PV1")
+    return (pv1.component(19).strip() or None) if pv1 else None
+
+
+def disposition_from(message: Message) -> Optional[str]:
+    """PV1-36 discharge disposition, as the sending system codes it (HL7 table 0112, e.g. 01 home)."""
+    pv1 = message.segment("PV1")
+    return (pv1.component(36).strip()[:40] or None) if pv1 else None
+
+
+async def _visit_seen(db: AsyncSession, patient_id: str, visit_number: str) -> bool:
+    encounters = await db.scalars(select(Encounter).where(Encounter.patient_id == patient_id))
+    return any(e.visit_number == visit_number for e in encounters)  # encrypted: compared after decrypting
+
+
 async def admit(db: AsyncSession, client: CurrentUser, message: Message) -> Outcome:
     pid = _pid(message)
     authority, mrn = mrn_from(pid)
     fields = admission_fields(message, pid)
     fields["unit_id"] = await unit_for(db, message)
+    visit_number = visit_number_from(message)
 
     patient = await find_patient(db, client.tenant_id, authority, mrn)
     if patient is not None:
         if patient.status != "discharged" or await active_workflow_for(db, patient.patient_id):
             raise _ae("205", "Patient with this MRN is already admitted")
+        if visit_number and await _visit_seen(db, patient.patient_id, visit_number):
+            # An old A01 for a stay that has already ended (resent under a new control id): never reopen it.
+            raise _ae("205", "This visit number has already been admitted")
+        stale = await current_encounter(db, patient.patient_id)
+        if stale is not None:  # discharged by hand without closing the stay (should not happen; keep one active)
+            stale.close(stale.discharged_at or stale.updated_at)
         for key, value in fields.items():
             setattr(patient, key, value)
         patient.status = "admitted"
         patient.set_mrn(client.tenant_id, authority, mrn)  # re-keys a pre-rotation index
         await db.flush()
+        await open_encounter(db, patient, visit_number)
         return Outcome("AA", "Patient readmitted", patient_id=patient.patient_id)
 
     patient = Patient(**fields, status="admitted")
@@ -131,6 +159,7 @@ async def admit(db: AsyncSession, client: CurrentUser, message: Message) -> Outc
     except IntegrityError:
         # Another message admitted the same MRN concurrently. Fail the request so the sender retries and gets AE.
         raise HTTPException(status_code=409, detail="Concurrent admission for this MRN; retry")
+    await open_encounter(db, patient, visit_number)
     return Outcome("AA", "Patient admitted", patient_id=patient.patient_id)
 
 
@@ -141,6 +170,12 @@ async def discharge(db: AsyncSession, client: CurrentUser, message: Message) -> 
     if patient is None:
         raise _ae("204", "No patient with this MRN")
 
+    visit_number = visit_number_from(message)
+    encounter = await current_encounter(db, patient.patient_id)
+    if visit_number and encounter is not None and encounter.visit_number not in (None, visit_number):
+        # Closing the wrong stay would be worse than not closing one.
+        raise _ae("207", "PV1-19 visit number does not match the patient's current encounter")
+
     workflow = await active_workflow_for(db, patient.patient_id)
     if workflow is None:
         if patient.status == "discharged":
@@ -150,7 +185,7 @@ async def discharge(db: AsyncSession, client: CurrentUser, message: Message) -> 
         return Outcome("AE", reason, "207", patient.patient_id)
 
     try:
-        await complete_discharge(db, workflow.workflow_id, client)
+        await complete_discharge(db, workflow.workflow_id, client, disposition=disposition_from(message))
     except HTTPException as exc:
         # The state machine refused before changing anything (open tasks, unapproved summary).
         reason = str(exc.detail)

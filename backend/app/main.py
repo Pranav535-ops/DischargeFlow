@@ -18,6 +18,7 @@ from app.discharge.router import tasks_router, workflows_router
 from app.downtime.router import census_router
 from app.downtime.router import router as downtime_router
 from app.downtime.service import READ_ONLY_HEADER, enforce_read_only
+from app.escalations.router import router as escalations_router
 from app.identity.router import auth_router, integrations_router, units_router, users_router
 from app.insurance.router import router as insurance_router
 from app.interop.hl7_router import router as hl7_router
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
         auth_router, users_router, patients_router, workflows_router, tasks_router, notifications_router,
         analytics_router, ai_router, insurance_router, chatbot_router, audit_router, fhir_router,
         integrations_router, hl7_router, units_router, access_router, downtime_router, census_router,
+        escalations_router,
     ):
         api.include_router(router)
 

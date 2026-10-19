@@ -9,7 +9,7 @@ Summaries approved before this migration get their version 1 from `app.cli migra
 encrypt; this migration only creates the tables.
 
 Revision ID: 0013
-Revises: 0010
+Revises: 0012
 Create Date: 2026-10-19 18:00:00
 """
 from typing import Sequence, Union
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '0013'
-down_revision: Union[str, None] = '0010'
+down_revision: Union[str, None] = '0012'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

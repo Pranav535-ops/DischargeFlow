@@ -30,5 +30,11 @@
       "source": "/(.*)",
       "destination": "/frontend/index.html"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/escalations/run",
+      "schedule": "0 7 * * *"
+    }
   ]
 }

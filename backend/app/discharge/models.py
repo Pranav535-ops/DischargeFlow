@@ -23,10 +23,22 @@ class Workflow(TenantMixin, Base):
             postgresql_where=_ACTIVE_SQL,
             sqlite_where=_ACTIVE_SQL,
         ),
+        # ...and at most one per encounter (ADR-002 item 7).
+        Index(
+            "uq_workflows_one_active_per_encounter",
+            "encounter_id",
+            unique=True,
+            postgresql_where=_ACTIVE_SQL,
+            sqlite_where=_ACTIVE_SQL,
+        ),
     )
 
     workflow_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("wf"))
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id", ondelete="CASCADE"), index=True)
+    # The stay being discharged. Nullable for the transition only: the release before migration 0011 creates workflows
+    # without it while the deploy rolls out; discharge.service links those to the patient's current encounter.
+    encounter_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("encounters.encounter_id", ondelete="CASCADE"), index=True)
     initiated_by: Mapped[str] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(30), default="in_progress", index=True)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

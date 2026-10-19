@@ -121,6 +121,40 @@ describe('PatientDetails (route /patients/:patientId)', () => {
     renderAt('/patients/pat_missing', '/patients/:patientId', <PatientDetails />);
     expect(await screen.findByText('Patient not found.')).toBeInTheDocument();
   });
+
+  it('lists every stay, the current one first, with its discharge workflow', async () => {
+    const { default: PatientDetails } = await import('./PatientDetails');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/patients/pat_1') {
+        return { data: { patient_id: 'pat_1', name: 'Jane Doe', room_number: '501-A', status: 'admitted',
+          date_of_birth: '1970-01-01', admission_date: '2026-10-09', diagnosis: 'Sepsis', attending_physician: 'Dr P' } };
+      }
+      if (url === '/workflows/patient/pat_1') return { data: null };
+      if (url === '/units') return { data: [{ unit_id: 'unit_4w', code: '4W' }] };
+      if (url === '/patients/pat_1/encounters') {
+        return { data: [
+          { encounter_id: 'enc_2', status: 'active', admitted_at: '2026-10-09T00:00:00+00:00', discharged_at: null,
+            unit_id: 'unit_4w', room_number: '501-A', visit_number: 'V200', disposition: null, workflows: [] },
+          { encounter_id: 'enc_1', status: 'discharged', admitted_at: '2026-09-01T00:00:00+00:00',
+            discharged_at: '2026-09-05T12:00:00+00:00', unit_id: null, room_number: '412-B', visit_number: 'V100',
+            disposition: '01', workflows: [{ workflow_id: 'wf_1', status: 'completed' }] },
+        ] };
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    renderAt('/patients/pat_1', '/patients/:patientId', <PatientDetails />);
+
+    const history = await screen.findByTestId('encounter-history');
+    await waitFor(() => expect(history).toHaveTextContent('Current stay'));
+    const items = history.querySelectorAll('li');
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent('Unit 4W · Room 501-A');
+    expect(items[0]).toHaveTextContent('Visit V200');
+    expect(items[1]).toHaveTextContent('Discharged');
+    expect(items[1]).toHaveTextContent('Disposition 01');
+    await userEvent.click(screen.getByText('Discharge workflow: Completed'));
+    expect(await screen.findByText('elsewhere')).toBeInTheDocument();
+  });
 });
 
 describe('InsightsView', () => {
