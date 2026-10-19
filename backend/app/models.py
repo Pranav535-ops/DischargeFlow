@@ -3,6 +3,7 @@ from app.ai.models import AIGeneration, DischargeSummary, DischargeSummaryAddend
 from app.audit.models import AuditChainHead, AuditLog
 from app.chatbot.models import AssistantAction
 from app.core.db import Base
+from app.delivery.models import DeliveryEndpoint, DischargeRecipient, SummaryDelivery
 from app.discharge.models import DelayReason, Task, Workflow, WorkflowTemplate
 from app.downtime.models import DowntimePeriod
 from app.escalations.models import Escalation
@@ -21,6 +22,8 @@ __all__ = [
     "AuditLog",
     "AuthSession",
     "DelayReason",
+    "DeliveryEndpoint",
+    "DischargeRecipient",
     "DischargeSummary",
     "DischargeSummaryAddendum",
     "DischargeSummaryVersion",
@@ -34,6 +37,7 @@ __all__ = [
     "Notification",
     "Patient",
     "RolePermission",
+    "SummaryDelivery",
     "Task",
     "Tenant",
     "Unit",

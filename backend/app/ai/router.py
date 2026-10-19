@@ -1,9 +1,10 @@
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.ai import lifecycle
 from app.ai import service as ai_service
@@ -11,13 +12,15 @@ from app.ai.models import AIGeneration, DischargeSummary
 from app.ai.prompts import ACTIVE
 from app.audit.service import audit_phi_read, write_audit
 from app.core.config import settings
-from app.core.db import DB
+from app.core.db import DB, get_session_factory
 from app.core.security import AuthUser, CurrentUser, requires
+from app.delivery import service as delivery_service
 from app.discharge import service as discharge_service
 from app.discharge.models import Task, Workflow
 from app.patients.models import Patient
 
 router = APIRouter(prefix="/ai", tags=["AI"])
+SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 
 
 class GenerateSummaryRequest(BaseModel):
@@ -66,8 +69,8 @@ async def generate_discharge_summary(
 
 @router.put("/approve-summary/{summary_id}")
 async def approve_summary(
-    summary_id: str, request: Request, db: DB, body: Optional[ApproveSummaryRequest] = None,
-    user: CurrentUser = Depends(requires("summary:manage")),
+    summary_id: str, request: Request, db: DB, background_tasks: BackgroundTasks, factory: SessionFactory,
+    body: Optional[ApproveSummaryRequest] = None, user: CurrentUser = Depends(requires("summary:manage")),
 ):
     summary = await db.get(DischargeSummary, summary_id)
     if not summary:
@@ -92,6 +95,10 @@ async def approve_summary(
     await write_audit(db, user, "AI_SUMMARY_APPROVED", "discharge_summary", summary_id,
                       f"signed version={version.version_id} edited={edited} similarity={summary.edit_similarity}",
                       request)
+    # ADR-002 item 16: queue the signed summary for the stay's recipients in this transaction; the first attempt
+    # runs after commit.
+    queued = await delivery_service.enqueue_for_summary(db, user, summary, version.version_id)
+    delivery_service.schedule(background_tasks, factory, user.tenant_id, queued)
     return {"success": True, "approved_at": summary.approved_at.isoformat(), "edited": edited,
             "edit_similarity": summary.edit_similarity, "version_id": version.version_id,
             "version": version.version, "content_sha256": version.content_sha256}
@@ -99,6 +106,7 @@ async def approve_summary(
 
 @router.post("/summaries/{summary_id}/addenda", status_code=201)
 async def add_addendum(summary_id: str, body: AddendumRequest, request: Request, db: DB,
+                       background_tasks: BackgroundTasks, factory: SessionFactory,
                        user: CurrentUser = Depends(requires("summary:manage"))):
     """Add signed text to a signed summary. The signed version itself never changes."""
     summary = await db.get(DischargeSummary, summary_id)
@@ -108,6 +116,9 @@ async def add_addendum(summary_id: str, body: AddendumRequest, request: Request,
     await db.flush()
     await write_audit(db, user, "SUMMARY_ADDENDUM_SIGNED", "discharge_summary", summary_id,
                       f"addendum={addendum.addendum_id} version={addendum.version_id}", request)
+    # Receivers of the signed summary get the amended document.
+    queued = await delivery_service.enqueue_for_summary(db, user, summary, addendum.addendum_id)
+    delivery_service.schedule(background_tasks, factory, user.tenant_id, queued)
     return lifecycle.addendum_dict(addendum)
 
 

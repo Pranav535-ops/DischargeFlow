@@ -428,8 +428,47 @@ which needs monthly partitioning within a year or two.
 14. [ ] SMART on FHIR launch from the EHR, with patient context and no second sign-in.
 15. [ ] Read-only clinical context from the EHR over FHIR (medications, problems, allergies), so medication
     reconciliation compares real lists and summaries are grounded in real data.
-16. [ ] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
-    delivery tracked.
+16. [x] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
+    delivery tracked (migration 0017, done 2026-10-19 against synthetic endpoints; no real HIE or Direct yet).
+    - **Built:** an admin-managed directory of receivers (`delivery_endpoints`: name, primary care or receiving
+      facility, document format, transport, URL) and the recipients of each stay, set on its encounter with the
+      discharge plan (`discharge_recipients`, `plan:manage`). Signing the summary queues one `summary_deliveries` row
+      per recipient in the signing transaction (a transactional outbox: a rolled-back signature queues nothing, and
+      only signed text is ever sent); an addendum queues the amended document, and a recipient added after signature
+      gets the summary as it stands. The first attempt runs right after the response, in the same process; then a
+      retry runner (`python -m app.cli deliver-summaries`, `GET /api/deliveries/run` from Vercel Cron, or
+      `POST /api/deliveries/run` with `delivery:run`) claims due rows with `SELECT ... FOR UPDATE SKIP LOCKED` and
+      backs off 1, 5, 15, 60, 240 and 720 minutes. Deliveries go queued → sent (202) → acknowledged (200/201, or
+      `POST /api/deliveries/{id}/acknowledge` by an integration client), or failed (a permanent 4xx, an inactive
+      endpoint, or the seventh attempt). Failed deliveries are on a worklist (`/deliveries`, `delivery:manage`:
+      nurses doing case management, and admins) with retry and cancel, and nurses on the unit and admins are notified.
+    - **Documents:** per endpoint, a FHIR R4 document Bundle (Composition with LOINC 18842-5, `final` or `amended`,
+      legal attester, sections for the signed text, the discharge diagnosis and each addendum; Patient with MRN,
+      Encounter, Practitioner, Organization; `urn:uuid:` references that all resolve inside the Bundle), or a C-CDA
+      R2.1 Discharge Summary (US Realm Header and Discharge Summary templates, recordTarget, author, custodian,
+      legalAuthenticator, encompassingEncounter, and Allergies, Hospital Course, Discharge Diagnosis, Discharge
+      Medications and Plan of Treatment sections). The signed text, never the AI's structured draft, is the content,
+      since the physician may have edited it. Ids are UUIDv5 of DischargeFlow ids, so a retry sends the same document.
+    - **Transport:** an adapter interface (`delivery/transport.py`) with an HTTPS POST (FHIR to `<base>/Bundle`, C-CDA
+      to the URL), an `Idempotency-Key` stable across retries and an optional HMAC signature
+      (`DELIVERY_SIGNING_SECRET`), plus a mock adapter (no network) for tests and demos that production refuses.
+    - **Protection:** endpoints, recipients and deliveries are tenant-scoped; recipients and deliveries are
+      unit-scoped like the encounter. Errors are codes and HTTP statuses, never response bodies (a receiver's error
+      can echo the patient). Every attempt is audited (`DELIVER_SUMMARY`: delivery, endpoint and summary ids, format,
+      outcome), as are queueing, retries, cancels, acknowledgements and endpoint and recipient changes. Erasure
+      cancels the patient's open deliveries, and the runner re-checks erasure before every send.
+    - **Limits:** no real HIE, Direct (SMTP/S/MIME with a HISP) or XDR/XDS exchange, and no receiver has been tested;
+      the HTTPS adapter is exercised only against local fakes, and synthetic endpoints. Neither document has been run
+      through the HL7 FHIR validator or the ONC C-CDA validator: tests check the structure (document Bundle rules,
+      reference resolution, required C-CDA header elements and section codes) and that the XML is well formed. The
+      C-CDA carries no coded entries (no structured medications, problems or allergies until item 15), the patient's
+      name is one string split at the last word, gender is unknown, and local ids use UUID roots instead of
+      registered OIDs. Receivers are found by an admin, not from a provider directory, and the PCP is not taken from
+      the ADT feed (PD1-4). Endpoint authentication is the HMAC signature only (no OAuth client credentials or mutual
+      TLS). On Vercel Hobby the cron runs once a day, so retries rely on the hospital's scheduler calling
+      `POST /api/deliveries/run` (or the immediate attempt after signing); on Vercel the immediate attempt is best
+      effort. Delivery is at least once: a run whose commit fails sends again, which the Idempotency-Key lets the
+      receiver drop. Tested on SQLite and PostgreSQL 16 (RLS, unit scope, SKIP LOCKED).
 17. [ ] Capacity board: expected discharges by unit and hour, discharge before noon, and the bed-to-cleaning handoff.
 18. [ ] Patient-facing discharge instructions in plain language and the patient's language, approved by a clinician.
 19. [ ] Outcome analytics: length of stay against expected, accuracy of the expected discharge date, delay reasons,

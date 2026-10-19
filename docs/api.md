@@ -42,6 +42,10 @@ suspend someone.
 | `escalation:run` | interface (a hospital scheduler running the escalation of overdue tasks) |
 | `plan:manage` | physician, nurse (set and review a patient's discharge plan) |
 | `template:manage` | admin (create and edit workflow templates) |
+| `delivery:configure` | admin (the directory of summary delivery endpoints) |
+| `delivery:manage` | nurse (the delivery worklist: list, retry and cancel deliveries) |
+| `delivery:run` | interface (a hospital scheduler running the delivery queue) |
+| `delivery:acknowledge` | interface (a receiver or interface engine confirming a delivery it accepted with 202) |
 
 ### Unit-scoped access
 
@@ -131,9 +135,9 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 | Method | Path | Access | Notes |
 |---|---|---|---|
 | POST | `/ai/generate-summary` | `summary:manage` | Structured, de-identified generation; 503 when `LLM_PROVIDER=none` |
-| PUT | `/ai/approve-summary/{summary_id}` | `summary:manage` | Signs the summary: accepts the physician's edited text, stores the diff, and freezes the text as version 1 (`version_id`, `content_sha256` in the response). 400 if already signed; signed text never changes again |
+| PUT | `/ai/approve-summary/{summary_id}` | `summary:manage` | Signs the summary: accepts the physician's edited text, stores the diff, and freezes the text as version 1 (`version_id`, `content_sha256` in the response). 400 if already signed; signed text never changes again. Queues a delivery to each recipient of the stay (see Summary delivery) |
 | GET | `/ai/summary/{workflow_id}` | signed in | `PHI_READ` audited when a summary is returned. Adds `signed`, `versions` (metadata), `signed_version` (latest signed text, `content_sha256`, `hash_verified`), its `addenda`, `sign_by` and `signed_late` |
-| POST | `/ai/summaries/{summary_id}/addenda` | `summary:manage` | Body `{content}` (1–20000 characters). Appends text to the latest signed version, signed by the author; 201 with the addendum. 400 if the summary is unsigned or the patient was erased. Audited as `SUMMARY_ADDENDUM_SIGNED` (addendum and version ids only). Allowed after discharge |
+| POST | `/ai/summaries/{summary_id}/addenda` | `summary:manage` | Body `{content}` (1–20000 characters). Appends text to the latest signed version, signed by the author; 201 with the addendum. 400 if the summary is unsigned or the patient was erased. Audited as `SUMMARY_ADDENDUM_SIGNED` (addendum and version ids only). Allowed after discharge. Queues the amended document to the stay's recipients |
 | GET | `/ai/summaries/overdue` | `summary:manage` | Discharges whose summary is missing or unsigned past the sign-by deadline (`SUMMARY_SIGN_HOURS` after discharge, or after the expected discharge time while the patient is still here). Ids and times only |
 | POST | `/ai/summaries/overdue/notify` | `summary:manage` | Notifies physicians (on the patient's unit) once per overdue discharge; what `python -m app.cli summary-deadlines` runs for every tenant |
 | GET | `/ai/generations` | `summary:manage` | Provenance records (no prompt or output text) |
@@ -189,6 +193,44 @@ tenant_id, task_id, level, priority, category, unit, target_role, overdue_minute
 `v1` is HMAC-SHA256 of `<t>.<raw body>` with `ESCALATION_WEBHOOK_SECRET`. Verify the signature, refuse old `t`, and
 answer 2xx to accept; anything else (or a 5 s timeout) counts as a failed attempt. `link` is absolute when
 `APP_BASE_URL` is set.
+
+## Summary delivery
+
+Outbound delivery of the signed discharge summary to the primary care physician or receiving facility (ADR-002 item
+16). Admins keep a directory of endpoints; a stay's recipients are set on its encounter. Signing the summary, adding an
+addendum, or adding a recipient to a signed stay queues one delivery per recipient in the same transaction (an
+outbox), and the first attempt runs right after the response. Deliveries are `queued` (waiting for an attempt; after
+a failure `attempts`, `last_error` and `next_attempt_at` say why and when), `sent` (the receiver answered 202),
+`acknowledged` (200/201, or acknowledged later), `failed` (a permanent refusal, an inactive endpoint, or 7 attempts
+with backoff of 1, 5, 15, 60, 240 and 720 minutes) or `cancelled` (by a user, or the patient's record was erased).
+Failures notify nurses on the patient's unit and admins. Responses, errors, notifications and audit entries carry ids,
+codes and HTTP statuses only. Every attempt is audited as `DELIVER_SUMMARY`.
+
+| Method | Path | Access | Notes |
+|---|---|---|---|
+| GET | `/delivery-endpoints` | signed in | Active endpoints (`?include_inactive=true` for all): `endpoint_id`, `name`, `kind` (`primary_care`, `receiving_facility`, `other`), `document_format` (`fhir_bundle`, `ccda`), `transport` (`https`, `mock`), `url`, `active` |
+| POST | `/delivery-endpoints` | `delivery:configure` | 201 with the endpoint. `https` needs a URL (https only in production); `mock` (accepts everything, no network) is refused in production |
+| PUT | `/delivery-endpoints/{endpoint_id}` | `delivery:configure` | Any of the fields; `active: false` stops new deliveries and fails queued ones (`endpoint_inactive`) |
+| GET | `/encounters/{encounter_id}/recipients` | signed in | The stay's recipients with endpoint name, kind and format |
+| POST | `/encounters/{encounter_id}/recipients` | `plan:manage` | Body `{endpoint_id}`. 201 with the recipient and `queued` (delivery ids queued now, when the summary is already signed). 409 if already a recipient, 400 for an inactive endpoint |
+| DELETE | `/encounters/{encounter_id}/recipients/{recipient_id}` | `plan:manage` | Stops future documents (addenda) to that receiver; deliveries already made stay on record |
+| GET | `/deliveries` | `delivery:manage`; signed in with `?workflow_id=` | Newest first, `?status=` (the worklist is `?status=failed`), `?limit=` (≤500): ids, endpoint name and kind, format, status, attempts, times, `last_error`, `last_http_status`, `document_sha256`, `remote_id`, and a link to the discharge |
+| POST | `/deliveries/{delivery_id}/retry` | `delivery:manage` | A failed delivery starts a fresh series of attempts (first one right away). 409 unless failed, or if the patient was erased |
+| POST | `/deliveries/{delivery_id}/cancel` | `delivery:manage` | 409 unless queued or failed |
+| POST | `/deliveries/{delivery_id}/acknowledge` | integration key with `delivery:acknowledge` | Body `{remote_id?}`. Marks a `sent` delivery acknowledged |
+| GET | `/deliveries/run` | `Authorization: Bearer <CRON_SECRET>` | Vercel Cron's call (daily backstop, see `vercel.json`). Runs every tenant, each in its own transaction |
+| POST | `/deliveries/run` | cron secret, or `delivery:run` (API key or signed in) | Attempts the due deliveries (at most 25 per run, no new send after 20 s), claimed with `FOR UPDATE SKIP LOCKED` so concurrent runs never send the same row. Returns `{tenants: [{tenant_id, claimed, acknowledged, sent, retry, failed, cancelled, deferred}]}` |
+
+**What is sent.** `fhir_bundle`: a FHIR R4 document Bundle POSTed to `<url>/Bundle` as `application/fhir+json`:
+Composition (LOINC 18842-5, `final` or `amended`, legal attester, sections for the signed text, the discharge diagnosis
+and each addendum), Patient (name, birth date, MRN), Encounter, Practitioner (the signer) and Organization (the
+hospital), with `urn:uuid:` references. `ccda`: a C-CDA R2.1 Discharge Summary (US Realm Header and Discharge Summary
+templates) POSTed to `<url>` as `application/xml`, with Allergies and Discharge Medications sections marked no
+information, Hospital Course (the signed text), Discharge Diagnosis, Plan of Treatment and one section per addendum.
+Headers: `Idempotency-Key` (`<tenant>:<delivery id>:<document hash prefix>`, the same on every retry of one
+document) and, with `DELIVERY_SIGNING_SECRET`, `X-DischargeFlow-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of
+"<t>.<body>">`. 2xx accepts (202 means "sent, acknowledge later"); 5xx, 408, 409, 425, 429, timeouts and connection
+errors are retried; any other 4xx fails at once.
 
 ## Insurance
 

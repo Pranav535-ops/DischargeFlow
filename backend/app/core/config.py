@@ -124,6 +124,9 @@ class Settings:
     # before its A01) are parked, encrypted, for hl7_park_hours, then expire unapplied.
     adt_documentation_hours: float = 24.0
     hl7_park_hours: float = 72.0
+    # ADR-002 item 16: outbound delivery of signed discharge summaries. When set (at least 32 characters), each
+    # HTTPS delivery carries an HMAC-SHA256 signature the receiver can check (delivery/transport.py).
+    delivery_signing_secret: str | None = None
 
     @property
     def is_production(self) -> bool:
@@ -222,6 +225,9 @@ def load_settings() -> Settings:
         if not is_dev and not webhook_url.startswith("https://"):
             raise RuntimeError("ESCALATION_WEBHOOK_URL must be https outside development/test")
     cron_secret = os.environ.get("CRON_SECRET", "").strip() or None
+    delivery_signing_secret = os.environ.get("DELIVERY_SIGNING_SECRET", "").strip() or None
+    if delivery_signing_secret and len(delivery_signing_secret) < 32:
+        raise RuntimeError("DELIVERY_SIGNING_SECRET must be at least 32 characters")
 
     notification_transport = os.environ.get("NOTIFICATION_TRANSPORT", "").strip().lower() or "poll"
     if notification_transport not in ("poll", "listen"):
@@ -281,6 +287,7 @@ def load_settings() -> Settings:
         hospital_timezone=hospital_timezone,
         adt_documentation_hours=_hours("ADT_DOCUMENTATION_HOURS", 24, 1, 24 * 30),
         hl7_park_hours=_hours("HL7_PARK_HOURS", 72, 1, 24 * 30),
+        delivery_signing_secret=delivery_signing_secret,
     )
 
 

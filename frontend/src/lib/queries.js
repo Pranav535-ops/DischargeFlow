@@ -47,6 +47,12 @@ export const keys = {
   planReview: (unitId) => ['patients', 'plans', 'review', unitId || 'all'],
   planCodes: ['discharge-plans', 'codes'],
   templates: ['workflow-templates'],
+  // Outbound summary delivery (ADR-002 item 16). Recipients and a discharge's deliveries sit under ['workflows'] so
+  // signing or an addendum (which invalidate the discharge) refreshes them.
+  deliveryEndpoints: ['delivery-endpoints'],
+  deliveries: (status) => ['deliveries', status || 'all'],
+  workflowDeliveries: (workflowId) => ['workflows', workflowId, 'deliveries'],
+  recipients: (encounterId) => ['workflows', 'recipients', encounterId],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -97,6 +103,24 @@ export const useCanBackfill = () => {
   return !readOnly && (periods?.length ?? 0) > 0;
 };
 // Active escalations of overdue tasks and the policy behind them (ADR-002 item 12), admin screen.
+export const useDeliveryEndpoints = (includeInactive = false) => useQuery({
+  queryKey: [...keys.deliveryEndpoints, includeInactive],
+  queryFn: () => api.get('/delivery-endpoints', { params: includeInactive ? { include_inactive: true } : {} })
+    .then(res => res.data),
+});
+export const useDeliveries = (status) => useQuery({
+  queryKey: keys.deliveries(status),
+  queryFn: () => api.get('/deliveries', { params: status ? { status } : {} }).then(res => res.data),
+  refetchInterval: 60_000,
+});
+export const useWorkflowDeliveries = (workflowId) => useQuery({
+  queryKey: keys.workflowDeliveries(workflowId),
+  queryFn: () => api.get('/deliveries', { params: { workflow_id: workflowId } }).then(res => res.data),
+  enabled: !!workflowId,
+});
+export const useRecipients = (encounterId) => useQuery({
+  queryKey: keys.recipients(encounterId), queryFn: get(`/encounters/${encounterId}/recipients`), enabled: !!encounterId,
+});
 export const useEscalations = () => useQuery({ queryKey: keys.escalations, queryFn: get('/escalations'), refetchInterval: 60_000 });
 export const useCensus = (unitId, at) => useQuery({
   queryKey: keys.census(unitId, at),
