@@ -80,6 +80,13 @@ class Settings:
     # How long one notification stream (GET /api/notifications/stream) stays open before the client reconnects.
     # Kept under the serverless function limit on Vercel; a long-running host (ECS) can raise it.
     notification_stream_seconds: float = 25.0
+    # ADR-002 item 21: how the stream learns about new notifications. "poll" queries the table every 5 s per open
+    # stream (the only option on Vercel: no long-lived process, and Neon's transaction pooler can't hold a LISTEN).
+    # "listen" holds one LISTEN connection per process and pushes ids as the inserting transaction commits; for
+    # long-running hosts (uvicorn, Docker, ECS, k8s). database_direct_url is the connection it LISTENs on; unset, it
+    # is derived from database_url (a Neon "-pooler" host loses the suffix).
+    notification_transport: str = "poll"
+    database_direct_url: str | None = None
     # Shared-workstation safety (ADR-002 item 4). The browser locks after idle_lock_minutes without input; the server
     # refuses to refresh a session unused for session_idle_minutes, which catches tabs closed before they locked.
     idle_lock_minutes: float = 5.0
@@ -229,6 +236,10 @@ def load_settings() -> Settings:
         if not is_dev and not webhook_url.startswith("https://"):
             raise RuntimeError("ESCALATION_WEBHOOK_URL must be https outside development/test")
     cron_secret = os.environ.get("CRON_SECRET", "").strip() or None
+
+    notification_transport = os.environ.get("NOTIFICATION_TRANSPORT", "").strip().lower() or "poll"
+    if notification_transport not in ("poll", "listen"):
+        raise RuntimeError("NOTIFICATION_TRANSPORT must be 'poll' or 'listen'")
     if cron_secret and len(cron_secret) < 32:
         raise RuntimeError("CRON_SECRET must be at least 32 characters")
 
@@ -263,6 +274,8 @@ def load_settings() -> Settings:
         unit_scoped_access=_bool("UNIT_SCOPED_ACCESS"),
         read_only_mode=_bool("READ_ONLY_MODE"),
         notification_stream_seconds=float(os.environ.get("NOTIFICATION_STREAM_SECONDS", "").strip() or 25),
+        notification_transport=notification_transport,
+        database_direct_url=os.environ.get("DATABASE_DIRECT_URL", "").strip() or None,
         idle_lock_minutes=_minutes("IDLE_LOCK_MINUTES", 5, 1),
         # An open tab refreshes its 15-minute access token about a minute before expiry, so anything under 16 minutes
         # would sign out people who are working.

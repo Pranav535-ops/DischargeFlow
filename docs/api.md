@@ -157,7 +157,7 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 | GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA (a task is late after its template due time, else its priority's SLA target), summary signing against the sign-by policy, `stays`: length of stay of encounters discharged in the window and readmissions within 30 days, and `delays`: delay reasons recorded in the window, by kind (`expected_date_slip`, `task_sla_breach`) and code, with the average slip in days only for groups of 3 or more (`?days=30`) |
 | POST | `/analytics/insights` | `insights:read` | AI explanation of the aggregates |
 | GET | `/notifications` | signed in | |
-| GET | `/notifications/stream` | signed in | Server-Sent Events; closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects |
+| GET | `/notifications/stream` | signed in | Server-Sent Events (`ready`, `notification` with the id only, `end`); closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects. A `ready` mid-stream means "refetch the list". `NOTIFICATION_TRANSPORT=listen` delivers over Postgres LISTEN/NOTIFY, `poll` (default, Vercel) polls every 5 s |
 | PUT | `/notifications/{notification_id}/read` | signed in | |
 | PUT | `/notifications/read-all` | signed in | |
 

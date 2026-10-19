@@ -93,6 +93,27 @@ def uses_transaction_pooler(url: str) -> bool:
     return "-pooler." in (parts.hostname or "") or dict(parse_qsl(parts.query)).get("pgbouncer") == "true"
 
 
+def direct_connection_dsn(url: str) -> tuple[str, dict]:
+    """A plain asyncpg DSN (and connect kwargs) for a session-level feature such as LISTEN.
+
+    A transaction-mode pooler hands each transaction to any server connection, so a LISTEN through it never hears
+    anything. Neon's "-pooler" hosts have a direct twin without the suffix; any other pooled URL needs
+    DATABASE_DIRECT_URL. Raises ValueError for SQLite or a pooled URL with no known direct host.
+    """
+    pooled = uses_transaction_pooler(url)
+    url, connect_args = normalize_database_url(url)
+    if not url.startswith("postgresql+asyncpg://"):
+        raise ValueError("LISTEN needs Postgres")
+    parts = urlsplit("postgresql://" + url[len("postgresql+asyncpg://"):])
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k != "pgbouncer"]
+    if pooled:
+        host = parts.hostname or ""
+        if "-pooler." not in host:
+            raise ValueError("the database URL goes through a transaction pooler; set DATABASE_DIRECT_URL")
+        parts = parts._replace(netloc=parts.netloc.replace(host, host.replace("-pooler.", ".", 1)))
+    return urlunsplit(parts._replace(query=urlencode(query))), connect_args
+
+
 def make_engine(url: str, **kwargs):
     pooler = uses_transaction_pooler(url)
     url, connect_args = normalize_database_url(url)
