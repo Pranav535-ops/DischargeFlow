@@ -25,6 +25,7 @@ TENANT_TABLES = (
     "user_units",
     "access_grants",
     "downtime_periods",
+    "encounters",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
@@ -45,7 +46,7 @@ PATIENT_VISIBLE = (
     "AND g.user_id = current_setting('app.user_id', true) AND g.expires_at > now())"
 )
 # Rows about one patient are visible when the patient is: the subquery itself runs under the patients policies.
-UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims")
+UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims", "encounters")
 UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES
 
 

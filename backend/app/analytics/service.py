@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.models import AIGeneration, DischargeSummary
 from app.core.db import utcnow
 from app.discharge.models import Task, Workflow
+from app.patients.models import Encounter
 
 MIN_GROUP_SIZE = 3
 WINDOW_TASKS = 2000
@@ -21,6 +22,7 @@ WINDOW_TASKS = 2000
 # Task SLA targets in hours by priority (1 high, 2 medium, 3 low). Policy defaults for the operational metrics, not
 # measurements; a hospital would set its own.
 TASK_SLA_HOURS = {1: 4, 2: 12, 3: 24}
+READMISSION_DAYS = 30
 PRIORITY_NAMES = {1: "high", 2: "medium", 3: "low"}
 
 
@@ -86,6 +88,37 @@ async def discharge_aggregates(db: AsyncSession) -> dict:
             "avg_edit_similarity": round(float(summaries[2]), 3) if summaries[2] is not None else None,
             "failed_generations": failed_generations,
         },
+    }
+
+
+async def stay_metrics(db: AsyncSession, since: datetime) -> dict:
+    """Length of stay of encounters discharged since `since`, and admissions since then that were readmissions:
+    a new stay starting within READMISSION_DAYS of the same patient's previous discharge (ADR-002 item 7).
+
+    Patient ids are only used to pair stays here; the result is counts and durations."""
+    los = [_span(start, end) / 24 for start, end in await db.execute(
+        select(Encounter.admitted_at, Encounter.discharged_at).where(
+            Encounter.discharged_at >= since, Encounter.admitted_at.is_not(None)))]
+    by_patient: dict[str, list[tuple]] = defaultdict(list)
+    for patient_id, admitted, discharged in await db.execute(
+            select(Encounter.patient_id, Encounter.admitted_at, Encounter.discharged_at)
+            .where(Encounter.admitted_at.is_not(None)).order_by(Encounter.admitted_at)):
+        by_patient[patient_id].append((admitted, discharged))
+    admissions = readmissions = 0
+    for stays in by_patient.values():
+        for i, (admitted, _) in enumerate(stays):
+            if admitted < since:
+                continue
+            admissions += 1
+            previous_end = stays[i - 1][1] if i else None
+            if previous_end is not None and admitted - previous_end <= timedelta(days=READMISSION_DAYS):
+                readmissions += 1
+    stats = _stats(los)
+    return {
+        "length_of_stay_days": {"n": stats["n"], **{k.replace("_hours", "_days"): v
+                                                    for k, v in stats.items() if k != "n"}},
+        "admissions": admissions,
+        f"readmissions_within_{READMISSION_DAYS}_days": readmissions,
     }
 
 
@@ -155,6 +188,7 @@ async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
             "completed": _rate(all_done),
             "completed_by_role": {r: _rate(v) for r, v in sorted(done_by_role.items())},
         },
+        "stays": await stay_metrics(db, since),
     }
 
 

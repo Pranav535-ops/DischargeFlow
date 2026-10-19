@@ -5,7 +5,7 @@ Read-only and deliberately small: the four resources a receiving system needs to
 | DischargeFlow        | FHIR R4             | Notes |
 |----------------------|---------------------|-------|
 | Patient              | Patient             | Erased patients keep their id but expose no name or birth date. |
-| Workflow (discharge) | Encounter           | The inpatient stay being discharged: admission date to discharge completion. |
+| Encounter            | Encounter           | One inpatient stay: admission to discharge, with the visit number (PV1-19). |
 | Task                 | Task                | Discharge tasks, with the responsible role as performerType. |
 | DischargeSummary     | DocumentReference   | Approved summaries only (LOINC 18842-5); drafts never leave the system. |
 """
@@ -16,8 +16,9 @@ from typing import Optional
 FHIR_VERSION = "4.0.1"
 FHIR_JSON = "application/fhir+json"
 ID_SYSTEM = "urn:dischargeflow:id"
+VISIT_SYSTEM = "urn:dischargeflow:visit-number"
 
-ENCOUNTER_STATUS = {"in_progress": "in-progress", "pending_approval": "in-progress", "completed": "finished"}
+ENCOUNTER_STATUS = {"active": "in-progress", "discharged": "finished"}
 TASK_STATUS = {"pending": "requested", "in_progress": "in-progress", "completed": "completed"}
 TASK_PRIORITY = {1: "urgent", 2: "routine", 3: "routine"}
 ROLE_DISPLAY = {"physician": "Physician", "nurse": "Nurse", "pharmacist": "Pharmacist", "admin": "Administrator"}
@@ -60,22 +61,31 @@ def patient(p) -> dict:
     })
 
 
-def encounter(wf, p) -> dict:
+def encounter(e) -> dict:
+    """One inpatient stay. The diagnosis is the patient's current one, so only the current stay carries it."""
+    p = e.patient
+    erased = bool(p.gdpr_erased)
+    visit = None if erased else e.visit_number
     return _drop_none({
         "resourceType": "Encounter",
-        "id": wf.workflow_id,
-        "meta": {"lastUpdated": _instant(wf.completed_at or wf.started_at)},
-        "identifier": [{"system": ID_SYSTEM, "value": wf.workflow_id}],
-        "status": ENCOUNTER_STATUS.get(wf.status, "unknown"),
+        "id": e.encounter_id,
+        "meta": {"lastUpdated": _instant(e.updated_at)},
+        "identifier": [{"system": ID_SYSTEM, "value": e.encounter_id}]
+        + ([{"system": VISIT_SYSTEM, "type": {"text": "Visit number"}, "value": visit}] if visit else []),
+        "status": ENCOUNTER_STATUS.get(e.status, "unknown"),
         "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "IMP",
                   "display": "inpatient encounter"},
-        "subject": _ref("Patient", wf.patient_id),
-        "period": {"start": _date(p.admission_date) if p else None, "end": _instant(wf.completed_at)},
-        "reasonCode": None if (not p or p.gdpr_erased) else [{"text": p.diagnosis}],
+        "subject": _ref("Patient", e.patient_id),
+        "period": {"start": _instant(e.admitted_at), "end": _instant(e.discharged_at)},
+        "reasonCode": [{"text": p.diagnosis}] if e.status == "active" and not erased else None,
+        "hospitalization": {"dischargeDisposition": {"coding": [
+            {"system": "http://terminology.hl7.org/CodeSystem/v2-0112", "code": e.disposition}]}}
+        if e.disposition else None,
+        "location": [{"location": {"display": e.room_number}}] if e.room_number and not erased else None,
     })
 
 
-def task(t) -> dict:
+def task(t, encounter_id: Optional[str] = None) -> dict:
     return _drop_none({
         "resourceType": "Task",
         "id": t.task_id,
@@ -88,7 +98,7 @@ def task(t) -> dict:
         "description": t.title,
         "note": [{"text": t.description}] if t.description else None,
         "for": _ref("Patient", t.patient_id),
-        "encounter": _ref("Encounter", t.workflow_id),
+        "encounter": _ref("Encounter", encounter_id),
         "authoredOn": _instant(t.created_at),
         "lastModified": _instant(t.updated_at),
         "performerType": [{"text": ROLE_DISPLAY.get(t.assigned_role, t.assigned_role)}],
@@ -96,7 +106,7 @@ def task(t) -> dict:
     })
 
 
-def document_reference(s) -> dict:
+def document_reference(s, encounter_id: Optional[str] = None) -> dict:
     """An approved discharge summary. The text is the approved version, including any physician edits."""
     return _drop_none({
         "resourceType": "DocumentReference",
@@ -118,7 +128,7 @@ def document_reference(s) -> dict:
             "data": base64.b64encode(s.content.encode("utf-8")).decode("ascii"),
             "creation": _instant(s.created_at),
         }}],
-        "context": {"encounter": [_ref("Encounter", s.workflow_id)]},
+        "context": {"encounter": [_ref("Encounter", encounter_id)]} if encounter_id else None,
     })
 
 

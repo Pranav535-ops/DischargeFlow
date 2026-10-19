@@ -314,3 +314,55 @@ async def test_a01_puts_the_patient_on_the_unit_named_in_pv1(client, db, make_cl
     assert (await send(key, adt("A01", "U2", mrn="MRN0043").replace("4W^412^B", "5E^501^A")))["code"] == "AA"
     units = {p.mrn: p.unit_id for p in await db.scalars(select(Patient))}
     assert units == {MRN: unit["unit_id"], "MRN0043": None}
+
+
+# ---------- encounters (ADR-002 item 7) ----------
+
+def with_pv1(message: str, **fields: str) -> str:
+    """The message with PV1 fields set, e.g. with_pv1(msg, f19="V1") for the visit number."""
+    pv1 = list(PV1)
+    for name, value in fields.items():
+        pv1[int(name[1:])] = value
+    return message.replace("|".join(PV1), "|".join(pv1))
+
+
+async def test_each_admission_is_its_own_encounter(client, make_client, make_user, send, db):
+    from app.patients.models import Encounter
+
+    _, key, _ = await make_client()
+    assert (await send(key, with_pv1(adt("A01", "E1"), f19="V100")))["code"] == "AA"
+    _, physician = await make_user("physician")
+    pid = (await client.get("/api/patients", headers=physician)).json()[0]["patient_id"]
+    [first] = (await client.get(f"/api/patients/{pid}/encounters", headers=physician)).json()
+    assert first["visit_number"] == "V100" and first["room_number"] == "412-B" and first["status"] == "active"
+    assert first["admitted_at"] == "2026-10-17T00:00:00+00:00"
+
+    wf_id = (await client.post(f"/api/workflows/initiate/{pid}", headers=physician)).json()["workflow"]["workflow_id"]
+    summary = (await client.post("/api/ai/generate-summary", json={"patient_id": pid, "workflow_id": wf_id},
+                                 headers=physician)).json()
+    await client.put(f"/api/ai/approve-summary/{summary['summary_id']}", headers=physician)
+    for task in (await client.get(f"/api/workflows/{wf_id}", headers=physician)).json()["tasks"]:
+        if task["status"] != "completed":
+            await client.put(f"/api/tasks/{task['task_id']}", json={"status": "completed", "reason": "Override in test"},
+                             headers=physician)
+
+    # A03 for another visit than the current one closes nothing.
+    ack = await send(key, with_pv1(adt("A03", "E2"), f19="V999", f36="01"))
+    assert (ack["code"], ack["error"]) == ("AE", "207") and "visit number" in ack["text"]
+    ack = await send(key, with_pv1(adt("A03", "E3"), f19="V100", f36="01"))
+    assert (ack["code"], ack["text"]) == ("AA", "Discharge completed")
+
+    # An old A01 for the stay that just ended (new control id) does not reopen it; a new visit is a readmission.
+    ack = await send(key, with_pv1(adt("A01", "E4"), f19="V100"))
+    assert (ack["code"], ack["error"]) == ("AE", "205")
+    moved = with_pv1(adt("A01", "E5"), f19="V200", f3="4W^501^A")
+    assert (await send(key, moved))["text"] == "Patient readmitted"
+
+    second, first = (await client.get(f"/api/patients/{pid}/encounters", headers=physician)).json()
+    assert first["status"] == "discharged" and first["disposition"] == "01" and first["room_number"] == "412-B"
+    assert first["workflows"][0]["workflow_id"] == wf_id
+    assert second["status"] == "active" and second["visit_number"] == "V200" and second["room_number"] == "501-A"
+    assert second["workflows"] == []
+    raw = list(await db.scalars(text("SELECT visit_number FROM encounters")))
+    assert all(crypto.is_encrypted(v) for v in raw)
+    assert len(list(await db.scalars(select(Encounter)))) == 2

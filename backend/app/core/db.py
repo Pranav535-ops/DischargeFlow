@@ -5,7 +5,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import Depends
@@ -57,7 +57,7 @@ class Base(DeclarativeBase):
                 continue
             # col.name, not col.key: encrypted columns map to private attributes behind public synonyms.
             value = getattr(self, col.name)
-            out[col.name] = value.isoformat() if isinstance(value, datetime) else value
+            out[col.name] = value.isoformat() if isinstance(value, (datetime, date)) else value
         return out
 
 

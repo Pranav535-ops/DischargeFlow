@@ -16,7 +16,7 @@ from app.core.db import DB
 from app.core.security import AuthUser
 from app.discharge.models import Task, Workflow
 from app.interop import fhir
-from app.patients.models import Patient
+from app.patients.models import Encounter, Patient
 
 router = APIRouter(prefix="/fhir/R4", tags=["FHIR R4"])
 
@@ -74,33 +74,39 @@ async def search_patients(request: Request, db: DB, user: AuthUser, _id: Optiona
     return _fhir(fhir.bundle(resources, _base_url(request)))
 
 
-# ---------- Encounter (discharge workflow) ----------
+# ---------- Encounter (one inpatient stay) ----------
 
-async def _encounters(db, stmt) -> list[dict]:
-    workflows = list(await db.scalars(stmt))
-    patients = {p.patient_id: p for p in await db.scalars(
-        select(Patient).where(Patient.patient_id.in_({w.patient_id for w in workflows})))} if workflows else {}
-    return [fhir.encounter(w, patients.get(w.patient_id)) for w in workflows]
+async def _workflow_encounters(db, workflow_ids: set) -> dict:
+    """workflow_id -> encounter_id, for the Encounter references of tasks and documents."""
+    ids = {w for w in workflow_ids if w}
+    if not ids:
+        return {}
+    return dict((await db.execute(
+        select(Workflow.workflow_id, Workflow.encounter_id).where(Workflow.workflow_id.in_(ids)))).all())
 
 
-@router.get("/Encounter/{workflow_id}")
-async def read_encounter(workflow_id: str, request: Request, db: DB, user: AuthUser):
-    resources = await _encounters(db, select(Workflow).where(Workflow.workflow_id == workflow_id))
-    if not resources:
-        return _not_found("Encounter", workflow_id)
-    await _audit(db, user, request, f"Encounter/{workflow_id}", 1)
-    return _fhir(resources[0])
+def _encounter_workflows(encounter: str):
+    return select(Workflow.workflow_id).where(Workflow.encounter_id == _encounter_id(encounter))
+
+
+@router.get("/Encounter/{encounter_id}")
+async def read_encounter(encounter_id: str, request: Request, db: DB, user: AuthUser):
+    e = await db.get(Encounter, encounter_id)
+    if not e:
+        return _not_found("Encounter", encounter_id)
+    await _audit(db, user, request, f"Encounter/{encounter_id}", 1)
+    return _fhir(fhir.encounter(e))
 
 
 @router.get("/Encounter")
 async def search_encounters(request: Request, db: DB, user: AuthUser, _id: Optional[str] = None,
                             patient: Optional[str] = None, _count: int = Query(50, ge=1, le=MAX_COUNT)):
-    stmt = select(Workflow).order_by(Workflow.started_at.desc()).limit(_count)
+    stmt = select(Encounter).order_by(Encounter.created_at.desc()).limit(_count)
     if _id:
-        stmt = stmt.where(Workflow.workflow_id == _id)
+        stmt = stmt.where(Encounter.encounter_id == _id)
     if patient:
-        stmt = stmt.where(Workflow.patient_id == _patient_id(patient))
-    resources = await _encounters(db, stmt)
+        stmt = stmt.where(Encounter.patient_id == _patient_id(patient))
+    resources = [fhir.encounter(e) for e in await db.scalars(stmt)]
     await _audit(db, user, request, f"Encounter?{request.url.query}", len(resources))
     return _fhir(fhir.bundle(resources, _base_url(request)))
 
@@ -113,7 +119,8 @@ async def read_task(task_id: str, request: Request, db: DB, user: AuthUser):
     if not t:
         return _not_found("Task", task_id)
     await _audit(db, user, request, f"Task/{task_id}", 1)
-    return _fhir(fhir.task(t))
+    encounters = await _workflow_encounters(db, {t.workflow_id})
+    return _fhir(fhir.task(t, encounters.get(t.workflow_id)))
 
 
 @router.get("/Task")
@@ -126,8 +133,10 @@ async def search_tasks(request: Request, db: DB, user: AuthUser, _id: Optional[s
     if patient:
         stmt = stmt.where(Task.patient_id == _patient_id(patient))
     if encounter:
-        stmt = stmt.where(Task.workflow_id == _encounter_id(encounter))
-    resources = [fhir.task(t) for t in await db.scalars(stmt)]
+        stmt = stmt.where(Task.workflow_id.in_(_encounter_workflows(encounter)))
+    tasks = list(await db.scalars(stmt))
+    encounters = await _workflow_encounters(db, {t.workflow_id for t in tasks})
+    resources = [fhir.task(t, encounters.get(t.workflow_id)) for t in tasks]
     await _audit(db, user, request, f"Task?{request.url.query}", len(resources))
     return _fhir(fhir.bundle(resources, _base_url(request)))
 
@@ -144,7 +153,8 @@ async def read_document(summary_id: str, request: Request, db: DB, user: AuthUse
     if not s:  # drafts are indistinguishable from missing: they are not documents yet
         return _not_found("DocumentReference", summary_id)
     await _audit(db, user, request, f"DocumentReference/{summary_id}", 1)
-    return _fhir(fhir.document_reference(s))
+    encounters = await _workflow_encounters(db, {s.workflow_id})
+    return _fhir(fhir.document_reference(s, encounters.get(s.workflow_id)))
 
 
 @router.get("/DocumentReference")
@@ -157,7 +167,9 @@ async def search_documents(request: Request, db: DB, user: AuthUser, _id: Option
     if patient:
         stmt = stmt.where(DischargeSummary.patient_id == _patient_id(patient))
     if encounter:
-        stmt = stmt.where(DischargeSummary.workflow_id == _encounter_id(encounter))
-    resources = [fhir.document_reference(s) for s in await db.scalars(stmt)]
+        stmt = stmt.where(DischargeSummary.workflow_id.in_(_encounter_workflows(encounter)))
+    summaries = list(await db.scalars(stmt))
+    encounters = await _workflow_encounters(db, {s.workflow_id for s in summaries})
+    resources = [fhir.document_reference(s, encounters.get(s.workflow_id)) for s in summaries]
     await _audit(db, user, request, f"DocumentReference?{request.url.query}", len(resources))
     return _fhir(fhir.bundle(resources, _base_url(request)))
