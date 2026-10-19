@@ -9,6 +9,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.ai.router import router as ai_router
 from app.analytics.router import router as analytics_router
 from app.audit.router import router as audit_router
+from app.capacity.router import router as capacity_router
 from app.chatbot.router import router as chatbot_router
 from app.core.config import VERSION, settings
 from app.core.db import DB, SessionLocal, engine, utcnow
@@ -86,7 +87,7 @@ def create_app() -> FastAPI:
         auth_router, users_router, patients_router, workflows_router, tasks_router, notifications_router,
         analytics_router, ai_router, insurance_router, chatbot_router, audit_router, fhir_router,
         integrations_router, hl7_router, units_router, access_router, downtime_router, census_router,
-        escalations_router,
+        escalations_router, capacity_router,
         plans_router, templates_router,
     ):
         api.include_router(router)

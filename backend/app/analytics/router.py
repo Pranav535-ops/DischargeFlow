@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from app.ai import insights as ai_insights
 from app.ai.llm import get_llm_client
 from app.ai.models import AIGeneration
+from app.analytics import outcomes
 from app.analytics import service as analytics_service
 from app.audit.service import write_audit
 from app.core.db import DB, utcnow
@@ -78,6 +79,14 @@ async def get_operational_metrics(db: DB, days: int = Query(30, ge=1, le=365),
                                   user: CurrentUser = Depends(requires("insights:read"))):
     """Throughput, approval wait and task SLA breaches (aggregate only, same rules as /aggregates)."""
     return await analytics_service.operational_metrics(db, days)
+
+
+@router.get("/outcomes")
+async def get_outcomes(db: DB, days: int = Query(90, ge=1, le=365),
+                       user: CurrentUser = Depends(requires("insights:read"))):
+    """Length of stay against expected, expected-date accuracy, delay reasons Pareto, discharge before noon and
+    30-day readmissions, overall and by unit (aggregate only, same rules as /aggregates)."""
+    return await outcomes.outcome_metrics(db, days)
 
 
 @router.post("/insights")

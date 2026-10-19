@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import write_audit
+from app.capacity.beds import bed_vacated
 from app.core.db import utcnow
 from app.core.security import CurrentUser
 from app.discharge.models import Workflow
@@ -110,6 +111,7 @@ async def sync_encounter(db: AsyncSession, patient: Patient, changed: set[str]) 
     if patient.status == "discharged":
         if encounter is not None:
             encounter.close(utcnow())
+            await bed_vacated(db, encounter)
         return
     if encounter is None:
         await open_encounter(db, patient)  # set back from discharged by hand: a new stay

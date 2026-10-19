@@ -47,6 +47,9 @@ export const keys = {
   planReview: (unitId) => ['patients', 'plans', 'review', unitId || 'all'],
   planCodes: ['discharge-plans', 'codes'],
   templates: ['workflow-templates'],
+  // Capacity board (ADR-002 item 17), under ['patients'] so a discharge refreshes it; outcomes (item 19).
+  capacity: (day) => ['patients', 'capacity', day || 'today'],
+  outcomes: (days) => ['analytics', 'outcomes', days],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -112,6 +115,14 @@ export const usePlanReview = (unitId) => useQuery({
   queryFn: () => api.get('/discharge-plans/review', { params: unitId ? { unit_id: unitId } : {} }).then(res => res.data),
 });
 export const usePlanCodes = () => useQuery({ queryKey: keys.planCodes, queryFn: get('/discharge-plans/codes'), staleTime: Infinity });
+// Refetched every minute: the board is left open on the unit's screen.
+export const useCapacityBoard = (day) => useQuery({
+  queryKey: keys.capacity(day),
+  queryFn: () => api.get('/capacity/board', { params: day ? { date: day } : {} }).then(res => res.data),
+  refetchInterval: 60_000,
+});
+export const useOutcomes = (days = 90) =>
+  useQuery({ queryKey: keys.outcomes(days), queryFn: get(`/analytics/outcomes?days=${days}`) });
 export const useTemplates = () => useQuery({ queryKey: keys.templates, queryFn: get('/workflow-templates') });
 if (typeof window !== 'undefined') {
   window.addEventListener(READ_ONLY_EVENT, () => queryClient.invalidateQueries({ queryKey: keys.downtime }));

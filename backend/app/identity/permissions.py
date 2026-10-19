@@ -45,6 +45,10 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "plan:manage": ("physician", "nurse"),
     # Create and edit workflow templates per disposition (ADR-002 item 9). Admin only.
     "template:manage": (),
+    # The capacity board: expected discharges by unit and hour, beds being cleaned (ADR-002 item 17).
+    "capacity:read": ("physician", "nurse"),
+    # Move a bed through dirty -> cleaning -> available: charge nurses, and the EVS system as an integration client.
+    "bed:manage": ("nurse", INTEGRATION_ROLE),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

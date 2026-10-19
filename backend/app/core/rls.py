@@ -32,6 +32,7 @@ TENANT_TABLES = (
     "workflow_templates",
     "delay_reasons",
     "hl7_parked_messages",
+    "bed_turnovers",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
@@ -55,7 +56,15 @@ PATIENT_VISIBLE = (
 UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims", "encounters",
                             "discharge_summary_versions", "discharge_summary_addenda",
                             "delay_reasons")
-UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES
+# Rows about a place rather than a patient (ADR-002 item 17: beds being cleaned) are visible by their own unit_id.
+UNIT_SCOPED_LOCATION_TABLES = ("bed_turnovers",)
+UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES + UNIT_SCOPED_LOCATION_TABLES
+
+
+LOCATION_VISIBLE = (
+    f"{_SCOPE_OFF} OR unit_id IS NULL "
+    "OR unit_id = ANY (string_to_array(current_setting('app.unit_ids', true), ','))"
+)
 
 
 def _child_visible(table: str) -> str:
@@ -74,7 +83,8 @@ PATIENT_EXISTS_FUNCTION = (
 def unit_scope_statements() -> list[str]:
     stmts = []
     for table in UNIT_SCOPED_TABLES:
-        using = PATIENT_VISIBLE if table == "patients" else _child_visible(table)
+        using = (PATIENT_VISIBLE if table == "patients" else
+                 LOCATION_VISIBLE if table in UNIT_SCOPED_LOCATION_TABLES else _child_visible(table))
         stmts += [
             f"DROP POLICY IF EXISTS {UNIT_SCOPE_POLICY} ON {table}",
             f"CREATE POLICY {UNIT_SCOPE_POLICY} ON {table} AS RESTRICTIVE USING ({using}) WITH CHECK (true)",
