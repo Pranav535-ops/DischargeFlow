@@ -27,6 +27,7 @@ import {
   DialogTrigger,
 } from '../components/ui/dialog';
 import { useAuth } from '../context/AuthContext';
+import EhrClinicalContext from './EhrClinicalContext';
 import { toast } from 'sonner';
 
 
@@ -44,6 +45,8 @@ const TasksView = () => {
   const fetchTasks = invalidateDischarge;
   const [viewMode, setViewMode] = useState('my'); // 'my' or 'all'
   const [updatingTask, setUpdatingTask] = useState(null);
+  // The medication task whose EHR lists are open (ADR-002 item 15): reconciliation against the real lists.
+  const [ehrTask, setEhrTask] = useState(null);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
@@ -422,7 +425,19 @@ const TasksView = () => {
                         }`}>
                           {task.status === 'in_progress' ? 'In Progress' : task.status}
                         </span>
+                        {task.category === 'medication' && (
+                          <button type="button" data-testid={`task-ehr-${task.task_id}`}
+                                  onClick={() => setEhrTask(ehrTask === task.task_id ? null : task.task_id)}
+                                  className="text-blue-400 hover:underline">
+                            {ehrTask === task.task_id ? 'Hide EHR lists' : 'EHR medications'}
+                          </button>
+                        )}
                       </div>
+                      {ehrTask === task.task_id && (
+                        <div className="mt-3">
+                          <EhrClinicalContext patientId={task.patient_id} sections={['medications', 'allergies']} />
+                        </div>
+                      )}
                     </div>
 
                     {isUpdating && (
