@@ -45,6 +45,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "plan:manage": ("physician", "nurse"),
     # Create and edit workflow templates per disposition (ADR-002 item 9). Admin only.
     "template:manage": (),
+    # Draft, edit, approve and print patient-facing discharge instructions (ADR-002 item 18).
+    "instructions:manage": ("physician", "nurse"),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

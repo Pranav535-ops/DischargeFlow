@@ -42,6 +42,7 @@ suspend someone.
 | `escalation:run` | interface (a hospital scheduler running the escalation of overdue tasks) |
 | `plan:manage` | physician, nurse (set and review a patient's discharge plan) |
 | `template:manage` | admin (create and edit workflow templates) |
+| `instructions:manage` | physician, nurse (draft, edit, approve and print patient instructions) |
 
 ### Unit-scoped access
 
@@ -87,10 +88,10 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/patients/{patient_id}/encounters` | signed in | The patient's stays (encounters), newest first: `status` (`active` or `discharged`), `admitted_at`, `discharged_at`, `unit_id`, `room_number`, `visit_number`, `disposition`, `expected_discharge_date`, and `workflows` (id, status, start, completion). One `PHI_READ` entry per request; 403/404 as for the patient |
 | POST | `/patients/{patient_id}/break-glass` | signed in (unit-scoped users) | Body `{reason}` (10–500 characters). Opens one patient outside your units for 8 hours. The reason is stored on the grant, not in the audit entry; audited (`BREAK_GLASS`) and admins are notified. 400 if you are not unit-scoped, 409 if you can already see the patient |
 | GET | `/access-grants` | `audit:read` | Break-glass grants for review, newest first, with user name, reason and `active`; `?active_only=true` |
-| POST | `/patients` | `patient:write` | Optional `unit_id`; opens the patient's first encounter from the admission fields; audited (`CREATE_PATIENT`) |
-| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only; audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one |
+| POST | `/patients` | `patient:write` | Optional `unit_id` and `preferred_language` (BCP 47 code such as `es` or `zh-Hant`; 422 otherwise); opens the patient's first encounter from the admission fields; audited (`CREATE_PATIENT`) |
+| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only (including `preferred_language`); audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one |
 | POST | `/patients/{patient_id}/consent` | signed in | GDPR consent; audited |
-| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries and visit numbers; audited |
+| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries, patient instructions and visit numbers; audited |
 
 ## Discharge workflows and tasks
 
@@ -136,6 +137,10 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 | POST | `/ai/summaries/{summary_id}/addenda` | `summary:manage` | Body `{content}` (1–20000 characters). Appends text to the latest signed version, signed by the author; 201 with the addendum. 400 if the summary is unsigned or the patient was erased. Audited as `SUMMARY_ADDENDUM_SIGNED` (addendum and version ids only). Allowed after discharge |
 | GET | `/ai/summaries/overdue` | `summary:manage` | Discharges whose summary is missing or unsigned past the sign-by deadline (`SUMMARY_SIGN_HOURS` after discharge, or after the expected discharge time while the patient is still here). Ids and times only |
 | POST | `/ai/summaries/overdue/notify` | `summary:manage` | Notifies physicians (on the patient's unit) once per overdue discharge; what `python -m app.cli summary-deadlines` runs for every tenant |
+| POST | `/ai/patient-instructions` | `instructions:manage` | Body `{workflow_id, language?}`. Drafts patient-facing instructions from the **signed** summary only (latest signed version plus its addenda), de-identified, in `language` (BCP 47; default the patient's `preferred_language`, else `en`). Returns the draft with `reading_grade` (Flesch-Kincaid, English only, else null), `target_grade`, `stale`, and `generation` (provenance and `grounding_warnings`: `medication`, `diagnosis`, `omission`, `readability`). 404 without a summary, 409 if it is unsigned or the instructions in that language are already approved; an unapproved draft in the same language is replaced. 502 (provenance and audit kept) after one retry on invalid output; 503 when `LLM_PROVIDER=none`. Audited as `AI_INSTRUCTIONS_GENERATED` / `AI_INSTRUCTIONS_FAILED` (ids, language, counts) |
+| GET | `/ai/patient-instructions?workflow_id=` | signed in | The workflow's instructions, one per language, with provenance. `stale` is true when an addendum was signed after the draft. One `PHI_READ` entry per request |
+| PUT | `/ai/patient-instructions/{instructions_id}/approve` | `instructions:manage` | Optional body `{content}` (the reviewer's edited text). Stores `original_content`, `edit_diff`, `edit_similarity` and `approved_reading_grade`; approved text never changes. 409 if already approved. Audited as `PATIENT_INSTRUCTIONS_APPROVED` |
+| GET | `/ai/patient-instructions/{instructions_id}/print` | `instructions:manage` | The approved handout with the patient's name, language, approver and `stale`. 409 for a draft, 410 after erasure. `PHI_READ` audited |
 | GET | `/ai/generations` | `summary:manage` | Provenance records (no prompt or output text) |
 | GET | `/ai/metrics` | `summary:manage` | Approval rate and edit similarity per prompt version |
 | POST | `/chatbot/message` | signed in | Tool-calling assistant; write tools become pending actions |

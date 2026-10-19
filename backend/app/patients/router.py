@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.ai.models import DischargeSummary
+from app.ai.models import DischargeSummary, PatientInstructions
 from app.audit.service import audit_phi_read, write_audit
 from app.core.db import DB, utcnow
 from app.core.security import AuthUser, CurrentUser, requires
 from app.discharge.planning import redact_delay_notes
 from app.identity.models import User
 from app.patients import service
-from app.patients.models import AccessGrant, Encounter, Patient
+from app.patients.models import LANGUAGE_TAG_PATTERN, AccessGrant, Encounter, Patient
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 access_router = APIRouter(prefix="/access-grants", tags=["Patients"])
@@ -25,6 +25,7 @@ class PatientCreate(BaseModel):
     diagnosis: str
     attending_physician: str
     unit_id: Optional[str] = None
+    preferred_language: Optional[str] = Field(default=None, pattern=LANGUAGE_TAG_PATTERN)
 
 
 class PatientUpdate(BaseModel):
@@ -37,6 +38,7 @@ class PatientUpdate(BaseModel):
     diagnosis: Optional[str] = None
     attending_physician: Optional[str] = None
     unit_id: Optional[str] = None
+    preferred_language: Optional[str] = Field(default=None, pattern=LANGUAGE_TAG_PATTERN)
     status: Optional[Literal["admitted", "pending_discharge", "discharged"]] = None
 
 
@@ -152,6 +154,8 @@ async def delete_patient_data(
     patient.shred()
     for summary in await db.scalars(select(DischargeSummary).where(DischargeSummary.patient_id == patient_id)):
         summary.shred()
+    for instructions in await db.scalars(select(PatientInstructions).where(PatientInstructions.patient_id == patient_id)):
+        instructions.shred()
     for encounter in await db.scalars(select(Encounter).where(Encounter.patient_id == patient_id)):
         encounter.shred()
     await service.redact_grant_reasons(db, patient_id)

@@ -11,7 +11,7 @@ from pathlib import Path
 from string import Template
 
 PROMPTS_DIR = Path(__file__).resolve().parent
-ACTIVE = {"discharge_summary": "v1", "assistant": "v1", "insights": "v1"}
+ACTIVE = {"discharge_summary": "v1", "assistant": "v1", "insights": "v1", "patient_instructions": "v1"}
 
 
 @dataclass(frozen=True)
