@@ -49,6 +49,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "capacity:read": ("physician", "nurse"),
     # Move a bed through dirty -> cleaning -> available: charge nurses, and the EVS system as an integration client.
     "bed:manage": ("nurse", INTEGRATION_ROLE),
+    # Draft, edit, approve and print patient-facing discharge instructions (ADR-002 item 18).
+    "instructions:manage": ("physician", "nurse"),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

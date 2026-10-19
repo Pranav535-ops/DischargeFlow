@@ -73,3 +73,77 @@ def render_summary(doc: DischargeSummaryDoc) -> str:
         f"Follow-up:\n{bullets(doc.follow_up)}",
         f"Warning signs (return to care if):\n{bullets(doc.warning_signs)}",
     ])
+
+
+# ---------- Patient-facing discharge instructions (ADR-002 item 18) ----------
+
+class InstructionHeadings(BaseModel):
+    """Section headings, in the patient's language (the model writes them)."""
+    model_config = ConfigDict(extra="forbid")
+
+    what_happened: str = Field(min_length=1)
+    medicines: str = Field(min_length=1)
+    warning_signs: str = Field(min_length=1)
+    follow_up: str = Field(min_length=1)
+    activity_and_diet: str = Field(min_length=1)
+
+
+class Condition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Copied exactly from the signed summary (checked against it), then explained in plain words.
+    medical_term: str = Field(min_length=1)
+    plain_explanation: str
+
+
+class InstructionMedicine(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The medicine's name exactly as the signed summary writes it (checked against it).
+    name: str = Field(min_length=1)
+    how_to_take: str
+    purpose: str
+
+
+class PatientInstructionsDoc(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    headings: InstructionHeadings
+    what_happened: str = Field(min_length=1)
+    conditions: list[Condition]
+    medicines: list[InstructionMedicine]
+    warning_signs: list[str] = Field(min_length=1)
+    follow_up: list[str]
+    activity_and_diet: str
+
+
+INSTRUCTIONS_JSON_SCHEMA = inline_refs(PatientInstructionsDoc.model_json_schema())
+
+
+def render_instructions(doc: PatientInstructionsDoc) -> str:
+    """Plain-text handout stored as `content`: what the clinician reads, edits and approves, and what is printed."""
+    h = doc.headings
+
+    def bullets(items: list[str]) -> str:
+        return "\n".join(f"- {i}" for i in items)
+
+    about = doc.what_happened + ("\n" + bullets([f"{c.medical_term}: {c.plain_explanation}" if c.plain_explanation
+                                                 else c.medical_term for c in doc.conditions])
+                                 if doc.conditions else "")
+    meds = [" ".join(p for p in (f"{m.name}:", m.how_to_take, m.purpose) if p.strip()) for m in doc.medicines]
+    sections = [(h.what_happened, about), (h.medicines, bullets(meds)), (h.warning_signs, bullets(doc.warning_signs)),
+                (h.follow_up, bullets(doc.follow_up)), (h.activity_and_diet, doc.activity_and_diet)]
+    return "\n\n".join(f"{title}\n{body}" for title, body in sections if body.strip())
+
+
+def summary_sections(text: str) -> dict[str, str]:
+    """Sections of a rendered discharge summary ("Heading:\nbody" blocks), keyed by lower-case heading.
+
+    Signed text may have been edited by hand, so anything that doesn't follow the layout is simply not a section.
+    """
+    out: dict[str, str] = {}
+    for block in (text or "").replace("\r\n", "\n").split("\n\n"):
+        head, sep, body = block.partition("\n")
+        if sep and head.rstrip().endswith(":"):
+            out[head.rstrip()[:-1].strip().lower()] = body.strip()
+    return out

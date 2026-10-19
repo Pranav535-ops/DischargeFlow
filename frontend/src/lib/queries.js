@@ -50,6 +50,9 @@ export const keys = {
   // Capacity board (ADR-002 item 17), under ['patients'] so a discharge refreshes it; outcomes (item 19).
   capacity: (day) => ['patients', 'capacity', day || 'today'],
   outcomes: (days) => ['analytics', 'outcomes', days],
+  // Patient instructions (ADR-002 item 18), under the workflow so a discharge change refreshes them too.
+  patientInstructions: (workflowId) => ['workflows', workflowId, 'instructions'],
+  instructionsSheet: (id) => ['instructions', id, 'print'],
 };
 
 export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: get('/patients') });
@@ -123,6 +126,15 @@ export const useCapacityBoard = (day) => useQuery({
 });
 export const useOutcomes = (days = 90) =>
   useQuery({ queryKey: keys.outcomes(days), queryFn: get(`/analytics/outcomes?days=${days}`) });
+export const usePatientInstructions = (workflowId, enabled = true) => useQuery({
+  queryKey: keys.patientInstructions(workflowId), queryFn: get(`/ai/patient-instructions?workflow_id=${workflowId}`),
+  enabled: !!workflowId && enabled,
+});
+// The printable sheet is an audited PHI read: fetched once per visit, never retried or refetched in the background.
+export const useInstructionsSheet = (id) => useQuery({
+  queryKey: keys.instructionsSheet(id), queryFn: get(`/ai/patient-instructions/${id}/print`), enabled: !!id,
+  staleTime: Infinity, refetchOnWindowFocus: false, retry: false,
+});
 export const useTemplates = () => useQuery({ queryKey: keys.templates, queryFn: get('/workflow-templates') });
 if (typeof window !== 'undefined') {
   window.addEventListener(READ_ONLY_EVENT, () => queryClient.invalidateQueries({ queryKey: keys.downtime }));

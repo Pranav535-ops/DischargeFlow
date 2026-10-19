@@ -98,7 +98,7 @@ describe('OutcomesPanel (on /insights)', () => {
       delay_reasons: { recorded: 4, pareto: [
         { code: 'social', n: 3, share: 0.75, cumulative_share: 0.75 },
         { code: 'placement', n: 1, share: 0.25, cumulative_share: 1 }] },
-      notes: { attribution: 'by the unit of the stay', first_expected_date: 'from 0017', readmission: 'within 30 days' },
+      notes: { attribution: 'by the unit of the stay', first_expected_date: 'from 0018', readmission: 'within 30 days' },
     };
     const get = vi.spyOn(api, 'get').mockResolvedValue({ data: outcomes });
     renderAt('/insights', '/insights', <OutcomesPanel />);

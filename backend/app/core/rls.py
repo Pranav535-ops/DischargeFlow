@@ -33,6 +33,7 @@ TENANT_TABLES = (
     "delay_reasons",
     "hl7_parked_messages",
     "bed_turnovers",
+    "patient_instructions",
 )
 # Shared reference data the app may read but never change.
 READ_ONLY_TABLES = ("tenants", "role_permissions")
@@ -55,7 +56,7 @@ PATIENT_VISIBLE = (
 # Rows about one patient are visible when the patient is: the subquery itself runs under the patients policies.
 UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims", "encounters",
                             "discharge_summary_versions", "discharge_summary_addenda",
-                            "delay_reasons")
+                            "delay_reasons", "patient_instructions")
 # Rows about a place rather than a patient (ADR-002 item 17: beds being cleaned) are visible by their own unit_id.
 UNIT_SCOPED_LOCATION_TABLES = ("bed_turnovers",)
 UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES + UNIT_SCOPED_LOCATION_TABLES

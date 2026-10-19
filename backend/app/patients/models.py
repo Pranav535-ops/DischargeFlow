@@ -37,6 +37,10 @@ def _phi_property(field: str) -> property:
     return property(get, set_)
 
 
+# An IETF BCP 47 language tag: a 2-3 letter language, then up to three subtags ("en", "es-MX", "zh-Hant-TW").
+LANGUAGE_TAG_PATTERN = r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}$"
+
+
 class Patient(TenantMixin, Base):
     __tablename__ = "patients"
     __api_exclude__ = frozenset({"phi_dek", "mrn_index"})
@@ -68,6 +72,9 @@ class Patient(TenantMixin, Base):
     # Set when an HL7 A40 merged this record into another (the surviving MRN): its stays moved there, its MRN index
     # was retired, and it is left out of the patient list. Kept for audit references.
     merged_into: Mapped[Optional[str]] = mapped_column(String(40), index=True)
+    # IETF BCP 47 code of the language the patient prefers for written instructions (ADR-002 item 18), e.g. "es".
+    # Not encrypted: a language is not an identifier on its own (it is not one of the HIPAA Safe Harbor identifiers).
+    preferred_language: Mapped[Optional[str]] = mapped_column(String(35))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
@@ -200,7 +207,7 @@ class Encounter(TenantMixin, Base):
     disposition: Mapped[Optional[str]] = mapped_column(String(40))
     expected_discharge_date: Mapped[Optional[date]] = mapped_column(Date)
     # The first expected date the plan was given, kept when the date moves, so outcome analytics can measure how
-    # accurate the first estimate was (ADR-002 item 19). NULL for stays planned before migration 0017.
+    # accurate the first estimate was (ADR-002 item 19). NULL for stays planned before migration 0018.
     first_expected_discharge_date: Mapped[Optional[date]] = mapped_column(Date)
     # The discharge plan (ADR-002 item 8): where the patient is expected to go (discharge.models.DISPOSITIONS, which
     # picks the workflow template), and the last daily review of the plan.
