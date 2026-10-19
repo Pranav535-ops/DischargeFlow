@@ -32,9 +32,10 @@ TENANT_TABLES = (
     "workflow_templates",
     "delay_reasons",
     "hl7_parked_messages",
+    "idp_group_mappings",
 )
 # Shared reference data the app may read but never change.
-READ_ONLY_TABLES = ("tenants", "role_permissions")
+READ_ONLY_TABLES = ("tenants", "role_permissions", "identity_providers")
 # Append-only: the app may insert and read, never update or delete.
 APPEND_ONLY_TABLES = ("audit_logs",)
 

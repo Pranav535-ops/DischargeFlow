@@ -20,7 +20,7 @@ from app.patients.models import Patient
 pytestmark = pytest.mark.anyio
 
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-EXEMPT = re.compile(r"^/api/(auth/|downtime/end$)")
+EXEMPT = re.compile(r"^/api/(auth/|scim/|downtime/end$)")
 
 
 async def audit_rows(db, action):

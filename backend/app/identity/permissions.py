@@ -45,6 +45,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "plan:manage": ("physician", "nurse"),
     # Create and edit workflow templates per disposition (ADR-002 item 9). Admin only.
     "template:manage": (),
+    # Create, read and (de)activate user accounts over SCIM (ADR-002 item 2): the hospital directory's provisioning
+    # connector, as an integration client. Admins hold it too.
+    "user:provision": (INTEGRATION_ROLE,),
 }
 ALL_PERMISSIONS = tuple(DEFAULT_ROLE_PERMISSIONS)
 

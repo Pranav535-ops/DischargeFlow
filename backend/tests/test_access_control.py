@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.audit.models import AuditLog
 from app.chatbot.tools import TOOLS
 from app.identity import router as identity_router
+from app.identity import service as identity_service
 from app.identity.models import User
 from app.notifications.models import Notification
 
@@ -22,6 +23,7 @@ def sign_in_as(monkeypatch, email: str, name: str = "Google User"):
 
 def configure(monkeypatch, **changes):
     monkeypatch.setattr(identity_router, "settings", dataclasses.replace(identity_router.settings, **changes))
+    monkeypatch.setattr(identity_service, "settings", dataclasses.replace(identity_service.settings, **changes))
 
 
 async def audit_rows(db, action: str | None = None) -> list[AuditLog]:

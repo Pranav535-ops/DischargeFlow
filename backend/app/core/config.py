@@ -99,6 +99,16 @@ class Settings:
     oidc_client_id: str | None = None
     oidc_jwks_url: str | None = None
     oidc_require_mfa: bool = False
+    # For the login page's authorization-code + PKCE redirect to the environment-configured provider (the per-tenant
+    # providers in `identity_providers` carry their own). The provider id of this one is "env"; it signs people in to
+    # DEFAULT_TENANT_ID.
+    oidc_authorize_url: str | None = None
+    oidc_token_url: str | None = None
+    oidc_groups_claim: str = "groups"
+    oidc_provider_name: str = "Hospital sign-in"
+    # The Emergent (Google) login: "auto" (default) offers it only while no hospital identity provider is configured,
+    # so it stays the dev/demo fallback; "true"/"false" force it.
+    emergent_login: str = "auto"
     # ADR-002 item 5 (code seam; needs AWS under a BAA). "kms" wraps new patient data keys with the KMS key
     # phi_kms_key_id; PHI_KEK stays the key for blind indexes and for unwrapping data keys wrapped before the switch,
     # until `app.cli rewrap-deks` has moved them all to KMS.
@@ -209,6 +219,9 @@ def load_settings() -> Settings:
 
     # The issuer is compared with the token's `iss` claim exactly, so a trailing slash would refuse every token.
     oidc_issuer = os.environ.get("OIDC_ISSUER", "").strip().rstrip("/") or None
+    emergent_login = os.environ.get("EMERGENT_LOGIN", "").strip().lower() or "auto"
+    if emergent_login not in ("auto", "true", "false"):
+        raise RuntimeError("EMERGENT_LOGIN must be 'auto', 'true' or 'false'")
 
     escalation_pager = os.environ.get("ESCALATION_PAGER", "").strip().lower() or "none"
     webhook_url = os.environ.get("ESCALATION_WEBHOOK_URL", "").strip() or None
@@ -270,6 +283,11 @@ def load_settings() -> Settings:
         oidc_client_id=os.environ.get("OIDC_CLIENT_ID", "").strip() or None,
         oidc_jwks_url=os.environ.get("OIDC_JWKS_URL", "").strip() or None,
         oidc_require_mfa=_bool("OIDC_REQUIRE_MFA"),
+        oidc_authorize_url=os.environ.get("OIDC_AUTHORIZE_URL", "").strip() or None,
+        oidc_token_url=os.environ.get("OIDC_TOKEN_URL", "").strip() or None,
+        oidc_groups_claim=os.environ.get("OIDC_GROUPS_CLAIM", "").strip() or "groups",
+        oidc_provider_name=os.environ.get("OIDC_PROVIDER_NAME", "").strip() or "Hospital sign-in",
+        emergent_login=emergent_login,
         phi_key_provider=phi_key_provider,
         phi_kms_key_id=phi_kms_key_id,
         summary_sign_hours=_hours("SUMMARY_SIGN_HOURS", 24, 1, 24 * 30),

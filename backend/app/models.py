@@ -6,7 +6,17 @@ from app.core.db import Base
 from app.discharge.models import DelayReason, Task, Workflow, WorkflowTemplate
 from app.downtime.models import DowntimePeriod
 from app.escalations.models import Escalation
-from app.identity.models import AuthSession, IntegrationClient, RolePermission, Tenant, Unit, User, UserUnit
+from app.identity.models import (
+    AuthSession,
+    IdentityProvider,
+    IdpGroupMapping,
+    IntegrationClient,
+    RolePermission,
+    Tenant,
+    Unit,
+    User,
+    UserUnit,
+)
 from app.insurance.models import InsuranceClaim
 from app.interop.models import HL7Message, HL7ParkedMessage
 from app.notifications.models import Notification
@@ -30,6 +40,8 @@ __all__ = [
     "HL7Message",
     "HL7ParkedMessage",
     "InsuranceClaim",
+    "IdentityProvider",
+    "IdpGroupMapping",
     "IntegrationClient",
     "Notification",
     "Patient",
