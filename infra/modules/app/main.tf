@@ -78,6 +78,10 @@ locals {
     { name = "DB_NAME", value = var.db_name },
     { name = "DB_USER", value = var.db_user },
     { name = "OTEL_SERVICE_NAME", value = "dischargeflow-api-${var.environment}" },
+    # ADR-002 item 21: long-running tasks hold one LISTEN connection each (DB_HOST is RDS itself, not a pooler) and
+    # push notifications as they commit. Streams last 5 minutes; 15 s heartbeats keep the ALB's 60 s idle timeout open.
+    { name = "NOTIFICATION_TRANSPORT", value = "listen" },
+    { name = "NOTIFICATION_STREAM_SECONDS", value = "300" },
   ]
   tracing_env = var.enable_tracing ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://localhost:4318" }] : []
   # A task can't start while a referenced secret has no value, so the API key is only wired in when used.

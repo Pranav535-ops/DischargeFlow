@@ -26,6 +26,7 @@ from app.interop.hl7_router import router as hl7_router
 from app.interop import smart
 from app.interop.router import router as fhir_router
 from app.interop.smart_router import router as smart_router
+from app.notifications.hub import stop_hub
 from app.notifications.router import router as notifications_router
 from app.patients.router import access_router
 from app.patients.router import router as patients_router
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
         if inserted:
             logger.info("Seeded %d demo patients on startup", inserted)
     yield
+    await stop_hub()
     await engine.dispose()
 
 

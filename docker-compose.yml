@@ -40,6 +40,9 @@ services:
     environment:
       <<: *backend-env
       SEED_ON_STARTUP: "true"
+      # Long-running server: push notifications over Postgres LISTEN/NOTIFY instead of polling (ADR-002 item 21).
+      NOTIFICATION_TRANSPORT: listen
+      NOTIFICATION_STREAM_SECONDS: "300"
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -53,6 +53,7 @@ ADR asks a different question: what would stop it, or make it unhelpful, in a re
 | 10 | Medium | An A03 that arrives before its A01 is answered AE 204, which most interface engines do not retry, so the message is lost | `interop/adt.py` |
 
 Findings 1–4 are addressed by Phase 7, item 1 (PR #48). Findings 6, 7 and 10 are addressed by Phase 8, item 11.
+Finding 9 is addressed in code by Phase 9, item 21, for long-running hosts; production on Vercel still polls.
 
 ### Workflow gap
 
@@ -173,7 +174,7 @@ which needs monthly partitioning within a year or two.
 | Writes (~1–2k a day) and reads (low hundreds a minute at peak) | Fine for PostgreSQL. Decrypting PHI per row is the CPU cost, so paginate the patient list. |
 | Audit growth with read auditing | Fine for years; partition monthly; plan 6-year retention |
 | AI summary latency (synchronous, under Vercel's 60 s limit) | Acceptable for a pilot; needs ADR-001's async worker at scale |
-| Live notifications at ~200 concurrent tabs | Weak on serverless (finding 9) |
+| Live notifications at ~200 concurrent tabs | Weak on serverless (finding 9); on long-running hosts, one LISTEN connection per process (item 21) |
 | Availability on Vercel + Neon Free, single region | Not acceptable for production; needs a paid tier or the RDS Multi-AZ plan, plus a downtime procedure |
 
 ---
@@ -426,7 +427,7 @@ which needs monthly partitioning within a year or two.
 **Phase 9: Integration and value**
 14. [x] SMART on FHIR launch from the EHR, with patient context and no second sign-in.
     - **Flow:** SMART App Launch EHR launch as a public client with PKCE (S256). The EHR opens `/launch?iss&launch`;
-      the server checks `iss` against a per-tenant allow-list (`smart_issuers`, migration 0016, admin screen) before
+      the server checks `iss` against a per-tenant allow-list (`smart_issuers`, migration 0017, admin screen) before
       contacting it, discovers the endpoints from `.well-known/smart-configuration`, and returns the authorization
       URL (scopes `launch openid fhirUser patient/*.read`, a fresh `state` stored as a hash, a nonce). On the way back
       the browser checks `state` against the one it kept and `POST /api/smart/token` exchanges the code (single use,
@@ -476,4 +477,28 @@ which needs monthly partitioning within a year or two.
     discharge before noon, 30-day readmissions (needs item 7).
 20. [ ] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
     so it stays explainable and auditable.
-21. [ ] Real-time delivery without serverless polling once on AWS (finding 9, design change 4).
+21. [x] Real-time delivery without serverless polling once on AWS (finding 9, design change 4; migration 0016, done
+    2026-10-19 in code; production on Vercel still polls until the AWS move).
+    - **Built:** an AFTER INSERT trigger on `notifications` calls `pg_notify('notifications',
+      '<tenant>:<user>:<notification id>')`; Postgres delivers it only when the inserting transaction commits, so a
+      rolled-back notification is never announced. With `NOTIFICATION_TRANSPORT=listen`, each API process holds one
+      dedicated asyncpg connection with `LISTEN notifications` (`notifications/hub.py`), on `DATABASE_DIRECT_URL` or
+      a direct URL derived from `DATABASE_URL` (a Neon `-pooler` host loses the suffix; another pooled URL without
+      `DATABASE_DIRECT_URL` falls back to polling), and hands each id to the open streams of exactly that tenant and
+      user. A stream then makes no query per event; it re-checks the auth session every 15 s, so logout still ends it.
+      Ids only, as before: no notification text goes over the channel or the stream.
+    - **Failure handling:** the hub reconnects with backoff (1 s doubling to 30 s) and pings every 30 s to catch a
+      silently dropped connection. After a reconnect, every open stream sends another `ready`, which the client
+      already treats as "refetch the list", so notifications committed during the gap are not lost. A stream that
+      can't get a connected hub within 3 s polls instead, as does every stream on SQLite.
+    - **Where it runs:** `listen` is set (with 5-minute streams, kept open through the ALB's 60 s idle timeout by 15 s
+      heartbeats) in the ECS task definition, docker-compose and the k8s Deployment. `poll` stays the default and is
+      what Vercel uses: a serverless function has no long-lived process to hold a LISTEN, and the per-tab function
+      cost of finding 9 remains there until the AWS move.
+    - **Tests:** on Postgres, a committed insert reaches the subscriber and a rolled-back one does not (with polling
+      disabled, so the event can only come over LISTEN), tenant isolation of the fan-out, and revocation ending a
+      listen stream. Everywhere: fan-out to only that tenant and user, queue overflow collapsing to one resync,
+      reconnect with resync (fake connection), fallback to polling on SQLite and when the hub can't connect.
+    - **Limits:** not run against RDS or under load (no AWS account). Each process costs one extra database
+      connection. Fan-out is per process, which is enough because every process listens; a fleet large enough to
+      strain one LISTEN per task would move to a broker.

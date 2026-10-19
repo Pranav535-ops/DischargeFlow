@@ -162,6 +162,7 @@ async def test_migrations_match_models_and_downgrade(migration_url):
         # ...and on what is unit-scoped; RESTRICTIVE, so the policy narrows tenant_isolation instead of widening it.
         assert scoped == {table: "RESTRICTIVE" for table in rls.UNIT_SCOPED_TABLES}
         assert "audit_logs_append_only" in triggers
+        assert "notifications_notify" in triggers  # ADR-002 item 21
     _alembic("downgrade", "base", database_url=migration_url)
 
 

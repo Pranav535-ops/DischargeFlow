@@ -2,8 +2,9 @@
 //
 // Read with fetch rather than EventSource so the access token goes in the Authorization header, never in a URL.
 // Each event only says "something changed": the caller invalidates the notifications query, which refetches the
-// list through the normal API. The server ends each stream after ~25 s and this loop reconnects; after a failure
-// it backs off, and useNotifications polls every 30 s whenever the stream is not live.
+// list through the normal API. The server ends each stream after NOTIFICATION_STREAM_SECONDS (25 s on Vercel) and
+// this loop reconnects; a second `ready` mid-stream (the server's LISTEN connection came back) also refetches. After
+// a failure it backs off, and useNotifications polls every 30 s whenever the stream is not live.
 import { useSyncExternalStore } from 'react';
 import { API_BASE, getAccessToken, refreshAccessToken } from '@/lib/api';
 

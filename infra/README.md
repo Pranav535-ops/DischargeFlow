@@ -68,3 +68,12 @@ until the first deploy registers a real image. That is expected.
 - **The OpenTelemetry collector image** defaults to `latest`; pin it to a tested version before production.
 - **Costs** depend on region and usage; check the AWS Pricing Calculator before applying. The largest fixed costs are
   NAT gateways, the multi-AZ database and the load balancer.
+
+## Live notifications (ADR-002 item 21)
+
+The ECS task definition sets `NOTIFICATION_TRANSPORT=listen` and `NOTIFICATION_STREAM_SECONDS=300`. Each API task
+holds one extra database connection with `LISTEN notifications` and pushes notification ids to its open SSE streams as
+the inserting transaction commits (trigger from migration 0016), instead of every stream polling every 5 s. Size RDS
+`max_connections` for one more connection per task. `DB_HOST` must be RDS itself: if an RDS Proxy or PgBouncer in
+transaction mode is ever put in front, set `DATABASE_DIRECT_URL` to a direct endpoint, or the stream falls back to
+polling. Streams send a heartbeat every 15 s, which keeps them open through the ALB's default 60 s idle timeout.
