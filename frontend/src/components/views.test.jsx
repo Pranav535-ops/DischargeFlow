@@ -68,6 +68,52 @@ describe('WorkflowView (route /workflows/:workflowId)', () => {
   });
 });
 
+describe('WorkflowView summary lifecycle (ADR-002 item 13)', () => {
+  const signedWorkflow = {
+    workflow_id: 'wf_1', patient_id: 'pat_1', status: 'completed', started_at: '2026-10-18T10:00:00Z', tasks: [],
+    summary_sign_by: '2026-10-19T12:00:00Z', summary_overdue: false,
+    discharge_summary: {
+      summary_id: 'sum_1', approved: true, signed: true, content: 'Signed text', created_at: '2026-10-18T10:05:00Z',
+      versions: [{ version_id: 'sver_1', version: 1, signed_by: 'user_dr', signed_at: '2026-10-18T11:00:00Z' }],
+      signed_version: { version_id: 'sver_1', version: 1, signed_by: 'user_dr', signed_at: '2026-10-18T11:00:00Z',
+        content: 'Signed text', content_sha256: 'abcdef0123456789', hash_verified: true },
+      addenda: [{ addendum_id: 'add_1', version_id: 'sver_1', signed_by: 'user_dr', signed_at: '2026-10-19T09:00:00Z',
+        content: 'Late potassium result' }],
+      signed_late: false,
+    },
+  };
+
+  it('shows the signed version, the history and the addenda, and adds a signed addendum', async () => {
+    const { default: WorkflowView } = await import('./WorkflowView');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => ({ data: url.startsWith('/workflows') ? signedWorkflow
+      : url.startsWith('/downtime') ? { read_only: false } : { patient_id: 'pat_1', name: 'Jane Doe', room_number: '1' } }));
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} });
+    renderAt('/workflows/wf_1', '/workflows/:workflowId', <WorkflowView />);
+
+    expect(await screen.findByTestId('summary-signed')).toHaveTextContent('Signed');
+    expect(screen.getByTestId('signed-version')).toHaveTextContent('Version 1 signed by user_dr');
+    expect(screen.getByTestId('signed-version')).toHaveTextContent('sha256 abcdef012345');
+    expect(screen.getByTestId('version-history')).toHaveTextContent('Addendum 1 signed by user_dr');
+    expect(screen.getByTestId('addenda')).toHaveTextContent('Late potassium result');
+    expect(screen.queryByTestId('edit-summary-btn')).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByTestId('addendum-input'), 'Culture negative');
+    await userEvent.click(screen.getByTestId('add-addendum-btn'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/ai/summaries/sum_1/addenda', { content: 'Culture negative' }));
+  });
+
+  it('flags an unsigned summary past its sign-by deadline', async () => {
+    const { default: WorkflowView } = await import('./WorkflowView');
+    vi.spyOn(api, 'get').mockImplementation(async (url) => ({ data: url.startsWith('/workflows') ? {
+      ...signedWorkflow, status: 'in_progress', summary_overdue: true,
+      discharge_summary: { summary_id: 'sum_1', approved: false, content: 'Draft' },
+    } : { patient_id: 'pat_1', name: 'Jane Doe', room_number: '1' } }));
+    renderAt('/workflows/wf_1', '/workflows/:workflowId', <WorkflowView />);
+    expect(await screen.findByTestId('summary-overdue')).toHaveTextContent('Signature overdue');
+    expect(screen.queryByTestId('summary-lifecycle')).not.toBeInTheDocument();
+  });
+});
+
 describe('PatientDetails (route /patients/:patientId)', () => {
   it('shows a not-found state for an unknown patient id', async () => {
     const { default: PatientDetails } = await import('./PatientDetails');
@@ -95,6 +141,8 @@ describe('InsightsView', () => {
       task_sla: { targets_hours: { high: 4, medium: 12, low: 24 }, open_tasks: 3,
         open_breaching_by_role: { pharmacist: { high: 1 } }, completed: { n: 10, breached: 2, breach_rate: 0.2 },
         completed_by_role: {} },
+      summary_signing: { sign_by_hours: 24, overdue_unsigned: 2, oldest_overdue_hours: null,
+        time_to_sign: { n: 4, avg_hours: 6, median_hours: 5 }, signed: { n: 4, breached: 1 } },
     };
     vi.spyOn(api, 'get').mockImplementation(async (url) => (
       { data: url.startsWith('/analytics/operations') ? operations : aggregates }));
@@ -114,6 +162,8 @@ describe('InsightsView', () => {
     expect(ops).toHaveTextContent('2/10 completed tasks over target (20%)');
     expect(ops).toHaveTextContent('1 older discharge(s) not tracked');
     expect(ops).toHaveTextContent('1 high open, overdue');
+    expect(screen.getByTestId('ops-summary-signing')).toHaveTextContent('2 unsigned past deadline');
+    expect(screen.getByTestId('ops-summary-signing')).toHaveTextContent('1/4 signed late');
     await userEvent.click(screen.getByTestId('generate-insights-btn'));
     const panel = await screen.findByTestId('insights-panel');
     expect(panel).toHaveTextContent('Pharmacist tasks take longest');

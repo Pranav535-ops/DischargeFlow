@@ -95,7 +95,7 @@ Notifications about a patient on a unit go only to members of that unit.
 | POST | `/workflows/initiate/{patient_id}` | `workflow:manage` | Creates the eight standard tasks; audited |
 | GET | `/workflows` | signed in | Optional `?status=` |
 | GET | `/workflows/patient/{patient_id}` | signed in | The active workflow, or `null`; `PHI_READ` audited when one is returned |
-| GET | `/workflows/{workflow_id}` | signed in | With tasks and summary; `PHI_READ` audited |
+| GET | `/workflows/{workflow_id}` | signed in | With tasks and summary (as `GET /ai/summary`), plus `summary_sign_by` and `summary_overdue`; `PHI_READ` audited |
 | PUT | `/workflows/{workflow_id}/complete` | `workflow:manage` | Requires no open tasks and an approved summary; audited. Optional body `{completed_at}` back-enters a discharge done on paper: the time must be in the past, after the workflow started and inside a recorded downtime period; it becomes `completed_at`, `backfilled_at` records when it was entered, and the audit entry names the downtime |
 | POST | `/tasks` | `task:create` | Attached to the active workflow if there is one; audited |
 | GET | `/tasks` | signed in | |
@@ -108,8 +108,11 @@ Notifications about a patient on a unit go only to members of that unit.
 | Method | Path | Access | Notes |
 |---|---|---|---|
 | POST | `/ai/generate-summary` | `summary:manage` | Structured, de-identified generation; 503 when `LLM_PROVIDER=none` |
-| PUT | `/ai/approve-summary/{summary_id}` | `summary:manage` | Accepts the physician's edited text; stores the diff |
-| GET | `/ai/summary/{workflow_id}` | signed in | `PHI_READ` audited when a summary is returned |
+| PUT | `/ai/approve-summary/{summary_id}` | `summary:manage` | Signs the summary: accepts the physician's edited text, stores the diff, and freezes the text as version 1 (`version_id`, `content_sha256` in the response). 400 if already signed; signed text never changes again |
+| GET | `/ai/summary/{workflow_id}` | signed in | `PHI_READ` audited when a summary is returned. Adds `signed`, `versions` (metadata), `signed_version` (latest signed text, `content_sha256`, `hash_verified`), its `addenda`, `sign_by` and `signed_late` |
+| POST | `/ai/summaries/{summary_id}/addenda` | `summary:manage` | Body `{content}` (1–20000 characters). Appends text to the latest signed version, signed by the author; 201 with the addendum. 400 if the summary is unsigned or the patient was erased. Audited as `SUMMARY_ADDENDUM_SIGNED` (addendum and version ids only). Allowed after discharge |
+| GET | `/ai/summaries/overdue` | `summary:manage` | Discharges whose summary is missing or unsigned past the sign-by deadline (`SUMMARY_SIGN_HOURS` after discharge, or after the expected discharge time while the patient is still here). Ids and times only |
+| POST | `/ai/summaries/overdue/notify` | `summary:manage` | Notifies physicians (on the patient's unit) once per overdue discharge; what `python -m app.cli summary-deadlines` runs for every tenant |
 | GET | `/ai/generations` | `summary:manage` | Provenance records (no prompt or output text) |
 | GET | `/ai/metrics` | `summary:manage` | Approval rate and edit similarity per prompt version |
 | POST | `/chatbot/message` | signed in | Tool-calling assistant; write tools become pending actions |
@@ -123,7 +126,7 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/analytics/dashboard` | signed in | KPIs |
 | GET | `/analytics/tasks-by-role` | signed in | |
 | GET | `/analytics/aggregates` | `insights:read` | Aggregate-only metrics sent to the insights model |
-| GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA (`?days=30`) |
+| GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA, summary signing against the sign-by policy (`?days=30`) |
 | POST | `/analytics/insights` | `insights:read` | AI explanation of the aggregates |
 | GET | `/notifications` | signed in | |
 | GET | `/notifications/stream` | signed in | Server-Sent Events; closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects |
@@ -167,7 +170,7 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/fhir/R4/Patient`, `/fhir/R4/Patient/{id}` | signed in | Search returns a Bundle |
 | GET | `/fhir/R4/Encounter`, `/fhir/R4/Encounter/{id}` | signed in | Discharge workflows |
 | GET | `/fhir/R4/Task`, `/fhir/R4/Task/{id}` | signed in | |
-| GET | `/fhir/R4/DocumentReference`, `/fhir/R4/DocumentReference/{id}` | signed in | Approved discharge summaries |
+| GET | `/fhir/R4/DocumentReference`, `/fhir/R4/DocumentReference/{id}` | signed in | Signed discharge summaries: the latest signed version, then one attachment per addendum; `docStatus` is `amended` when there are addenda |
 | POST | `/hl7/adt` | integration key with `adt:ingest` | See below |
 
 ### HL7 v2 ADT

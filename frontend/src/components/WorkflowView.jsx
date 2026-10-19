@@ -21,6 +21,7 @@ import {
   Receipt
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
+import SummaryLifecycle, { SignByBadge } from './SummaryLifecycle';
 import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
 
@@ -73,7 +74,7 @@ const WorkflowView = () => {
       const body = editingSummary ? { content: editedContent } : {};
       await api.put(`/ai/approve-summary/${workflow.discharge_summary.summary_id}`, body);
       setEditingSummary(false);
-      toast.success('Summary approved', { description: 'Discharge summary has been approved.' });
+      toast.success('Summary signed', { description: 'Discharge summary approved and signed as version 1.' });
       await fetchData();
     } catch (error) {
       toast.error('Failed to approve summary', { description: errorMessage(error) });
@@ -266,11 +267,13 @@ const WorkflowView = () => {
             <Sparkles className="w-5 h-5 text-blue-400" strokeWidth={1.5} />
             <h2 className="text-lg font-medium text-zinc-50">AI Discharge Summary</h2>
           </div>
-          {workflow.discharge_summary?.approved && (
-            <span className="flex items-center gap-1 text-emerald-400 text-sm">
+          {workflow.discharge_summary?.approved ? (
+            <span className="flex items-center gap-1 text-emerald-400 text-sm" data-testid="summary-signed">
               <CheckCircle2 className="w-4 h-4" />
-              Approved
+              Signed
             </span>
+          ) : (
+            <SignByBadge workflow={workflow} />
           )}
         </div>
 
@@ -318,6 +321,9 @@ const WorkflowView = () => {
                       Approved with physician edits ({Math.round(summary.edit_similarity * 100)}% similar to the AI draft)
                     </p>
                   )}
+                  {summary.approved && (
+                    <SummaryLifecycle summary={summary} canSign={canApprove} readOnly={readOnly} onChanged={fetchData} />
+                  )}
                   {!summary.approved && canApprove && (
                     <div className="mt-4 flex gap-3">
                       <Button
@@ -331,7 +337,7 @@ const WorkflowView = () => {
                         ) : (
                           <Check className="w-4 h-4 mr-2" />
                         )}
-                        {editingSummary ? 'Approve Edited Summary' : 'Approve Summary'}
+                        {editingSummary ? 'Approve and Sign Edited Summary' : 'Approve and Sign'}
                       </Button>
                       <Button
                         data-testid="edit-summary-btn"
