@@ -10,7 +10,13 @@ from fastapi import HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.models import AIGeneration, DischargeSummary, DischargeSummaryAddendum, DischargeSummaryVersion
+from app.ai.models import (
+    AIGeneration,
+    DischargeSummary,
+    DischargeSummaryAddendum,
+    DischargeSummaryVersion,
+    PatientInstructions,
+)
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
 from app.insurance.models import InsuranceClaim
 from app.patients.models import AccessGrant, Encounter, Patient
@@ -42,8 +48,10 @@ async def merge_into(db: AsyncSession, prior: Patient, survivor: Patient) -> dic
         encounter.comorbidities = comorbidities
 
     # Summaries, their signed versions and addenda (ADR-002 item 13) all hold text under the patient's key.
-    keyed_models: tuple[type[DischargeSummary] | type[DischargeSummaryVersion] | type[DischargeSummaryAddendum], ...] = (
-        DischargeSummary, DischargeSummaryVersion, DischargeSummaryAddendum)
+    # Patient instructions (ADR-002 item 18) too.
+    keyed_models: tuple[type[DischargeSummary] | type[DischargeSummaryVersion] | type[DischargeSummaryAddendum]
+                        | type[PatientInstructions], ...] = (
+        DischargeSummary, DischargeSummaryVersion, DischargeSummaryAddendum, PatientInstructions)
     summaries = 0
     for keyed in keyed_models:
         for row in list(await db.scalars(select(keyed).where(keyed.patient_id == prior.patient_id))):

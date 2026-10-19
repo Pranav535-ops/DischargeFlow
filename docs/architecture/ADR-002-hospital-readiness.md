@@ -431,7 +431,47 @@ which needs monthly partitioning within a year or two.
 16. [ ] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
     delivery tracked.
 17. [ ] Capacity board: expected discharges by unit and hour, discharge before noon, and the bed-to-cleaning handoff.
-18. [ ] Patient-facing discharge instructions in plain language and the patient's language, approved by a clinician.
+18. [x] Patient-facing discharge instructions in plain language and the patient's language, approved by a clinician.
+    - **Source:** drafted only from the signed summary (item 13): its latest signed version and that version's
+      addenda, never the unsigned draft. `source_sha256` records exactly what was used, so an addendum signed later
+      marks the instructions `stale` until someone redrafts or rechecks them. Discharge summaries must be signed
+      first; the API refuses otherwise (409).
+    - **Governed generation:** the same path as summaries. The signed text is de-identified, sent with the target
+      language and reading grade under a new versioned prompt (`patient_instructions@v1`, hash pinned in the tests),
+      and the model must return JSON matching a schema (what happened, conditions, medicines, warning signs,
+      follow-up, activity and diet, with section headings in the patient's language). Invalid output gets one retry,
+      then a visible 502 with the failed attempt's provenance kept. Every call adds an `ai_generations` row.
+    - **Grounding:** every medicine name and condition (which the model copies untranslated next to its plain
+      explanation) must appear in the signed text, as must any known drug name anywhere in the text; a discharge
+      medication in the summary that the instructions leave out is flagged as an omission. Warnings are shown to the
+      reviewer.
+    - **Readability:** a deterministic Flesch-Kincaid grade is stored with the draft and with the approved text.
+      `PATIENT_INSTRUCTIONS_TARGET_GRADE` (default 6, a common health-literacy target) sets the goal: an English
+      draft above it is retried once with a request to simplify, and flagged if it is still above. The formula is
+      English only, so other languages get no grade rather than a misleading one.
+    - **Language:** `patients.preferred_language` (migration 0017) holds a BCP 47 code, editable on the patient page;
+      instructions default to it and can be drafted in any other language too, one set per language. It is stored in
+      clear: a language is not an identifier on its own.
+    - **Review and print:** a nurse or physician (`instructions:manage`) edits and approves the draft; the edit diff
+      and similarity are stored as for summaries, and approved text can't change. Only approved instructions print,
+      from a printable page (`/instructions/:id/print`, black on white, the patient's name, `lang` and right-to-left
+      layout set) whose load is an audited PHI read.
+    - **Protection:** the text is encrypted with the patient's data key like summaries, tenant- and unit-scoped,
+      overwritten on erasure, and re-keyed when an A40 merge moves it. Audit entries carry ids, language and counts,
+      never text.
+    - **Evals:** the golden set has four instruction cases (pneumonia, heart failure with an addendum, a prompt
+      injection inside the signed hospital course, a Spanish request) checking for invented or omitted medicines, forbidden text,
+      identifiers sent to the model, coverage, and English drafts above the target grade.
+    - **Limits:** translation quality depends entirely on the model, and nothing here measures it. CI runs the
+      offline mock, which writes English whatever language is asked, so the non-English eval case checks grounding
+      and de-identification only. Before patients receive translated instructions, a hospital needs a qualified
+      reviewer for each language it offers (or certified translation) and a live eval with the chosen model; the
+      reviewing nurse or physician may not read the language. Flesch-Kincaid is a rough proxy for plain language and
+      says nothing about layout, numeracy or cultural fit. There is no revision workflow for approved instructions
+      (a stale approved set can't be redrafted in the same language), no patient portal or electronic delivery
+      (printed handout only; item 16 covers clinician delivery), the language is not read from HL7 PID-15 yet, and
+      no real model has drafted instructions here (no BAA-covered provider yet). Tested on SQLite and in CI on
+      PostgreSQL 16.
 19. [ ] Outcome analytics: length of stay against expected, accuracy of the expected discharge date, delay reasons,
     discharge before noon, 30-day readmissions (needs item 7).
 20. [x] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
@@ -444,7 +484,7 @@ which needs monthly partitioning within a year or two.
       admission (3), C the Charlson comorbidity index (0-3 as is, 4 or more 5), E emergency department visits in the 6
       months before admission (one point each, at most 4). `app/risk/lace.py` is pure functions with no app imports
       (an import-linter contract), tested at every band boundary and over the whole 0-19 range.
-    - **Inputs:** on the encounter (migration 0017). Length of stay is to the expected discharge date at planning (so
+    - **Inputs:** on the encounter (migration 0018). Length of stay is to the expected discharge date at planning (so
       far, when there is no future expected date) and the actual stay once discharged, in calendar days in hospital
       time. Acuity is the HL7 PV1-4 admission type (table 0007: accident, emergency and urgent count as acute), from
       A01/A08 or set on the plan. Comorbidities are structured Charlson flags recorded on the plan, encrypted with the

@@ -8,8 +8,8 @@ Additive and nullable, so the previous release is unaffected. Existing stays hav
 read, when app.risk.service.ensure_current computes it (the ED-visit count needs the patient's other encounters, so
 it is not done in SQL here).
 
-Revision ID: 0017
-Revises: 0016
+Revision ID: 0018
+Revises: 0017
 Create Date: 2026-10-19 23:30:00
 """
 from typing import Sequence, Union
@@ -17,8 +17,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0017'
-down_revision: Union[str, None] = '0016'
+revision: str = '0018'
+down_revision: Union[str, None] = '0017'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
