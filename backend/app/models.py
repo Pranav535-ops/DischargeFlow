@@ -1,5 +1,11 @@
 """Import every module's models so Base.metadata is complete (used by Alembic and tests)."""
-from app.ai.models import AIGeneration, DischargeSummary, DischargeSummaryAddendum, DischargeSummaryVersion
+from app.ai.models import (
+    AIGeneration,
+    DischargeSummary,
+    DischargeSummaryAddendum,
+    DischargeSummaryVersion,
+    PatientInstructions,
+)
 from app.audit.models import AuditChainHead, AuditLog
 from app.chatbot.models import AssistantAction
 from app.core.db import Base
@@ -18,7 +24,7 @@ from app.identity.models import (
     UserUnit,
 )
 from app.insurance.models import InsuranceClaim
-from app.interop.models import HL7Message, HL7ParkedMessage
+from app.interop.models import EhrUserLink, HL7Message, HL7ParkedMessage, SmartIssuer, SmartLaunch
 from app.notifications.models import Notification
 from app.patients.models import AccessGrant, Encounter, Patient
 
@@ -35,6 +41,7 @@ __all__ = [
     "DischargeSummaryAddendum",
     "DischargeSummaryVersion",
     "DowntimePeriod",
+    "EhrUserLink",
     "Encounter",
     "Escalation",
     "HL7Message",
@@ -45,7 +52,10 @@ __all__ = [
     "IntegrationClient",
     "Notification",
     "Patient",
+    "PatientInstructions",
     "RolePermission",
+    "SmartIssuer",
+    "SmartLaunch",
     "Task",
     "Tenant",
     "Unit",

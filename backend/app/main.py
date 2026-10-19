@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.middleware.cors import CORSMiddleware
 
+from app.ai import service as ai_service
 from app.ai.router import router as ai_router
 from app.analytics.router import router as analytics_router
 from app.audit.router import router as audit_router
@@ -24,7 +25,9 @@ from app.identity.scim_router import router as scim_router
 from app.identity.sso_router import identity_providers_router, sso_auth_router
 from app.insurance.router import router as insurance_router
 from app.interop.hl7_router import router as hl7_router
+from app.interop import smart
 from app.interop.router import router as fhir_router
+from app.interop.smart_router import router as smart_router
 from app.notifications.hub import stop_hub
 from app.notifications.router import router as notifications_router
 from app.patients.router import access_router
@@ -52,6 +55,9 @@ def create_app() -> FastAPI:
     settings.require_jwt_secret()  # fail fast: the API cannot issue or verify tokens without it
 
     app = FastAPI(title="DischargeFlow API", version=VERSION, lifespan=lifespan)
+    # Summaries use the EHR's medication, problem and allergy lists when the physician launched from the EHR
+    # (ADR-002 item 15). Registered here because nothing may import interop.
+    ai_service.set_clinical_context_source(smart.summary_context)
 
     app.add_middleware(
         CORSMiddleware,
@@ -88,7 +94,7 @@ def create_app() -> FastAPI:
         auth_router, users_router, patients_router, workflows_router, tasks_router, notifications_router,
         analytics_router, ai_router, insurance_router, chatbot_router, audit_router, fhir_router,
         integrations_router, hl7_router, units_router, access_router, downtime_router, census_router,
-        escalations_router,
+        escalations_router, smart_router,
         plans_router, templates_router,
         sso_auth_router, identity_providers_router, scim_router,
     ):

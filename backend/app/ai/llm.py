@@ -22,7 +22,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-Purpose = Literal["summary", "assistant", "insights"]
+Purpose = Literal["summary", "assistant", "insights", "instructions"]
 
 
 @dataclass
@@ -111,6 +111,7 @@ class ClaudeClient:
 # ---------- Mock (offline, deterministic) ----------
 
 FACTS_RE = re.compile(r"<patient_facts>\s*(\{.*?\})\s*</patient_facts>", re.S)
+SIGNED_SUMMARY_RE = re.compile(r"<signed_summary_facts>\s*(\{.*\})\s*</signed_summary_facts>", re.S)
 AGGREGATES_RE = re.compile(r"<aggregates>\s*(\{.*\})\s*</aggregates>", re.S)
 NOTE_FIELDS = {"course": "course", "procedures": "procedures", "medications": "medications",
                "follow-up": "follow_up", "follow up": "follow_up", "warning signs": "warning_signs",
@@ -143,11 +144,19 @@ def mock_summary(facts: dict) -> dict:
     diagnosis = facts.get("diagnosis") or "Not documented"
     patient = facts.get("patient", "[PATIENT_1]")
     course = notes.get("course") or f"{patient} was admitted with {diagnosis.lower()}."
+    # The EHR's lists (ADR-002 item 15), when given: reconciled with the notes by name.
+    medications = [_mock_medication(m) for m in _split(notes.get("medications", ""))]
+    named = {m["name"].lower() for m in medications}
+    medications += [_mock_medication(m) for m in facts.get("ehr_active_medications") or []
+                    if m.split(" ", 1)[0].lower() not in named]
+    diagnoses = [diagnosis] + [p for p in facts.get("ehr_problem_list") or [] if p.lower() != diagnosis.lower()]
+    if facts.get("ehr_allergies"):
+        course = f"{course} Allergies: {'; '.join(facts['ehr_allergies'])}."
     return {
         "hospital_course": course,
-        "discharge_diagnoses": [diagnosis],
+        "discharge_diagnoses": diagnoses,
         "procedures": _split(notes.get("procedures", "")),
-        "medications": [_mock_medication(m) for m in _split(notes.get("medications", ""))],
+        "medications": medications,
         "activity": notes.get("activity", "As tolerated."),
         "diet": notes.get("diet", "Resume usual diet."),
         "follow_up": _split(notes.get("follow_up", "")) or ["Follow up with primary care as directed."],
@@ -231,6 +240,10 @@ class MockLLMClient:
             from app.ai.insights import mock_insights
 
             return self._reply(json.dumps(mock_insights(json.loads(agg.group(1)))), messages)
+        if json_schema is not None and isinstance(content, str) and (signed := SIGNED_SUMMARY_RE.search(content)):
+            from app.ai.instructions import mock_instructions
+
+            return self._reply(json.dumps(mock_instructions(json.loads(signed.group(1)))), messages)
         if json_schema is not None:
             match = FACTS_RE.search(content if isinstance(content, str) else json.dumps(content))
             facts = json.loads(match.group(1)) if match else {}

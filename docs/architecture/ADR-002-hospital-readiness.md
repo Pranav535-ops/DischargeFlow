@@ -189,7 +189,7 @@ which needs monthly partitioning within a year or two.
     c. **Claim permissions.** Creating a claim and changing its status need the new `claim:manage` (nurse, who owns the billing-clearance task, and admin); reads stay open to signed-in users. The assistant's `submit_claim` tool checks the same permission. The insurance screen is read-only for other roles.
     d. **Audit coverage.** Patient create and update (field names only, never values), discharge initiation and completion (including completion by an HL7 A03), task creation, status changes, overrides and reassignments are now audited in the same transaction as the change. Patient-level PHI reads are audited too, with one `PHI_READ` entry per request and no PHI in the details: the patient list (one entry per list, with the record count), patient detail, both workflow-detail routes and the summary read. Reads use resource type `patient` with the patient id, so `GET /api/audit/patients/{id}` answers "who looked at this record". A read that fails is not logged. **Cost:** each audited read appends to the tenant's hash chain, which locks the chain-head row until the request commits, so PHI reads in one tenant now serialize on that lock. The audit call is placed last in each handler to keep the hold short (a few milliseconds plus the commit). At pilot scale this is fine. At hospital scale, read events should move to a separate append-only table, or be batched into the chain by a worker (ADR-001 item 11). SQLite ignores `FOR UPDATE`, so local SQLite request transactions now run one at a time (`core/db.get_db`); without that, concurrent reads appended duplicate sequence numbers, which the Playwright run caught. **Not done:** list endpoints that carry less identifying data (`/workflows`, `/tasks`, `/insurance/claims`) and the assistant's read tools are not read-audited, though every assistant tool call is already audited.
 2. [ ] Hospital single sign-on (OIDC or SAML against the hospital directory) with MFA, plus automated provisioning and
-   deprovisioning, replacing the Emergent demo login. **Code complete (2026-10-20, migration 0017); awaiting an AWS
+   deprovisioning, replacing the Emergent demo login. **Code complete (2026-10-20, migration 0019); awaiting an AWS
    account (Cognito) and a hospital directory to federate with. Not ticked: nothing has signed in through a real
    hospital identity provider yet.**
     - **Per-tenant providers:** `identity_providers` (shared table, like `tenants`; the app role may only read it)
@@ -453,13 +453,94 @@ which needs monthly partitioning within a year or two.
       SQLite and PostgreSQL 16.
 
 **Phase 9: Integration and value**
-14. [ ] SMART on FHIR launch from the EHR, with patient context and no second sign-in.
-15. [ ] Read-only clinical context from the EHR over FHIR (medications, problems, allergies), so medication
+14. [x] SMART on FHIR launch from the EHR, with patient context and no second sign-in.
+    - **Flow:** SMART App Launch EHR launch as a public client with PKCE (S256). The EHR opens `/launch?iss&launch`;
+      the server checks `iss` against a per-tenant allow-list (`smart_issuers`, migration 0018, admin screen) before
+      contacting it, discovers the endpoints from `.well-known/smart-configuration`, and returns the authorization
+      URL (scopes `launch openid fhirUser patient/*.read`, a fresh `state` stored as a hash, a nonce). On the way back
+      the browser checks `state` against the one it kept and `POST /api/smart/token` exchanges the code (single use,
+      verifier checked against the stored challenge) and verifies the id_token against the server's JWKS (issuer,
+      audience, expiry, nonce, `fhirUser`).
+    - **Who:** an admin link from the EHR user (`fhirUser`) to a DischargeFlow user, else a match by email (from the
+      id_token or the Practitioner's telecom) with the same rules as the Google login: unknown accounts become
+      `pending`, registration limits apply. The result is our normal session (15-minute token, `df_refresh` cookie),
+      so the idle lock, unit scope and audit all apply unchanged.
+    - **Which patient:** the EHR Patient's MRN identifier (configured system, else the one typed `MR`) is looked up
+      through the MRN blind index with the configured assigning authority, and the encounter by its visit number,
+      else the active stay. The browser lands on the active workflow, else the patient. No match still signs in, with
+      the reason shown.
+    - **The EHR token** never reaches the browser: it is stored encrypted under the launch's own data key, capped at an
+      hour, without a refresh token, and usable only by the session that made the launch. Expiry, a 401 from the EHR
+      or disabling the issuer drops it. Launches are audited (`SMART_LAUNCH`, `SMART_LAUNCH_FAILED`, ids and reasons
+      only).
+    - **Limits:** tested only against a fake EHR (unit tests with a fake authorization and FHIR server, and a
+      Playwright spec with a local fake EHR), not a real Epic or Oracle Health sandbox, so vendor quirks (Epic's
+      identifier systems, `fhirUser` formats, required `aud`) are untested. Public client only: no confidential
+      client secret or private-key JWT client authentication, and no standalone launch. Launches go to the default
+      tenant, as the Google login does. The link from EHR user to DischargeFlow user is by email or an admin link
+      created through the API; the admin screen registers EHRs but does not manage links yet. Signing out of
+      DischargeFlow does not revoke the EHR token at the EHR; it is simply no longer usable by any session.
+15. [x] Read-only clinical context from the EHR over FHIR (medications, problems, allergies), so medication
     reconciliation compares real lists and summaries are grounded in real data.
+    - **Read:** `GET /api/smart/clinical-context/{patient_id}` reads active `MedicationRequest`, `Condition` and
+      `AllergyIntolerance` live from the EHR with the session's launch token (httpx, 8-second timeout, only the
+      launch's `iss`, at most five pages). Parsed lists are cached 60 seconds per process and never persisted.
+      Entered-in-error, refuted, inactive and resolved entries are left out. Each response with data is a `PHI_READ`.
+    - **Shown:** on the workflow screen, and on medication tasks in the task list (medications and allergies), where
+      the pharmacist reconciles against the real lists.
+    - **Summaries:** the same lists, de-identified, become `ehr_active_medications`, `ehr_problem_list` and
+      `ehr_allergies` in the facts (prompt `discharge_summary@v2` tells the model to reconcile against them).
+      Grounding checks against what the model was given, and a discharge medication named like a recorded allergy
+      adds an `allergy` warning. Two golden-set cases (reconciliation, de-identification of EHR text) keep the evals
+      green on the mock adapter.
+    - **Limits:** the context exists only while the physician's session holds a live EHR launch for that patient;
+      there is no backend service access (SMART Backend Services) for reading without a launch. Medications are
+      `MedicationRequest`s only (no `MedicationStatement` or dispense history), names are matched lexically, and the
+      allergy check would not know that amoxicillin is a penicillin. Not tested against a real EHR sandbox.
 16. [ ] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
     delivery tracked.
 17. [ ] Capacity board: expected discharges by unit and hour, discharge before noon, and the bed-to-cleaning handoff.
-18. [ ] Patient-facing discharge instructions in plain language and the patient's language, approved by a clinician.
+18. [x] Patient-facing discharge instructions in plain language and the patient's language, approved by a clinician.
+    - **Source:** drafted only from the signed summary (item 13): its latest signed version and that version's
+      addenda, never the unsigned draft. `source_sha256` records exactly what was used, so an addendum signed later
+      marks the instructions `stale` until someone redrafts or rechecks them. Discharge summaries must be signed
+      first; the API refuses otherwise (409).
+    - **Governed generation:** the same path as summaries. The signed text is de-identified, sent with the target
+      language and reading grade under a new versioned prompt (`patient_instructions@v1`, hash pinned in the tests),
+      and the model must return JSON matching a schema (what happened, conditions, medicines, warning signs,
+      follow-up, activity and diet, with section headings in the patient's language). Invalid output gets one retry,
+      then a visible 502 with the failed attempt's provenance kept. Every call adds an `ai_generations` row.
+    - **Grounding:** every medicine name and condition (which the model copies untranslated next to its plain
+      explanation) must appear in the signed text, as must any known drug name anywhere in the text; a discharge
+      medication in the summary that the instructions leave out is flagged as an omission. Warnings are shown to the
+      reviewer.
+    - **Readability:** a deterministic Flesch-Kincaid grade is stored with the draft and with the approved text.
+      `PATIENT_INSTRUCTIONS_TARGET_GRADE` (default 6, a common health-literacy target) sets the goal: an English
+      draft above it is retried once with a request to simplify, and flagged if it is still above. The formula is
+      English only, so other languages get no grade rather than a misleading one.
+    - **Language:** `patients.preferred_language` (migration 0019) holds a BCP 47 code, editable on the patient page;
+      instructions default to it and can be drafted in any other language too, one set per language. It is stored in
+      clear: a language is not an identifier on its own.
+    - **Review and print:** a nurse or physician (`instructions:manage`) edits and approves the draft; the edit diff
+      and similarity are stored as for summaries, and approved text can't change. Only approved instructions print,
+      from a printable page (`/instructions/:id/print`, black on white, the patient's name, `lang` and right-to-left
+      layout set) whose load is an audited PHI read.
+    - **Protection:** the text is encrypted with the patient's data key like summaries, tenant- and unit-scoped,
+      overwritten on erasure, and re-keyed when an A40 merge moves it. Audit entries carry ids, language and counts,
+      never text.
+    - **Evals:** the golden set has four instruction cases (pneumonia, heart failure with an addendum, a prompt
+      injection inside the signed hospital course, a Spanish request) checking for invented or omitted medicines, forbidden text,
+      identifiers sent to the model, coverage, and English drafts above the target grade.
+    - **Limits:** translation quality depends entirely on the model, and nothing here measures it. CI runs the
+      offline mock, which writes English whatever language is asked, so the non-English eval case checks grounding
+      and de-identification only. Before patients receive translated instructions, a hospital needs a qualified
+      reviewer for each language it offers (or certified translation) and a live eval with the chosen model; the
+      reviewing nurse or physician may not read the language. Flesch-Kincaid is a rough proxy for plain language and
+      says nothing about layout, numeracy or cultural fit. There is no revision workflow for approved instructions
+      (a stale approved set can't be redrafted in the same language), no patient portal or electronic delivery
+      (printed handout only; item 16 covers clinician delivery), the language is not read from HL7 PID-15 yet, and
+      no real model has drafted instructions here (no BAA-covered provider yet). Tested on SQLite and in CI on
+      PostgreSQL 16.
 19. [ ] Outcome analytics: length of stay against expected, accuracy of the expected discharge date, delay reasons,
     discharge before noon, 30-day readmissions (needs item 7).
 20. [ ] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,

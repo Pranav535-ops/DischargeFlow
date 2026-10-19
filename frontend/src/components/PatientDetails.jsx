@@ -6,6 +6,7 @@ import { api, errorMessage } from '@/lib/api';
 import {
   invalidateDischarge, isBreakGlassError, keys, queryClient, usePatient, usePatientWorkflow, useReadOnly, useUnits,
 } from '@/lib/queries';
+import { LANGUAGES, languageName } from '@/lib/languages';
 import BreakGlassPanel from './BreakGlassPanel';
 import DischargePlanCard from './DischargePlanCard';
 import EncounterHistory from './EncounterHistory';
@@ -19,7 +20,8 @@ import {
   Play,
   Loader2,
   ClipboardList,
-  Clock
+  Clock,
+  Languages
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 
@@ -78,6 +80,16 @@ const PatientDetails = () => {
     } catch (error) {
       queryClient.setQueryData(keys.patient(patientId), backup);
       toast.error('Failed to update status', { description: errorMessage(error) });
+    }
+  };
+
+  const handleLanguageChange = async (code) => {
+    try {
+      await api.put(`/patients/${patientId}`, { preferred_language: code });
+      await queryClient.invalidateQueries({ queryKey: keys.patients });
+      toast.success('Preferred language updated');
+    } catch (error) {
+      toast.error('Failed to update language', { description: errorMessage(error) });
     }
   };
 
@@ -166,7 +178,7 @@ const PatientDetails = () => {
         </div>
 
         {/* Patient Info Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-6 pt-6 border-t border-zinc-800">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-6 mt-6 pt-6 border-t border-zinc-800">
           <div>
             <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Room</p>
             <div className="flex items-center gap-2 text-zinc-200">
@@ -193,6 +205,28 @@ const PatientDetails = () => {
             <div className="flex items-center gap-2 text-zinc-200">
               <Stethoscope className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
               {localPatient.attending_physician}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Preferred Language</p>
+            <div className="flex items-center gap-2 text-zinc-200">
+              <Languages className="w-4 h-4 text-zinc-500" strokeWidth={1.5} />
+              {canEditStatus ? (
+                <select
+                  data-testid="preferred-language"
+                  aria-label="Preferred language"
+                  value={localPatient.preferred_language || ''}
+                  onChange={(e) => e.target.value && handleLanguageChange(e.target.value)}
+                  disabled={readOnly}
+                  className="bg-zinc-800 text-zinc-100 text-sm rounded border border-zinc-700 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {!localPatient.preferred_language && <option value="">Not recorded</option>}
+                  {localPatient.preferred_language && !LANGUAGES.some(([c]) => c === localPatient.preferred_language) && (
+                    <option value={localPatient.preferred_language}>{languageName(localPatient.preferred_language)}</option>
+                  )}
+                  {LANGUAGES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+                </select>
+              ) : languageName(localPatient.preferred_language)}
             </div>
           </div>
         </div>

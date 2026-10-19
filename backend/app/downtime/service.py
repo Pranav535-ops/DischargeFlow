@@ -20,10 +20,10 @@ from app.core.tenancy import use_tenant
 from app.downtime.models import DowntimePeriod
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-# Writes that keep working in read-only mode: sessions (sign-in, refresh, logout), SCIM provisioning (deprovisioning
-# someone who left must not wait for the downtime to end) and ending the downtime.
+# Writes that keep working in read-only mode: sessions (sign-in, refresh, logout, the SMART EHR launch), SCIM
+# provisioning (deprovisioning someone who left must not wait for the downtime to end) and ending the downtime.
 EXEMPT_PREFIXES = ("/api/auth/", "/api/scim/")
-EXEMPT_PATHS = frozenset({"/api/downtime/end"})
+EXEMPT_PATHS = frozenset({"/api/downtime/end", "/api/smart/launch", "/api/smart/token"})
 READ_ONLY_HEADER = "X-Read-Only"
 READ_ONLY_DETAIL = ("DischargeFlow is in read-only mode for a downtime. Record work on the paper downtime forms; "
                     "it can be entered afterwards with the time it was done.")

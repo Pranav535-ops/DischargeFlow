@@ -11,6 +11,7 @@ import { SSO_CALLBACK_PATH } from './lib/sso';
 import { LockGate } from './pages/LockScreen';
 import AppLayout from './pages/AppLayout';
 import PendingApproval from './pages/PendingApproval';
+import SmartLaunch from './pages/SmartLaunch';
 import { Loader2 } from 'lucide-react';
 
 // Each screen is its own chunk, loaded on first visit.
@@ -26,6 +27,7 @@ const AdminView = lazy(() => import('./components/AdminView'));
 const InsightsView = lazy(() => import('./components/InsightsView'));
 const CensusView = lazy(() => import('./components/CensusView'));
 const PlanReviewView = lazy(() => import('./components/PlanReviewView'));
+const PatientInstructionsPrint = lazy(() => import('./components/PatientInstructionsPrint'));
 
 export const Spinner = ({ full = false }) => (
   <div className={`${full ? 'min-h-screen bg-zinc-950' : 'h-64'} flex items-center justify-center`}>
@@ -74,6 +76,8 @@ const AppRouter = () => {
   return (
     <Routes>
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+      {/* SMART on FHIR EHR launch (ADR-002 item 14): its own sign-in, so neither public nor protected. */}
+      <Route path="/launch" element={<SmartLaunch />} />
       <Route path={SSO_CALLBACK_PATH} element={<SsoCallback />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={page(<HomeView />)} />
@@ -85,6 +89,8 @@ const AppRouter = () => {
         <Route path="/assistant" element={page(<ChatbotView />)} />
         <Route path="/census" element={page(<CensusView />)} />
         <Route path="/plans" element={page(<PlanReviewView />)} />
+        <Route path="/instructions/:instructionsId/print" element={
+          <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<PatientInstructionsPrint />)}</RoleRoute>} />
         <Route path="/analytics" element={
           <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<AnalyticsView />)}</RoleRoute>} />
         <Route path="/admin" element={<RoleRoute roles={['admin']}>{page(<AdminView />)}</RoleRoute>} />

@@ -42,6 +42,7 @@ suspend someone.
 | `escalation:run` | interface (a hospital scheduler running the escalation of overdue tasks) |
 | `plan:manage` | physician, nurse (set and review a patient's discharge plan) |
 | `template:manage` | admin (create and edit workflow templates) |
+| `instructions:manage` | physician, nurse (draft, edit, approve and print patient instructions) |
 | `user:provision` | interface (the hospital directory's SCIM connector: create, read and (de)activate accounts) |
 
 ### Unit-scoped access
@@ -108,10 +109,10 @@ deprovisioning never waits. All writes are audited with the client as actor (`SC
 | GET | `/patients/{patient_id}/encounters` | signed in | The patient's stays (encounters), newest first: `status` (`active` or `discharged`), `admitted_at`, `discharged_at`, `unit_id`, `room_number`, `visit_number`, `disposition`, `expected_discharge_date`, and `workflows` (id, status, start, completion). One `PHI_READ` entry per request; 403/404 as for the patient |
 | POST | `/patients/{patient_id}/break-glass` | signed in (unit-scoped users) | Body `{reason}` (10–500 characters). Opens one patient outside your units for 8 hours. The reason is stored on the grant, not in the audit entry; audited (`BREAK_GLASS`) and admins are notified. 400 if you are not unit-scoped, 409 if you can already see the patient |
 | GET | `/access-grants` | `audit:read` | Break-glass grants for review, newest first, with user name, reason and `active`; `?active_only=true` |
-| POST | `/patients` | `patient:write` | Optional `unit_id`; opens the patient's first encounter from the admission fields; audited (`CREATE_PATIENT`) |
-| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only; audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one |
+| POST | `/patients` | `patient:write` | Optional `unit_id` and `preferred_language` (BCP 47 code such as `es` or `zh-Hant`; 422 otherwise); opens the patient's first encounter from the admission fields; audited (`CREATE_PATIENT`) |
+| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only (including `preferred_language`); audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one |
 | POST | `/patients/{patient_id}/consent` | signed in | GDPR consent; audited |
-| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries and visit numbers; audited |
+| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries, patient instructions and visit numbers; audited |
 
 ## Discharge workflows and tasks
 
@@ -151,12 +152,16 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| POST | `/ai/generate-summary` | `summary:manage` | Structured, de-identified generation; 503 when `LLM_PROVIDER=none` |
+| POST | `/ai/generate-summary` | `summary:manage` | Structured, de-identified generation; 503 when `LLM_PROVIDER=none`. When this session launched from the EHR for the patient, the EHR's active medications, problems and allergies are added to the facts (de-identified) and audited as a `PHI_READ` ("EHR clinical context (summary)"); a discharge medication matching a recorded allergy adds a grounding warning of type `allergy` |
 | PUT | `/ai/approve-summary/{summary_id}` | `summary:manage` | Signs the summary: accepts the physician's edited text, stores the diff, and freezes the text as version 1 (`version_id`, `content_sha256` in the response). 400 if already signed; signed text never changes again |
 | GET | `/ai/summary/{workflow_id}` | signed in | `PHI_READ` audited when a summary is returned. Adds `signed`, `versions` (metadata), `signed_version` (latest signed text, `content_sha256`, `hash_verified`), its `addenda`, `sign_by` and `signed_late` |
 | POST | `/ai/summaries/{summary_id}/addenda` | `summary:manage` | Body `{content}` (1–20000 characters). Appends text to the latest signed version, signed by the author; 201 with the addendum. 400 if the summary is unsigned or the patient was erased. Audited as `SUMMARY_ADDENDUM_SIGNED` (addendum and version ids only). Allowed after discharge |
 | GET | `/ai/summaries/overdue` | `summary:manage` | Discharges whose summary is missing or unsigned past the sign-by deadline (`SUMMARY_SIGN_HOURS` after discharge, or after the expected discharge time while the patient is still here). Ids and times only |
 | POST | `/ai/summaries/overdue/notify` | `summary:manage` | Notifies physicians (on the patient's unit) once per overdue discharge; what `python -m app.cli summary-deadlines` runs for every tenant |
+| POST | `/ai/patient-instructions` | `instructions:manage` | Body `{workflow_id, language?}`. Drafts patient-facing instructions from the **signed** summary only (latest signed version plus its addenda), de-identified, in `language` (BCP 47; default the patient's `preferred_language`, else `en`). Returns the draft with `reading_grade` (Flesch-Kincaid, English only, else null), `target_grade`, `stale`, and `generation` (provenance and `grounding_warnings`: `medication`, `diagnosis`, `omission`, `readability`). 404 without a summary, 409 if it is unsigned or the instructions in that language are already approved; an unapproved draft in the same language is replaced. 502 (provenance and audit kept) after one retry on invalid output; 503 when `LLM_PROVIDER=none`. Audited as `AI_INSTRUCTIONS_GENERATED` / `AI_INSTRUCTIONS_FAILED` (ids, language, counts) |
+| GET | `/ai/patient-instructions?workflow_id=` | signed in | The workflow's instructions, one per language, with provenance. `stale` is true when an addendum was signed after the draft. One `PHI_READ` entry per request |
+| PUT | `/ai/patient-instructions/{instructions_id}/approve` | `instructions:manage` | Optional body `{content}` (the reviewer's edited text). Stores `original_content`, `edit_diff`, `edit_similarity` and `approved_reading_grade`; approved text never changes. 409 if already approved. Audited as `PATIENT_INSTRUCTIONS_APPROVED` |
+| GET | `/ai/patient-instructions/{instructions_id}/print` | `instructions:manage` | The approved handout with the patient's name, language, approver and `stale`. 409 for a draft, 410 after erasure. `PHI_READ` audited |
 | GET | `/ai/generations` | `summary:manage` | Provenance records (no prompt or output text) |
 | GET | `/ai/metrics` | `summary:manage` | Approval rate and edit similarity per prompt version |
 | POST | `/chatbot/message` | signed in | Tool-calling assistant; write tools become pending actions |
@@ -271,6 +276,30 @@ and the summary is approved, with `completed_at` = the departure time (a `comple
 blind index of the MRN it waits for. It is replayed, in arrival order and in the same transaction, when an A01 (or an
 A40 re-key) brings that MRN in; the replay is audited as `HL7_ADT_REPLAYED`. After `HL7_PARK_HOURS` (default 72) it
 expires unapplied and admins are notified. Replayed, expired and discarded messages keep only their metadata.
+
+## SMART on FHIR EHR launch and clinical context
+
+ADR-002 items 14 and 15. The EHR opens `{app}/launch?iss=…&launch=…`; the browser runs the authorization-code flow
+with PKCE (S256) and the server does the token exchange, so the EHR's tokens never reach the browser. Scopes:
+`launch openid fhirUser patient/*.read`. Only allow-listed FHIR servers may launch; nothing is fetched from any other.
+
+| Method | Path | Access | Notes |
+|---|---|---|---|
+| POST | `/smart/launch` | public | Body `{iss, launch, code_challenge}` (S256, base64url). 403 unless `iss` is a registered, enabled issuer; discovers the endpoints from `{iss}/.well-known/smart-configuration` (502 if unreadable, without an authorization or token endpoint, or without S256). Returns `{authorize_url, state}`; the pending launch lasts 10 minutes. Allowed in read-only mode |
+| POST | `/smart/token` | public | Body `{state, code, code_verifier}`. Single use per state. Checks the verifier against the stored challenge, exchanges the code, verifies the id_token (signature by a key from the server's `jwks_uri`, `iss`, `aud` = client id, expiry, nonce when echoed, a `fhirUser` claim). The EHR user maps to a DischargeFlow user through an admin link, else by email (the id_token's, else the `fhirUser` resource's `telecom`), with the Google login's rules (unknown → `pending`; 403 when registration refuses it or there is no email). Returns the `/auth/session` response (access token, `df_refresh` cookie) plus `launch: {launch_id, patient_id, encounter_id, workflow_id, matched, note}`: the EHR patient's MRN identifier (`mrn_system`, else the one typed `MR`) is looked up through the MRN blind index with `mrn_authority`, and the encounter by the visit number in `visit_system`, else the active stay. No match still signs in (`matched: false` and the reason). Audited as `SMART_LAUNCH` (patient id, launch and issuer ids); failures as `SMART_LAUNCH_FAILED` (reason only). 400 for an unknown, used or expired state or a bad verifier, 401 for a refused code or id_token, 502 when the EHR misbehaves. Allowed in read-only mode |
+| GET | `/smart/clinical-context/{patient_id}` | signed in | The EHR's active `MedicationRequest`s (`name`, `dosage`, `status`), `Condition`s (`name`, `clinical_status`, `category`; refuted, entered-in-error, inactive and resolved left out) and `AllergyIntolerance`s (`substance`, `criticality`, `reactions`), read live with the token of **this session's** launch for this patient: `{available: true, source, fetched_at, medications, problems, allergies, errors}` (`errors` names any resource type the EHR did not return). Otherwise `{available: false, reason: no_launch \| expired \| unavailable, detail}`. Cached 60 s in the server process, never stored. One `PHI_READ` entry per request that returns data. 403/404 as for the patient |
+| GET | `/smart/issuers` | `user:manage` | The allow-list |
+| POST | `/smart/issuers` | `user:manage` | Body `{iss, name, client_id, redirect_uri, mrn_system?, mrn_authority?, visit_system?, enabled?}`: an EHR's FHIR base URL and the public client it registered for DischargeFlow (redirect URI `{app}/launch`). https only (http to localhost outside production). 409 if the `iss` is registered; audited |
+| PUT | `/smart/issuers/{issuer_id}` | `user:manage` | Same body. Disabling ends the issuer's pending and active launches (their EHR tokens are dropped); audited with the changed field names |
+| GET | `/smart/links` | `user:manage` | EHR users (`fhir_user`) linked to DischargeFlow users |
+| POST | `/smart/links` | `user:manage` | Body `{issuer_id, fhir_user, user_id}`: for EHR accounts without an email to match. 409 if linked; audited |
+| DELETE | `/smart/links/{link_id}` | `user:manage` | Audited |
+
+**EHR token.** Kept server-side only, as AES-256-GCM ciphertext under the launch's own data key, with the EHR patient
+and encounter ids. Its lifetime is the EHR's `expires_in`, capped at one hour; no refresh token is requested. It is
+used only by the DischargeFlow session that made the launch, so after an idle lock or another person's sign-in the
+lists are gone until the next launch. When it expires, the EHR refuses it (401) or the issuer is disabled, the
+ciphertext and the key are dropped. FHIR requests have an 8-second timeout and go only to the launch's `iss`.
 
 ## Health
 

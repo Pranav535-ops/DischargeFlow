@@ -103,7 +103,7 @@ describe('WorkflowView summary lifecycle (ADR-002 item 13)', () => {
   it('shows the signed version, the history and the addenda, and adds a signed addendum', async () => {
     const { default: WorkflowView } = await import('./WorkflowView');
     vi.spyOn(api, 'get').mockImplementation(async (url) => ({ data: url.startsWith('/workflows') ? signedWorkflow
-      : url.startsWith('/downtime') ? { read_only: false } : { patient_id: 'pat_1', name: 'Jane Doe', room_number: '1' } }));
+      : url.startsWith('/ai/patient-instructions') ? [] : url.startsWith('/downtime') ? { read_only: false } : { patient_id: 'pat_1', name: 'Jane Doe', room_number: '1' } }));
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} });
     renderAt('/workflows/wf_1', '/workflows/:workflowId', <WorkflowView />);
 

@@ -8,8 +8,8 @@ directory's SCIM connector as an integration client); admin holds every permissi
 
 Additive: nothing changes for existing rows, and the previous release ignores the new columns and tables.
 
-Revision ID: 0017
-Revises: 0016
+Revision ID: 0019
+Revises: 0018
 Create Date: 2026-10-20 09:00:00
 """
 from typing import Sequence, Union
@@ -17,8 +17,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0017'
-down_revision: Union[str, None] = '0016'
+revision: str = '0019'
+down_revision: Union[str, None] = '0018'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
