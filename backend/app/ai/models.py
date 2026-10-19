@@ -275,3 +275,59 @@ class DischargeSummaryAddendum(TenantMixin, _PatientKeyedText, Base):
     def shred(self) -> None:
         super().shred()
         self.content_sha256 = None
+
+
+class PatientInstructions(TenantMixin, _PatientKeyedText, Base):
+    """Patient-facing discharge instructions in plain language and the patient's language (ADR-002 item 18).
+
+    Drafted by the model from the signed summary only (its latest signed version plus addenda; `source_sha256` is
+    the hash of exactly that text, so a later addendum marks the instructions stale). A nurse or physician edits and
+    approves the draft; only approved instructions can be printed. The text is PHI, encrypted like the summary.
+    """
+    __tablename__ = "patient_instructions"
+    __table_args__ = (UniqueConstraint("workflow_id", "language"),)
+    _phi_fields = ("content", "original_content", "edit_diff", "structured")
+    _json_fields = frozenset({"structured"})
+    _id_attr, _id_prefix = "instructions_id", "pin"
+
+    instructions_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("pin"))
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflows.workflow_id", ondelete="CASCADE"), index=True)
+    summary_id: Mapped[str] = mapped_column(
+        ForeignKey("discharge_summaries.summary_id", ondelete="CASCADE"), index=True)
+    # The signed version the draft was written from.
+    source_version_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("discharge_summary_versions.version_id", ondelete="SET NULL"))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id", ondelete="CASCADE"), index=True)
+    patient: Mapped["Patient"] = relationship(lazy="joined", innerjoin=True)
+    # IETF BCP 47 code the instructions are written in, e.g. "en", "es", "zh-Hant".
+    language: Mapped[str] = mapped_column(String(35))
+    _content: Mapped[str] = mapped_column("content", Text)
+    _original_content: Mapped[Optional[str]] = mapped_column("original_content", Text)
+    _structured: Mapped[Optional[str]] = mapped_column("structured", Text)
+    _edit_diff: Mapped[Optional[str]] = mapped_column("edit_diff", Text)
+    # Flesch-Kincaid grade of the draft and of the approved text (English only; None for other languages), and the
+    # target in force when the draft was made (PATIENT_INSTRUCTIONS_TARGET_GRADE).
+    reading_grade: Mapped[Optional[float]] = mapped_column(Float)
+    approved_reading_grade: Mapped[Optional[float]] = mapped_column(Float)
+    target_grade: Mapped[float] = mapped_column(Float)
+    generation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("ai_generations.generation_id", ondelete="SET NULL"))
+    generated_by: Mapped[str] = mapped_column(String(20), default="ai")
+    created_by: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    approved_by: Mapped[Optional[str]] = mapped_column(String(40))
+    approved_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    edit_similarity: Mapped[Optional[float]] = mapped_column(Float)
+
+    content = synonym("_content", descriptor=_phi_property("content"))
+    original_content = synonym("_original_content", descriptor=_phi_property("original_content"))
+    structured = synonym("_structured", descriptor=_phi_property("structured"))
+    edit_diff = synonym("_edit_diff", descriptor=_phi_property("edit_diff"))
+
+    def _write_phi(self, field: str, value: Any) -> None:
+        # What was approved is what gets printed: approved text never changes.
+        if field == "content" and self.approved and value != self._read_phi("content"):
+            raise SignedSummaryError("Approved patient instructions can't be edited")
+        super()._write_phi(field, value)

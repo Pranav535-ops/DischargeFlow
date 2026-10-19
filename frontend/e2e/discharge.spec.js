@@ -1,6 +1,7 @@
 // The discharge critical path, across the three clinical roles:
 // admit -> initiate discharge -> AI draft (de-identified, provenance shown) -> physician edits and approves ->
-// nurse and pharmacist complete their tasks via deep links -> physician completes the discharge.
+// nurse and pharmacist complete their tasks via deep links -> the nurse drafts, approves and prints the patient's
+// instructions -> physician completes the discharge.
 import { test, expect } from '@playwright/test';
 import { completeMyTasks, open, signInAs } from './helpers';
 
@@ -57,6 +58,21 @@ test('a patient is discharged end to end', async ({ page }) => {
     await completeMyTasks(page);
   }
 
+  // --- the nurse drafts the patient's instructions from the signed summary, approves and prints them ---
+  await signInAs(page, 'nurse');
+  await open(page, workflowPath);
+  await page.getByTestId('generate-instructions-btn').click();
+  const card = page.getByTestId('instructions-card');
+  await expect(card.getByTestId('instructions-provenance')).toContainText('patient_instructions@v1');
+  await expect(card.getByTestId('instructions-content')).toContainText('amoxicillin');
+  await expect(card.getByTestId('reading-grade')).toContainText('target 6 or below');
+  await expect(card.getByTestId('print-instructions-btn')).toHaveCount(0); // drafts don't print
+  await card.getByTestId('approve-instructions-btn').click();
+  await expect(card.getByTestId('instructions-approved')).toBeVisible();
+  await card.getByTestId('print-instructions-btn').click();
+  await expect(page).toHaveURL(/\/instructions\/pin_[a-z0-9]+\/print$/);
+  await expect(page.getByTestId('instructions-sheet')).toContainText(PATIENT);
+
   // --- physician completes the discharge ---
   await signInAs(page, 'physician');
   await open(page, workflowPath);
@@ -71,7 +87,7 @@ test('a patient is discharged end to end', async ({ page }) => {
 
   // Back and reload keep working on the patient's own URL.
   await page.goto(patientUrl);
-  await expect(page.getByRole('combobox')).toHaveValue('discharged');
+  await expect(page.getByRole('combobox').first()).toHaveValue('discharged');
   await page.goBack();
   await expect(page).toHaveURL(new RegExp(`${workflowPath}$`));
 });
