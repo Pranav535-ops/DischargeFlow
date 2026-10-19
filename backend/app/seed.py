@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.tenancy import use_tenant
 from app.identity.models import Tenant
 from app.patients.models import Patient
+from app.patients.service import open_encounter
 
 DEMO_PATIENTS = [
     {"name": "John Smith", "date_of_birth": "1958-03-15", "admission_date": "2026-01-10", "room_number": "301A",
@@ -32,6 +33,9 @@ async def seed_demo_data(db: AsyncSession, tenant_id: str | None = None) -> int:
     await use_tenant(db, tenant_id)
     if await db.scalar(select(func.count()).select_from(Patient).where(Patient.tenant_id == tenant_id)):
         return 0
-    db.add_all(Patient(**p) for p in DEMO_PATIENTS)
-    await db.flush()
+    for fields in DEMO_PATIENTS:
+        patient = Patient(**fields)
+        db.add(patient)
+        await db.flush()
+        await open_encounter(db, patient)
     return len(DEMO_PATIENTS)

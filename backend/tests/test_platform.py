@@ -3,6 +3,7 @@ import base64
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -240,4 +241,45 @@ async def test_upgrade_encrypts_phase3_discharge_summaries(migration_url):
         assert summary.content == summary.original_content == "Summary Sam: amoxicillin"
         assert summary.structured == {"discharge_diagnoses": ["Pneumonia"]}
     await eng.dispose()
+    assert _alembic("downgrade", "base", database_url=migration_url).returncode == 0
+
+
+@pytest.mark.anyio
+async def test_upgrade_copies_admissions_into_encounters(migration_url):
+    """0010-era patients get a first encounter from their admission fields, and their workflows point to it."""
+    await _reset_database(migration_url)
+    assert _alembic("upgrade", "0010", database_url=migration_url).returncode == 0
+
+    eng = make_engine(migration_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        for pid, admitted, status in (("pat_staying0001", "2026-01-05", "pending_discharge"),
+                                      ("pat_leftbefore1", "Not provided by ADT", "discharged")):
+            await conn.execute(text(
+                "INSERT INTO patients (patient_id, tenant_id, name, date_of_birth, admission_date, room_number, "
+                "diagnosis, attending_physician, status, gdpr_erased, created_at, updated_at) VALUES "
+                f"('{pid}', 'default', 'n', 'd', '{admitted}', '7', 'x', 'Dr P', '{status}', false, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+        for wid, pid, status, done in (("wf_staying00001", "pat_staying0001", "in_progress", None),
+                                       ("wf_leftbefore01", "pat_leftbefore1", "completed",
+                                        datetime(2026, 1, 2, 10, tzinfo=timezone.utc)),
+                                       ("wf_leftbefore02", "pat_leftbefore1", "completed",
+                                        datetime(2026, 2, 3, 10, tzinfo=timezone.utc))):
+            await conn.execute(text(
+                "INSERT INTO workflows (workflow_id, tenant_id, patient_id, initiated_by, status, started_at, "
+                "completed_at) VALUES (:w, 'default', :p, 'u1', :s, CURRENT_TIMESTAMP, :d)"),
+                {"w": wid, "p": pid, "s": status, "d": done})
+
+    assert _alembic("upgrade", "head", database_url=migration_url).returncode == 0
+    async with eng.connect() as conn:
+        encounters = {r.patient_id: r for r in (await conn.execute(text(
+            "SELECT encounter_id, patient_id, status, admitted_at, discharged_at, room_number FROM encounters")))}
+        links = dict((await conn.execute(text("SELECT workflow_id, encounter_id FROM workflows"))).all())
+    await eng.dispose()
+
+    staying, left = encounters["pat_staying0001"], encounters["pat_leftbefore1"]
+    assert staying.status == "active" and str(staying.admitted_at).startswith("2026-01-05")
+    assert staying.discharged_at is None and staying.room_number == "7"
+    assert left.status == "discharged" and left.admitted_at is None and str(left.discharged_at).startswith("2026-02-03")
+    assert links == {"wf_staying00001": staying.encounter_id, "wf_leftbefore01": left.encounter_id,
+                     "wf_leftbefore02": left.encounter_id}
     assert _alembic("downgrade", "base", database_url=migration_url).returncode == 0

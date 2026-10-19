@@ -169,7 +169,7 @@ async def test_census_by_unit_json_and_csv(client, make_user, create_patient, db
     rows = list(csv.reader(io.StringIO(resp.text)))
     assert rows[0][:3] == ["unit", "room", "patient"] and len(rows) == 3
     assert rows[2][2].startswith("'=HYPERLINK")  # spreadsheet formulas are neutralised
-    assert rows[2][11] == "8" and "Final Medication Review (pharmacist, high)" in rows[2][12]
+    assert rows[2][12] == "8" and "Final Medication Review (pharmacist, high)" in rows[2][13]
 
     # One PHI_READ entry per request, naming the scope and count, never a patient.
     reads = [e for e in await audit_rows(db, "PHI_READ") if "census" in (e.details or "")]

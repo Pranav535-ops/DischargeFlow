@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime, time, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, ForeignKey, Index, LargeBinary, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, synonym
+from sqlalchemy import Boolean, Date, ForeignKey, Index, LargeBinary, String, Text, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.core import crypto
 from app.core.db import Base, UTCDateTime, utcnow
@@ -13,6 +13,9 @@ PATIENT_STATUSES = ("admitted", "pending_discharge", "discharged")
 REDACTED = "[REDACTED]"
 # Identifiers encrypted at rest. They can't be sorted or searched in SQL; filter in Python after decrypting.
 ENCRYPTED_FIELDS = ("name", "date_of_birth", "diagnosis")
+# Encounter (one hospital stay) states: `active` until the patient leaves; at most one active per patient.
+ENCOUNTER_STATUSES = ("active", "discharged")
+_ACTIVE_ENCOUNTER_SQL = text("status = 'active'")
 # Blind-index purpose for the MRN (crypto.blind_index). Changing it orphans every stored index.
 MRN_INDEX_PURPOSE = "mrn"
 
@@ -51,6 +54,8 @@ class Patient(TenantMixin, Base):
     _mrn: Mapped[Optional[str]] = mapped_column("mrn", Text)
     mrn_authority: Mapped[Optional[str]] = mapped_column(String(60))
     mrn_index: Mapped[Optional[str]] = mapped_column(String(64))
+    # admission_date, room_number and unit_id mirror the current encounter (ADR-002 item 7), which is the record of a
+    # stay. They stay here because the patient API, unit-scope RLS and the previous release read them.
     admission_date: Mapped[str] = mapped_column(String(40), index=True)
     room_number: Mapped[str] = mapped_column(String(40))
     # The unit the patient is on. NULL means unassigned, which every user in the tenant can see (ADR-002 item 3).
@@ -146,3 +151,86 @@ class AccessGrant(TenantMixin, Base):
     reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+def admitted_at_from(value: Optional[str]) -> Optional[datetime]:
+    """The admission time an `admission_date` string stands for: an ISO datetime, or an ISO date (midnight UTC).
+    None for anything else, such as NOT_PROVIDED from the ADT feed."""
+    raw = (value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        try:
+            parsed = datetime.combine(date.fromisoformat(raw[:10]), time())
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+class Encounter(TenantMixin, Base):
+    """One hospital stay (HL7 PV1, FHIR Encounter): patients -> encounters -> workflows (ADR-002 item 7).
+
+    A readmission is a new encounter, so earlier stays keep their dates and location. Unit scope follows the patient
+    (rls.UNIT_SCOPED_TABLES). The visit number (PV1-19) identifies the patient's account at the hospital, so it is
+    encrypted with the patient's data key like the other identifiers.
+    """
+
+    __tablename__ = "encounters"
+    __table_args__ = (
+        # At most one stay in progress per patient.
+        Index("uq_encounters_one_active_per_patient", "patient_id", unique=True,
+              postgresql_where=_ACTIVE_ENCOUNTER_SQL, sqlite_where=_ACTIVE_ENCOUNTER_SQL),
+    )
+
+    encounter_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("enc"))
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id", ondelete="CASCADE"), index=True)
+    # Always loaded with the encounter: its data key decrypts the visit number.
+    patient: Mapped["Patient"] = relationship(lazy="joined", innerjoin=True)
+    _visit_number: Mapped[Optional[str]] = mapped_column("visit_number", Text)
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    admitted_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    discharged_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    unit_id: Mapped[Optional[str]] = mapped_column(ForeignKey("units.unit_id", ondelete="SET NULL"), index=True)
+    room_number: Mapped[Optional[str]] = mapped_column(String(40))
+    # Where the patient went (HL7 PV1-36 code, e.g. 01 home) and the planned discharge date (ADR-002 item 8).
+    disposition: Mapped[Optional[str]] = mapped_column(String(40))
+    expected_discharge_date: Mapped[Optional[date]] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+    def _aad(self) -> str:
+        return f"{self.encounter_id}:visit_number"
+
+    @property
+    def visit_number(self) -> Optional[str]:
+        raw = self._visit_number
+        if raw is None or not crypto.is_encrypted(raw):
+            return raw  # none, or REDACTED after erasure
+        if self.patient.phi_dek is None:
+            return REDACTED
+        return crypto.decrypt_field(self.patient.phi_dek, raw, self._aad())
+
+    @visit_number.setter
+    def visit_number(self, value: Optional[str]) -> None:
+        value = (value or "").strip() or None
+        if value is None:
+            self._visit_number = None
+            return
+        if self.patient is None:
+            raise ValueError("Set Encounter.patient before its visit number: it is encrypted with the patient's key")
+        if self.patient.phi_dek is None:
+            self.patient.phi_dek = crypto.new_wrapped_dek()
+        if self.encounter_id is None:
+            self.encounter_id = new_id("enc")  # the id is part of the ciphertext's associated data
+        self._visit_number = crypto.encrypt_field(self.patient.phi_dek, value, self._aad())
+
+    def close(self, discharged_at: datetime, disposition: Optional[str] = None) -> None:
+        self.status = "discharged"
+        self.discharged_at = discharged_at
+        if disposition:
+            self.disposition = disposition
+
+    def shred(self) -> None:
+        """Erasure: the visit number links back to the hospital's account records, so overwrite it."""
+        if self._visit_number is not None:
+            self._visit_number = REDACTED

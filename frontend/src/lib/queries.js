@@ -23,6 +23,7 @@ export const keys = {
   patients: ['patients'],
   patient: (id) => ['patients', id],
   patientWorkflow: (id) => ['patients', id, 'workflow'],
+  patientEncounters: (id) => ['patients', id, 'encounters'],
   workflow: (id) => ['workflows', id],
   workflows: ['workflows'],
   tasks: ['tasks'],
@@ -47,6 +48,8 @@ export const usePatients = () => useQuery({ queryKey: keys.patients, queryFn: ge
 export const usePatient = (id) => useQuery({ queryKey: keys.patient(id), queryFn: get(`/patients/${id}`), enabled: !!id });
 export const usePatientWorkflow = (id) =>
   useQuery({ queryKey: keys.patientWorkflow(id), queryFn: get(`/workflows/patient/${id}`), enabled: !!id });
+export const useEncounters = (id) =>
+  useQuery({ queryKey: keys.patientEncounters(id), queryFn: get(`/patients/${id}/encounters`), enabled: !!id });
 export const useWorkflow = (id) => useQuery({ queryKey: keys.workflow(id), queryFn: get(`/workflows/${id}`), enabled: !!id });
 export const useTasks = () => useQuery({ queryKey: keys.tasks, queryFn: get('/tasks') });
 export const useMyTasks = () => useQuery({ queryKey: keys.myTasks, queryFn: get('/tasks/my') });

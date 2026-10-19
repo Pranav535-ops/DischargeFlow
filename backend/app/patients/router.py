@@ -10,7 +10,7 @@ from app.core.db import DB, utcnow
 from app.core.security import AuthUser, CurrentUser, requires
 from app.identity.models import User
 from app.patients import service
-from app.patients.models import AccessGrant, Patient
+from app.patients.models import AccessGrant, Encounter, Patient
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 access_router = APIRouter(prefix="/access-grants", tags=["Patients"])
@@ -79,6 +79,19 @@ async def get_patient(patient_id: str, request: Request, db: DB, user: AuthUser)
     return patient.to_dict()
 
 
+@router.get("/{patient_id}/encounters")
+async def get_encounters(patient_id: str, request: Request, db: DB, user: AuthUser):
+    """The patient's stays, newest first, each with its discharge workflows (ADR-002 item 7)."""
+    if await db.get(Patient, patient_id) is None:
+        restricted = await service.restricted_response(db, user, patient_id)
+        if restricted is not None:
+            return restricted
+        raise HTTPException(status_code=404, detail="Patient not found")
+    encounters = await service.encounter_history(db, patient_id)
+    await audit_phi_read(db, user, patient_id, f"encounter history ({len(encounters)} records)", request)
+    return encounters
+
+
 @router.post("")
 async def create_patient(
     patient_data: PatientCreate, request: Request, db: DB, user: CurrentUser = Depends(requires("patient:write"))
@@ -89,7 +102,9 @@ async def create_patient(
     patient = Patient(**data)
     db.add(patient)
     await db.flush()
-    await write_audit(db, user, "CREATE_PATIENT", "patient", patient.patient_id, "Patient record created", request)
+    encounter = await service.open_encounter(db, patient)
+    await write_audit(db, user, "CREATE_PATIENT", "patient", patient.patient_id,
+                      f"Patient record created, encounter={encounter.encounter_id}", request)
     return patient.to_dict()
 
 
@@ -106,6 +121,7 @@ async def update_patient(
     await service.ensure_unit(db, changes.get("unit_id"))
     for field, value in changes.items():
         setattr(patient, field, value)
+    await service.sync_encounter(db, patient, set(changes))
     await db.flush()
     # Field names only: the values are PHI, and audit rows can't be erased.
     await write_audit(db, user, "UPDATE_PATIENT", "patient", patient_id,
@@ -134,6 +150,8 @@ async def delete_patient_data(
     patient.shred()
     for summary in await db.scalars(select(DischargeSummary).where(DischargeSummary.patient_id == patient_id)):
         summary.shred()
+    for encounter in await db.scalars(select(Encounter).where(Encounter.patient_id == patient_id)):
+        encounter.shred()
     await service.redact_grant_reasons(db, patient_id)
     await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data key destroyed and identifiers erased", request)
     return {"message": "Patient data erased per GDPR right-to-be-forgotten"}

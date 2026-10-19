@@ -9,7 +9,7 @@ Nothing changes for existing rows. Escalations only start once something calls t
 Vercel, an integration client, an admin, or `python -m app.cli escalate`).
 
 Revision ID: 0012
-Revises: 0010
+Revises: 0011
 Create Date: 2026-10-19 18:00:00
 """
 from typing import Sequence, Union
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '0012'
-down_revision: Union[str, None] = '0010'
+down_revision: Union[str, None] = '0011'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

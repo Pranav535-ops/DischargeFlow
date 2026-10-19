@@ -278,7 +278,7 @@ async def test_patient_and_workflow_writes_are_audited_without_phi(client, make_
     [initiated] = by_action["INITIATE_DISCHARGE"]
     assert initiated.resource_id == pid and wf in initiated.details
     [completed] = by_action["COMPLETE_DISCHARGE"]
-    assert completed.resource_id == pid and completed.details == f"workflow={wf}"
+    assert completed.resource_id == pid and completed.details.startswith(f"workflow={wf} encounter=enc_")
     assert len(by_action["OVERRIDE_TASK_STATUS"]) == 7
     # The patient's audit trail now shows the whole discharge.
     trail = {e["action"] for e in (await client.get(f"/api/audit/patients/{pid}", headers=physician)).json()}

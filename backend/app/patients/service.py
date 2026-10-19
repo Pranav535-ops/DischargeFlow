@@ -16,9 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit.service import write_audit
 from app.core.db import utcnow
 from app.core.security import CurrentUser
+from app.discharge.models import Workflow
 from app.identity.models import Unit
 from app.notifications.service import notify_role
-from app.patients.models import REDACTED, AccessGrant, Patient
+from app.patients.models import REDACTED, AccessGrant, Encounter, Patient, admitted_at_from
 
 BREAK_GLASS_HOURS = 8
 RESTRICTED_DETAIL = "This patient is outside your units. Request break-glass access to open the record."
@@ -76,6 +77,61 @@ async def break_glass(db: AsyncSession, user: CurrentUser, patient_id: str, reas
     await notify_role(db, "admin", "Break-Glass Access",
                       f"{user.name} opened a patient record outside their units (grant {grant.grant_id}).", "/admin")
     return grant
+
+
+# ---------- Encounters (ADR-002 item 7) ----------
+#
+# The encounter is the record of a stay; the patient's admission_date, room_number and unit_id mirror the current
+# one. Invariant: a patient who is not discharged has exactly one active encounter.
+
+async def current_encounter(db: AsyncSession, patient_id: str) -> Optional[Encounter]:
+    return await db.scalar(select(Encounter).where(Encounter.patient_id == patient_id, Encounter.status == "active"))
+
+
+async def open_encounter(db: AsyncSession, patient: Patient, visit_number: Optional[str] = None) -> Encounter:
+    """Start a stay from the patient's current admission fields (admission, readmission)."""
+    encounter = Encounter(patient=patient, patient_id=patient.patient_id, unit_id=patient.unit_id,
+                          room_number=patient.room_number, admitted_at=admitted_at_from(patient.admission_date))
+    encounter.visit_number = visit_number
+    db.add(encounter)
+    await db.flush()
+    return encounter
+
+
+async def ensure_current_encounter(db: AsyncSession, patient: Patient) -> Encounter:
+    """The active encounter, opened from the patient's fields if there is none: a patient created by the release
+    before migration 0011 while the deploy rolled out."""
+    return await current_encounter(db, patient.patient_id) or await open_encounter(db, patient)
+
+
+async def sync_encounter(db: AsyncSession, patient: Patient, changed: set[str]) -> None:
+    """After a manual edit of the patient, keep the current encounter in step with the mirrored fields and status."""
+    encounter = await current_encounter(db, patient.patient_id)
+    if patient.status == "discharged":
+        if encounter is not None:
+            encounter.close(utcnow())
+        return
+    if encounter is None:
+        await open_encounter(db, patient)  # set back from discharged by hand: a new stay
+        return
+    if "admission_date" in changed:
+        encounter.admitted_at = admitted_at_from(patient.admission_date)
+    if "room_number" in changed:
+        encounter.room_number = patient.room_number
+    if "unit_id" in changed:
+        encounter.unit_id = patient.unit_id
+
+
+async def encounter_history(db: AsyncSession, patient_id: str) -> list[dict]:
+    """Every stay, newest first, each with its discharge workflows."""
+    encounters = list(await db.scalars(select(Encounter).where(Encounter.patient_id == patient_id)
+                                       .order_by(Encounter.created_at.desc())))
+    workflows: dict[Optional[str], list[dict]] = {}
+    for wf in await db.scalars(select(Workflow).where(Workflow.patient_id == patient_id)
+                               .order_by(Workflow.started_at.desc())):
+        workflows.setdefault(wf.encounter_id, []).append(
+            {k: v for k, v in wf.to_dict().items() if k in ("workflow_id", "status", "started_at", "completed_at")})
+    return [{**e.to_dict(), "workflows": workflows.get(e.encounter_id, [])} for e in encounters]
 
 
 async def redact_grant_reasons(db: AsyncSession, patient_id: str) -> None:

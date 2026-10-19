@@ -82,12 +82,13 @@ Notifications about a patient on a unit go only to members of that unit.
 |---|---|---|---|
 | GET | `/patients` | signed in | Optional `?status=`; one `PHI_READ` audit entry per request (not per row) |
 | GET | `/patients/{patient_id}` | signed in | `PHI_READ` audited; 403 with `break_glass: true` when unit scope hides the patient |
+| GET | `/patients/{patient_id}/encounters` | signed in | The patient's stays (encounters), newest first: `status` (`active` or `discharged`), `admitted_at`, `discharged_at`, `unit_id`, `room_number`, `visit_number`, `disposition`, `expected_discharge_date`, and `workflows` (id, status, start, completion). One `PHI_READ` entry per request; 403/404 as for the patient |
 | POST | `/patients/{patient_id}/break-glass` | signed in (unit-scoped users) | Body `{reason}` (10–500 characters). Opens one patient outside your units for 8 hours. The reason is stored on the grant, not in the audit entry; audited (`BREAK_GLASS`) and admins are notified. 400 if you are not unit-scoped, 409 if you can already see the patient |
 | GET | `/access-grants` | `audit:read` | Break-glass grants for review, newest first, with user name, reason and `active`; `?active_only=true` |
-| POST | `/patients` | `patient:write` | Optional `unit_id`; audited (`CREATE_PATIENT`) |
-| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only; audited with the field names, never values |
+| POST | `/patients` | `patient:write` | Optional `unit_id`; opens the patient's first encounter from the admission fields; audited (`CREATE_PATIENT`) |
+| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only; audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one |
 | POST | `/patients/{patient_id}/consent` | signed in | GDPR consent; audited |
-| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key; audited |
+| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries and visit numbers; audited |
 
 ## Discharge workflows and tasks
 
@@ -124,7 +125,7 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/analytics/dashboard` | signed in | KPIs |
 | GET | `/analytics/tasks-by-role` | signed in | |
 | GET | `/analytics/aggregates` | `insights:read` | Aggregate-only metrics sent to the insights model |
-| GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA (`?days=30`) |
+| GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA, and `stays`: length of stay of encounters discharged in the window and readmissions within 30 days (`?days=30`) |
 | POST | `/analytics/insights` | `insights:read` | AI explanation of the aggregates |
 | GET | `/notifications` | signed in | |
 | GET | `/notifications/stream` | signed in | Server-Sent Events; closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects |
@@ -140,7 +141,7 @@ Notifications about a patient on a unit go only to members of that unit.
 | POST | `/downtime/end` | `downtime:manage` | Works while read-only. Closes the open period; staff are notified to back-enter paper work; audited (`END_DOWNTIME`). 409 if none is open. Does not lift `READ_ONLY_MODE` |
 | POST | `/downtime/periods` | `downtime:manage` | Body `{started_at, ended_at, reason}`: records an unplanned outage after it is over, so work done on paper during it can be back-entered. 400 if it ends before it starts or in the future, 409 if it overlaps a recorded period; audited (`RECORD_OUTAGE`) |
 | GET | `/downtime/periods` | signed in | The latest 50 periods (`read_only` or `outage`), newest first |
-| GET | `/census` | signed in | Discharge census: patients not yet discharged (erased ones left out), by unit and room, with discharge status, estimated discharge, whether the summary is approved and the open tasks. `?unit_id=` (or `unassigned`; 404 for an unknown unit); `?format=csv` downloads it (spreadsheet formulas neutralised). Unit scope applies as for `/patients`. One `PHI_READ` entry per request with the scope and count |
+| GET | `/census` | signed in | Discharge census: patients not yet discharged (erased ones left out), by unit and room, with the current encounter (id, visit number, admission, room), discharge status, estimated discharge, whether the summary is approved and the open tasks. `?unit_id=` (or `unassigned`; 404 for an unknown unit); `?format=csv` downloads it (spreadsheet formulas neutralised). Unit scope applies as for `/patients`. One `PHI_READ` entry per request with the scope and count |
 
 ## Escalations
 
@@ -189,7 +190,7 @@ answer 2xx to accept; anything else (or a 5 s timeout) counts as a failed attemp
 |---|---|---|---|
 | GET | `/fhir/R4/metadata` | public | CapabilityStatement |
 | GET | `/fhir/R4/Patient`, `/fhir/R4/Patient/{id}` | signed in | Search returns a Bundle |
-| GET | `/fhir/R4/Encounter`, `/fhir/R4/Encounter/{id}` | signed in | Discharge workflows |
+| GET | `/fhir/R4/Encounter`, `/fhir/R4/Encounter/{id}` | signed in | Inpatient stays (encounters), with the visit number, period, location and discharge disposition; `?patient=`. Task and DocumentReference point to the encounter of their workflow, and their `?encounter=` search uses it |
 | GET | `/fhir/R4/Task`, `/fhir/R4/Task/{id}` | signed in | |
 | GET | `/fhir/R4/DocumentReference`, `/fhir/R4/DocumentReference/{id}` | signed in | Approved discharge summaries |
 | POST | `/hl7/adt` | integration key with `adt:ingest` | See below |
@@ -201,8 +202,8 @@ response is the ACK (`x-application/hl7-v2+er7`) with HTTP 200 for every outcome
 
 | ACK | When |
 |---|---|
-| AA | A01 admitted a new MRN or readmitted a discharged patient; A03 completed the discharge, or the patient was already discharged |
-| AE | Unknown MRN (204), MRN already admitted (205), required field missing (101) or invalid (102), or the discharge workflow can't complete (207, with the reason; physicians are notified) |
+| AA | A01 admitted a new MRN or readmitted a discharged patient (each opens a new encounter); A03 completed the discharge and closed the encounter, or the patient was already discharged |
+| AE | Unknown MRN (204), MRN already admitted or PV1-19 visit number already admitted (205), required field missing (101) or invalid (102), the discharge workflow can't complete or PV1-19 names another visit than the current encounter (207, with the reason; physicians are notified when the workflow refuses) |
 | AR | Not ADT (200), an event other than A01/A03 (201), MSH-11 not `P` (202), unparseable message (100), no control id (101) |
 
 HTTP errors are reserved for problems below HL7: 401 (missing, invalid or revoked key), 403 (no `adt:ingest`), 413
@@ -210,8 +211,8 @@ HTTP errors are reserved for problems below HL7: 401 (missing, invalid or revoke
 MSH-10 control id gets its original ACK and is not applied again.
 
 Patients are matched on PID-3 (the repetition typed `MR`, else the first) plus its assigning authority. Fields read:
-PID-5 name, PID-7 date of birth, PV1-3 location, PV1-7 attending, PV1-44 admit time (else EVN-2 or MSH-7), DG1-3 or
-PV2-3 diagnosis. Missing optional fields are stored as "Not provided by ADT".
+PID-5 name, PID-7 date of birth, PV1-3 location, PV1-7 attending, PV1-19 visit number (stored encrypted on the
+encounter), PV1-36 discharge disposition (A03), PV1-44 admit time (else EVN-2 or MSH-7), DG1-3 or PV2-3 diagnosis. Missing optional fields are stored as "Not provided by ADT".
 
 ## Health
 

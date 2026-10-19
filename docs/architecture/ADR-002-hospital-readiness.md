@@ -268,7 +268,23 @@ which needs monthly partitioning within a year or two.
       print one at each shift change (a scheduled export is a possible follow-up). Tested on SQLite and PostgreSQL 16.
 
 **Phase 8: Workflow fit**
-7. [ ] Patient/Encounter split (design change 1).
+7. [x] Patient/Encounter split (design change 1).
+    - **Built:** `encounters` (migration 0011): one row per stay with the visit number (PV1-19, encrypted with the
+      patient's data key), admit and discharge times, unit, room, disposition (PV1-36), status (`active` or
+      `discharged`) and a nullable `expected_discharge_date` for item 8. Tenant- and unit-scoped like the other tables
+      about a patient (RLS). The database allows one active encounter per patient and one active workflow per
+      encounter; `workflows.encounter_id` links a discharge to its stay. The migration gives every patient a first
+      encounter from its admission fields and points its workflows to it. A01 opens an encounter (a readmission is a
+      new one, and an A01 repeating a visit number already seen is refused), A03 closes the current one through the
+      workflow, and refuses one naming another visit. FHIR `Encounter` is the stay. `GET /api/patients/{id}/encounters`
+      backs an encounter history on the patient screen; the census reads location and admission from the current
+      encounter; `/api/analytics/operations` adds length of stay and 30-day readmissions.
+    - **Limits:** stays before the migration were overwritten by readmissions, so each existing patient gets one
+      encounter and all its earlier workflows point to it. The patient's `admission_date`, `room_number`, `unit_id` and
+      `status` stay as a mirror of the current encounter (the previous release, the patient API and unit-scope RLS read
+      them), and `encounter_id` is nullable during the rollout; rows the previous release writes are linked when the
+      state machine next touches them. Unit scope still keys on the patient's unit. FHIR Encounter ids changed from
+      workflow ids to encounter ids. Tested on SQLite and PostgreSQL 16.
 8. [ ] Discharge plan from admission: expected discharge date and disposition, reviewed daily.
 9. [ ] Workflow templates per disposition, with task dependencies and due times relative to the expected date.
 10. [ ] Delay reason codes whenever the expected date slips or a task breaches its SLA.

@@ -27,7 +27,7 @@ def render_item(type_, obj, autogen_context):
 # because batch mode would rebuild the table and cascade-delete its children. SQLite reflection reads neither the
 # name nor ON DELETE of such an inline constraint, so `alembic check` would report it as drift. Postgres still
 # compares them in full.
-SQLITE_INLINE_FKS = {("patients", ("unit_id",))}
+SQLITE_INLINE_FKS = {("patients", ("unit_id",)), ("workflows", ("encounter_id",))}
 
 
 def include_object(obj, name, type_, reflected, compare_to):

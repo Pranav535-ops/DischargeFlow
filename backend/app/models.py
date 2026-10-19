@@ -10,7 +10,7 @@ from app.identity.models import AuthSession, IntegrationClient, RolePermission, 
 from app.insurance.models import InsuranceClaim
 from app.interop.models import HL7Message
 from app.notifications.models import Notification
-from app.patients.models import AccessGrant, Patient
+from app.patients.models import AccessGrant, Encounter, Patient
 
 __all__ = [
     "Base",
@@ -22,6 +22,7 @@ __all__ = [
     "AuthSession",
     "DischargeSummary",
     "DowntimePeriod",
+    "Encounter",
     "Escalation",
     "HL7Message",
     "InsuranceClaim",
