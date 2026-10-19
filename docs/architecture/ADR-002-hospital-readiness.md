@@ -196,7 +196,18 @@ which needs monthly partitioning within a year or two.
     - **Notifications** about a patient go only to members of the patient's unit, since their text may name the patient.
     - **Rollout decisions:** the flag is off by default, so the deploy changes nobody's access until units are set up. Unassigned patients stay visible to everyone in the tenant, so nothing disappears during setup; new patients default to the creator's first unit.
     - **Limits:** physicians and pharmacists are unit-scoped like nurses; hospitals whose physicians or central pharmacy work across units should give them those units, or grant `patient:read_all` to the role by migration. Break-glass works from a link to the patient (patient id); there is no search across hidden patients yet (the MRN blind index could support one). A hidden workflow link answers 404 rather than offering break-glass. SQLite does not enforce unit scope (tests are `requires_postgres`). Tested on PostgreSQL 16 locally and in CI.
-4. [ ] Shared-workstation safety: idle lock after a few minutes and fast re-login (tokens already live in memory only).
+4. [x] Shared-workstation safety: idle lock after a few minutes and fast re-login (tokens already live in memory only).
+   After `IDLE_LOCK_MINUTES` (default 5) with no input in any tab, the app unmounts every screen, clears the query
+   cache, toasts and in-memory access token, refuses all non-sign-in requests, locks the other tabs, and revokes the
+   refresh session. Re-entry is a fresh Google sign-in that returns to the same screen. Resuming the same refresh
+   session from the lock screen was rejected: on a shared workstation the next person could press it. The server also
+   revokes a session not refreshed for `SESSION_IDLE_MINUTES` (default 20; it can't go below the ~14-minute refresh of
+   an open tab), which covers tabs closed or killed before they could lock. Limits: input is detected per browser
+   profile, not per person, so someone who keeps using an unlocked screen keeps it open; between closing a tab and
+   the server limit, a page reopened in the same profile locks itself using the shared last-activity time, which a
+   person at the keyboard could clear from developer tools; re-entry is only as fast as the identity provider, and if
+   Google is still signed in on that browser it may re-enter without a password (hospital SSO, item 2, should require
+   a fresh login or a badge tap); the URL path of the locked screen (opaque ids, no PHI) stays in the address bar.
 5. [ ] Hosting and model provider under a BAA; backups with at least 7 days of point-in-time recovery (finding 8).
 6. [x] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards
    (migration 0010, done 2026-10-19; procedure in `docs/runbooks/downtime.md`).

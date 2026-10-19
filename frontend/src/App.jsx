@@ -6,6 +6,7 @@ import { queryClient } from './lib/queries';
 import { Toaster } from './components/ui/sonner';
 import LoginPage from './pages/LoginPage';
 import AuthCallback from './pages/AuthCallback';
+import { LockGate } from './pages/LockScreen';
 import AppLayout from './pages/AppLayout';
 import PendingApproval from './pages/PendingApproval';
 import { Loader2 } from 'lucide-react';
@@ -95,7 +96,8 @@ function App() {
       <AuthProvider>
         <BrowserRouter>
           <div className="dark">
-            <AppRouter />
+            {/* Locked for inactivity: nothing below is mounted (ADR-002 item 4). */}
+            <LockGate><AppRouter /></LockGate>
             <Toaster position="top-right" theme="dark" />
           </div>
         </BrowserRouter>

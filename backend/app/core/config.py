@@ -79,6 +79,10 @@ class Settings:
     # How long one notification stream (GET /api/notifications/stream) stays open before the client reconnects.
     # Kept under the serverless function limit on Vercel; a long-running host (ECS) can raise it.
     notification_stream_seconds: float = 25.0
+    # Shared-workstation safety (ADR-002 item 4). The browser locks after idle_lock_minutes without input; the server
+    # refuses to refresh a session unused for session_idle_minutes, which catches tabs closed before they locked.
+    idle_lock_minutes: float = 5.0
+    session_idle_minutes: float = 20.0
 
     @property
     def is_production(self) -> bool:
@@ -105,6 +109,17 @@ def _database_url_from_parts() -> str:
     port = os.environ.get("DB_PORT", "5432").strip() or "5432"
     name = os.environ.get("DB_NAME", "dischargeflow").strip() or "dischargeflow"
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode=require"
+
+
+def _minutes(name: str, default: float, minimum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of minutes")
+    if not minimum <= value <= 24 * 60:
+        raise RuntimeError(f"{name} must be between {minimum:g} and 1440 minutes")
+    return value
 
 
 def load_settings() -> Settings:
@@ -158,6 +173,10 @@ def load_settings() -> Settings:
         unit_scoped_access=_bool("UNIT_SCOPED_ACCESS"),
         read_only_mode=_bool("READ_ONLY_MODE"),
         notification_stream_seconds=float(os.environ.get("NOTIFICATION_STREAM_SECONDS", "").strip() or 25),
+        idle_lock_minutes=_minutes("IDLE_LOCK_MINUTES", 5, 1),
+        # An open tab refreshes its 15-minute access token about a minute before expiry, so anything under 16 minutes
+        # would sign out people who are working.
+        session_idle_minutes=_minutes("SESSION_IDLE_MINUTES", 20, 16),
     )
 
 

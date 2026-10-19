@@ -1,4 +1,5 @@
 import logging
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -40,6 +41,11 @@ class RoleUpdate(BaseModel):
     role: str
 
 
+class Logout(BaseModel):
+    # "idle" when the browser locked itself after IDLE_LOCK_MINUTES without input; kept as the revocation reason.
+    reason: Literal["user", "idle"] = "user"
+
+
 class UserInvite(BaseModel):
     email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     name: str = Field(default="", max_length=200)
@@ -79,6 +85,7 @@ async def _token_response(db, response: Response, user: User, session: AuthSessi
         "success": True,
         "token": create_access_token(user.user_id, session.session_id, user.tenant_id),
         "expires_in": int(ACCESS_TOKEN_TTL.total_seconds()),
+        "idle_lock_seconds": int(settings.idle_lock_minutes * 60),
         # unit_ids: the frontend defaults new patients to the user's first unit.
         "user": {**user.to_dict(), "unit_ids": unit_ids},
     }
@@ -181,8 +188,9 @@ async def get_me(user: SignedInIdentity):
 
 
 @auth_router.post("/logout")
-async def logout(request: Request, response: Response, db: DB):
-    await sessions.revoke_by_token(db, request.cookies.get(sessions.REFRESH_COOKIE))
+async def logout(request: Request, response: Response, db: DB, body: Logout | None = None):
+    reason = "idle_lock" if body and body.reason == "idle" else "logout"
+    await sessions.revoke_by_token(db, request.cookies.get(sessions.REFRESH_COOKIE), reason)
     sessions.clear_refresh_cookie(response)
     return {"success": True}
 
