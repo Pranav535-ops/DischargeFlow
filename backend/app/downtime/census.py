@@ -1,5 +1,8 @@
 """Discharge census (ADR-002 item 6): every patient still in hospital, with discharge status and open tasks.
 
+Location and admission come from the patient's current encounter (ADR-002 item 7), with the patient's mirrored
+fields as the fallback for a patient the previous release created without one.
+
 Printed at the start of a downtime (and on a schedule before one) so each unit can carry on from paper. It reads
 through the request's transaction, so unit scope (RLS) limits it like every other patient list.
 """
@@ -14,12 +17,12 @@ from app.ai.models import DischargeSummary
 from app.core.db import utcnow
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
 from app.identity.models import Unit, User
-from app.patients.models import Patient
+from app.patients.models import Encounter, Patient
 
 UNASSIGNED = "unassigned"
 PRIORITY = {1: "high", 2: "medium", 3: "low"}
 CSV_COLUMNS = (
-    "unit", "room", "patient", "mrn", "date_of_birth", "admission_date", "attending_physician", "patient_status",
+    "unit", "room", "patient", "mrn", "visit_number", "date_of_birth", "admission_date", "attending_physician", "patient_status",
     "discharge_status", "estimated_discharge", "summary_approved", "open_tasks", "open_task_list",
 )
 
@@ -35,6 +38,8 @@ async def build_census(db: AsyncSession, unit_id: Optional[str] = None) -> dict:
     ids = [p.patient_id for p in patients]
 
     units = {u.unit_id: u for u in await db.scalars(select(Unit))}
+    encounters = {e.patient_id: e for e in await db.scalars(
+        select(Encounter).where(Encounter.patient_id.in_(ids), Encounter.status == "active"))}
     workflows = {w.patient_id: w for w in await db.scalars(
         select(Workflow).where(Workflow.patient_id.in_(ids), Workflow.status.in_(ACTIVE_WORKFLOW_STATUSES)))}
     approved = set(await db.scalars(select(DischargeSummary.workflow_id).where(
@@ -51,16 +56,20 @@ async def build_census(db: AsyncSession, unit_id: Optional[str] = None) -> dict:
     for p in patients:
         unit = units.get(p.unit_id) if p.unit_id else None
         workflow = workflows.get(p.patient_id)
+        encounter = encounters.get(p.patient_id)
         rows.append({
             "patient_id": p.patient_id,
             "unit_id": p.unit_id,
             "unit_code": unit.code if unit else None,
             "unit_name": unit.name if unit else None,
-            "room_number": p.room_number,
+            "encounter_id": encounter.encounter_id if encounter else None,
+            "visit_number": encounter.visit_number if encounter else None,
+            "room_number": (encounter.room_number if encounter else None) or p.room_number,
             "name": p.name,
             "mrn": p.mrn,
             "date_of_birth": p.date_of_birth,
-            "admission_date": p.admission_date,
+            "admission_date": (encounter.admitted_at.date().isoformat()
+                               if encounter and encounter.admitted_at else p.admission_date),
             "attending_physician": p.attending_physician,
             "status": p.status,
             "workflow_id": workflow.workflow_id if workflow else None,
@@ -111,7 +120,8 @@ def census_csv(census: dict) -> str:
             for t in r["open_tasks"]
         )
         writer.writerow([_cell(v) for v in (
-            r["unit_code"] or "", r["room_number"], r["name"], r["mrn"], r["date_of_birth"], r["admission_date"],
+            r["unit_code"] or "", r["room_number"], r["name"], r["mrn"], r["visit_number"], r["date_of_birth"],
+            r["admission_date"],
             r["attending_physician"], r["status"], r["discharge_status"], r["estimated_discharge_time"],
             "yes" if r["summary_approved"] else "no", len(r["open_tasks"]), task_list,
         )])

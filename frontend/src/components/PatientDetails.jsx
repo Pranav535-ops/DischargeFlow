@@ -7,6 +7,7 @@ import {
   invalidateDischarge, isBreakGlassError, keys, queryClient, usePatient, usePatientWorkflow, useReadOnly, useUnits,
 } from '@/lib/queries';
 import BreakGlassPanel from './BreakGlassPanel';
+import EncounterHistory from './EncounterHistory';
 import { 
   ArrowLeft, 
   User, 
@@ -284,6 +285,8 @@ const PatientDetails = () => {
           )}
         </div>
       ) : null}
+
+      <EncounterHistory patientId={patientId} />
     </div>
   );
 };

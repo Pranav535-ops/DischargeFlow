@@ -1,4 +1,7 @@
-"""Discharge workflow state machine: in_progress -> pending_approval -> completed."""
+"""Discharge workflow state machine: in_progress -> pending_approval -> completed.
+
+A workflow discharges one encounter (stay): completing it closes the encounter (ADR-002 item 7).
+"""
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -16,7 +19,8 @@ from app.downtime.service import backfill_period
 from app.identity.models import User
 from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
-from app.patients.models import Patient
+from app.patients.models import Encounter, Patient
+from app.patients.service import current_encounter, ensure_current_encounter
 
 STANDARD_TASKS = [
     {"title": "Complete Discharge Summary", "description": "Generate and approve AI discharge summary", "category": "documentation", "assigned_role": "physician", "priority": 1},
@@ -40,6 +44,17 @@ async def active_workflow_for(db: AsyncSession, patient_id: str) -> Optional[Wor
     return await db.scalar(
         select(Workflow).where(Workflow.patient_id == patient_id, Workflow.status.in_(ACTIVE_WORKFLOW_STATUSES))
     )
+
+
+async def encounter_for(db: AsyncSession, workflow: Workflow) -> Optional[Encounter]:
+    """The stay a workflow discharges. A workflow the release before migration 0011 created has none; it is linked to
+    the patient's current encounter here."""
+    if workflow.encounter_id:
+        return await db.get(Encounter, workflow.encounter_id)
+    encounter = await current_encounter(db, workflow.patient_id)
+    if encounter is not None:
+        workflow.encounter_id = encounter.encounter_id
+    return encounter
 
 
 async def workflow_detail(db: AsyncSession, workflow: Workflow) -> dict:
@@ -73,9 +88,13 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
         raise HTTPException(status_code=404, detail="Patient not found")
     if await active_workflow_for(db, patient_id):
         raise HTTPException(status_code=400, detail="Active workflow already exists")
+    if patient.status == "discharged":
+        raise HTTPException(status_code=400, detail="Patient is already discharged")
+    encounter = await ensure_current_encounter(db, patient)
 
     workflow = Workflow(
         patient_id=patient_id,
+        encounter_id=encounter.encounter_id,
         initiated_by=user.user_id,
         estimated_discharge_time=utcnow() + timedelta(hours=2),
     )
@@ -242,9 +261,11 @@ async def sync_workflow_status(db: AsyncSession, workflow_id: Optional[str]) -> 
 
 
 async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUser,
-                            request: Optional[Request] = None, completed_at: Optional[datetime] = None) -> dict:
-    """Discharge the patient. `completed_at` back-enters a discharge done on paper during a downtime: it must fall
-    inside a recorded downtime period, and the audit entry names it."""
+                            request: Optional[Request] = None, completed_at: Optional[datetime] = None,
+                            disposition: Optional[str] = None) -> dict:
+    """Discharge the patient and close the encounter. `completed_at` back-enters a discharge done on paper during a
+    downtime: it must fall inside a recorded downtime period, and the audit entry names it. `disposition` is where
+    the patient went (HL7 PV1-36), when the caller knows it."""
     workflow = await db.get(Workflow, workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -269,6 +290,10 @@ async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUs
 
     set_workflow_status(workflow, "completed")
     workflow.completed_at = done = completed_at or utcnow()
+    encounter = await encounter_for(db, workflow)
+    if encounter is not None and encounter.status == "active":
+        encounter.close(done, disposition)
+        details += f" encounter={encounter.encounter_id}"
     patient = await db.get(Patient, workflow.patient_id)
     if patient:
         patient.status = "discharged"
