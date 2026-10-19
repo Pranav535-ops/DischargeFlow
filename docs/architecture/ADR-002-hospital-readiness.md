@@ -326,8 +326,35 @@ which needs monthly partitioning within a year or two.
       delivery asynchronous. Paging is not acknowledged back: a page is "sent" once the gateway accepts it, and only
       completing the task stops further levels. No gateway has been tested yet; the webhook is tested against a
       local fake. Tested on SQLite and PostgreSQL 16.
-13. [ ] Discharge summary lifecycle: signed versions, addenda instead of edits after signature, and a sign-by deadline
+13. [x] Discharge summary lifecycle: signed versions, addenda instead of edits after signature, and a sign-by deadline
     tracked against hospital policy.
+    - **Signed versions:** the physician's approval is the signature. It freezes the text as
+      `discharge_summary_versions` version 1 (migration 0013) with `signed_by`, `signed_at` and a SHA-256 of the signed
+      text; reads report `hash_verified`. From then on the summary's text can't change: the API refuses a second
+      approval, and the model raises `SignedSummaryError` if code tries to set different text. Summaries signed before
+      0013 get their version 1 from `app.cli migrate`.
+    - **Addenda:** `POST /api/ai/summaries/{id}/addenda` (`summary:manage`) appends text to the latest signed version,
+      signed by its author as it is added (`signed_by`, `signed_at`, SHA-256), including after discharge. Never edited
+      or removed. The summary read and the workflow view show the signed version, the version history and the
+      addenda; FHIR `DocumentReference` carries the signed version and then one attachment per addendum, with
+      `docStatus` `amended`.
+    - **Protection:** versions and addenda are encrypted with the patient's data key (AAD: their own id and field),
+      tenant-scoped, and unit-scoped like `discharge_summaries`. Erasure overwrites their text and clears their hashes.
+      Audit entries carry version and addendum ids only.
+    - **Sign-by deadline:** `SUMMARY_SIGN_HOURS` (default 24, 1 to 720) after the patient left. While the patient is
+      still here the expected discharge time stands in, so a stalled unsigned discharge still becomes overdue.
+      Operational metrics report overdue unsigned summaries, time to sign and signatures after the deadline;
+      `GET /api/ai/summaries/overdue` lists them (ids and times only) and the workflow view flags them.
+      `python -m app.cli summary-deadlines` (or `POST /api/ai/summaries/overdue/notify`) notifies physicians on the
+      patient's unit once per discharge.
+    - **Limits:** nothing runs the notification sweep on its own yet: on ECS it needs a scheduled task (hourly is
+      enough; the sweep is idempotent), and on Vercel a Vercel Cron calling the endpoint with a service identity.
+      Until then overdue summaries show in metrics and in the workflow view only. Discharge still requires a signed
+      summary, so "after discharge" deadlines matter only once A03 reconciliation (item 11) lets a patient leave
+      first. There is one signer per version (no co-signature by an attending for a resident's summary) and no
+      correction workflow that issues version 2; the version number leaves room for both. The signature is the
+      authenticated approval plus a hash, not a cryptographic signature with the physician's own key. Tested on
+      SQLite and PostgreSQL 16.
 
 **Phase 9: Integration and value**
 14. [ ] SMART on FHIR launch from the EHR, with patient context and no second sign-in.

@@ -18,7 +18,8 @@ const Hours = ({ stats }) => (
 
 const PRIORITIES = ['high', 'medium', 'low'];
 
-// Throughput, approval wait and task SLA breaches over the last 30 days (GET /api/analytics/operations).
+// Throughput, approval wait, task SLA breaches and summary signing over the last 30 days
+// (GET /api/analytics/operations).
 const OperationsPanel = () => {
   const { data: ops, isLoading } = useOperations(30);
   return (
@@ -29,7 +30,7 @@ const OperationsPanel = () => {
       {isLoading || !ops ? (
         <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
       ) : (
-        <div className="grid md:grid-cols-3 gap-6 text-sm">
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-6 text-sm">
           <div>
             <h3 className="text-zinc-400 mb-2">Throughput</h3>
             <p className="text-zinc-200" data-testid="ops-throughput">
@@ -70,6 +71,22 @@ const OperationsPanel = () => {
               ))}
             </tbody></table>
           </div>
+          {ops.summary_signing && (
+            <div data-testid="ops-summary-signing">
+              <h3 className="text-zinc-400 mb-2">Summary signing</h3>
+              <p className={ops.summary_signing.overdue_unsigned ? 'text-amber-400' : 'text-zinc-200'}>
+                {ops.summary_signing.overdue_unsigned} unsigned past deadline
+                {ops.summary_signing.oldest_overdue_hours != null && ` · oldest ${ops.summary_signing.oldest_overdue_hours} h over`}
+              </p>
+              <p className="text-zinc-400 mt-1">
+                {ops.summary_signing.signed.breached}/{ops.summary_signing.signed.n} signed late
+              </p>
+              <p className="text-zinc-400 mt-1">Time to sign: <Hours stats={ops.summary_signing.time_to_sign} /></p>
+              <p className="text-xs text-zinc-500 mt-1">
+                Policy: signed within {ops.summary_signing.sign_by_hours} h of discharge
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

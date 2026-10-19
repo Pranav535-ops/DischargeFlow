@@ -7,7 +7,7 @@ Read-only and deliberately small: the four resources a receiving system needs to
 | Patient              | Patient             | Erased patients keep their id but expose no name or birth date. |
 | Encounter            | Encounter           | One inpatient stay: admission to discharge, with the visit number (PV1-19). |
 | Task                 | Task                | Discharge tasks, with the responsible role as performerType. |
-| DischargeSummary     | DocumentReference   | Approved summaries only (LOINC 18842-5); drafts never leave the system. |
+| DischargeSummary     | DocumentReference   | Signed summaries only (LOINC 18842-5): latest signed version + addenda. |
 """
 import base64
 from datetime import date, datetime
@@ -106,28 +106,41 @@ def task(t, encounter_id: Optional[str] = None) -> dict:
     })
 
 
+def _text_attachment(text: str, title: str, created: Optional[datetime]) -> dict:
+    return {"attachment": {
+        "contentType": "text/plain; charset=utf-8",
+        "language": "en",
+        "title": title,
+        "data": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        "creation": _instant(created),
+    }}
+
+
 def document_reference(s, encounter_id: Optional[str] = None) -> dict:
-    """An approved discharge summary. The text is the approved version, including any physician edits."""
+    """A signed discharge summary: the latest signed version (including any physician edits made before signing),
+    then each addendum to it as a further attachment, oldest first. With addenda the document is `amended`."""
+    version = s.latest_version
+    addenda = s.addenda_for(version)
+    # A summary signed before migration 0013 has no version row until `app.cli migrate` backfills it.
+    text, signed_at = (version.content, version.signed_at) if version else (s.content, s.approved_at)
+    content = [_text_attachment(text, "Discharge summary" + (f" (version {version.version})" if version else ""),
+                                signed_at)]
+    content += [_text_attachment(a.content, f"Addendum {i} by {a.signed_by}", a.signed_at)
+                for i, a in enumerate(addenda, start=1)]
     return _drop_none({
         "resourceType": "DocumentReference",
         "id": s.summary_id,
-        "meta": {"lastUpdated": _instant(s.approved_at)},
+        "meta": {"lastUpdated": _instant(addenda[-1].signed_at if addenda else signed_at)},
         "identifier": [{"system": ID_SYSTEM, "value": s.summary_id}],
         "status": "current",
-        "docStatus": "final",
+        "docStatus": "amended" if addenda else "final",
         "type": {"coding": [{"system": "http://loinc.org", "code": "18842-5", "display": "Discharge summary"}]},
         "subject": _ref("Patient", s.patient_id),
-        "date": _instant(s.approved_at),
+        "date": _instant(signed_at),
         "authenticator": {"display": f"Approving physician ({s.approved_by})"} if s.approved_by else None,
         "description": "AI-drafted, physician-reviewed and approved discharge summary" if s.generation_id
         else "Discharge summary",
-        "content": [{"attachment": {
-            "contentType": "text/plain; charset=utf-8",
-            "language": "en",
-            "title": "Discharge summary",
-            "data": base64.b64encode(s.content.encode("utf-8")).decode("ascii"),
-            "creation": _instant(s.created_at),
-        }}],
+        "content": content,
         "context": {"encounter": [_ref("Encounter", encounter_id)]} if encounter_id else None,
     })
 

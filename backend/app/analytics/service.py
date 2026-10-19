@@ -11,7 +11,9 @@ from statistics import mean, median
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import lifecycle
 from app.ai.models import AIGeneration, DischargeSummary
+from app.core.config import settings
 from app.core.db import utcnow
 from app.discharge.models import Task, Workflow
 from app.patients.models import Encounter
@@ -166,6 +168,14 @@ async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
         return out
 
     all_done = [f for flags in done_by_role.values() for f in flags]
+
+    # Summary signing against the sign-by policy (ADR-002 item 13).
+    overdue_hours = [row["hours_overdue"] for row in await lifecycle.unsigned_overdue(db, now)]
+    signed = list(await db.execute(
+        select(Workflow, DischargeSummary.approved_at)
+        .join(DischargeSummary, DischargeSummary.workflow_id == Workflow.workflow_id)
+        .where(DischargeSummary.approved.is_(True), DischargeSummary.approved_at >= since)))
+    signed_late = [approved_at is not None and approved_at > lifecycle.sign_by(wf) for wf, approved_at in signed]
     return {
         "window_days": days,
         "throughput": {
@@ -187,6 +197,14 @@ async def operational_metrics(db: AsyncSession, days: int = 30) -> dict:
             "open_breaching_by_role": {r: dict(sorted(c.items())) for r, c in sorted(open_breaches.items())},
             "completed": _rate(all_done),
             "completed_by_role": {r: _rate(v) for r, v in sorted(done_by_role.items())},
+        },
+        "summary_signing": {
+            "sign_by_hours": settings.summary_sign_hours,
+            "overdue_unsigned": len(overdue_hours),
+            "oldest_overdue_hours": round(max(overdue_hours), 1) if len(overdue_hours) >= MIN_GROUP_SIZE else None,
+            # From the start of the discharge to the signature.
+            "time_to_sign": _stats([_span(wf.started_at, approved_at) for wf, approved_at in signed]),
+            "signed": _rate(signed_late),
         },
         "stays": await stay_metrics(db, since),
     }

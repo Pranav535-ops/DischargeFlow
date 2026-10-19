@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.ai import lifecycle
 from app.ai import service as ai_service
 from app.ai.models import AIGeneration, DischargeSummary
 from app.ai.prompts import ACTIVE
@@ -25,6 +26,10 @@ class GenerateSummaryRequest(BaseModel):
     # Free-text notes from the physician (hospital course, medications, follow-up). De-identified before prompting
     # and never stored; only their hash is kept, inside the generation's input_hash.
     clinical_notes: str = Field(default="", max_length=20000)
+
+
+class AddendumRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=lifecycle.MAX_ADDENDUM_CHARS)
 
 
 class ApproveSummaryRequest(BaseModel):
@@ -71,6 +76,7 @@ async def approve_summary(
         raise HTTPException(status_code=400, detail="Summary already approved")
 
     edited = ai_service.apply_approval(summary, user, body.content if body else None)
+    version = lifecycle.sign(summary, user)
 
     # Approving the summary completes the workflow's documentation task.
     task = await db.scalar(
@@ -84,9 +90,37 @@ async def approve_summary(
         task.completed_at = summary.approved_at
     await discharge_service.sync_workflow_status(db, summary.workflow_id)
     await write_audit(db, user, "AI_SUMMARY_APPROVED", "discharge_summary", summary_id,
-                      f"edited={edited} similarity={summary.edit_similarity}", request)
+                      f"signed version={version.version_id} edited={edited} similarity={summary.edit_similarity}",
+                      request)
     return {"success": True, "approved_at": summary.approved_at.isoformat(), "edited": edited,
-            "edit_similarity": summary.edit_similarity}
+            "edit_similarity": summary.edit_similarity, "version_id": version.version_id,
+            "version": version.version, "content_sha256": version.content_sha256}
+
+
+@router.post("/summaries/{summary_id}/addenda", status_code=201)
+async def add_addendum(summary_id: str, body: AddendumRequest, request: Request, db: DB,
+                       user: CurrentUser = Depends(requires("summary:manage"))):
+    """Add signed text to a signed summary. The signed version itself never changes."""
+    summary = await db.get(DischargeSummary, summary_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Summary not found")
+    addendum = lifecycle.add_addendum(summary, user, body.content)
+    await db.flush()
+    await write_audit(db, user, "SUMMARY_ADDENDUM_SIGNED", "discharge_summary", summary_id,
+                      f"addendum={addendum.addendum_id} version={addendum.version_id}", request)
+    return lifecycle.addendum_dict(addendum)
+
+
+@router.get("/summaries/overdue")
+async def overdue_summaries(db: DB, user: CurrentUser = Depends(requires("summary:manage"))):
+    """Discharges whose summary is unsigned past the sign-by deadline (ids and times only)."""
+    return {"sign_by_hours": settings.summary_sign_hours, "overdue": await lifecycle.unsigned_overdue(db)}
+
+
+@router.post("/summaries/overdue/notify")
+async def notify_overdue_summaries(db: DB, user: CurrentUser = Depends(requires("summary:manage"))):
+    """Notify physicians about overdue summaries once each (what `app.cli summary-deadlines` runs on a schedule)."""
+    return {"notified": await lifecycle.notify_overdue(db)}
 
 
 @router.get("/summary/{workflow_id}")
@@ -94,8 +128,9 @@ async def get_summary(workflow_id: str, request: Request, db: DB, user: AuthUser
     summary = await db.scalar(select(DischargeSummary).where(DischargeSummary.workflow_id == workflow_id))
     if not summary:
         return None
+    workflow = await db.get(Workflow, workflow_id)
     await audit_phi_read(db, user, summary.patient_id, f"discharge summary {summary.summary_id}", request)
-    return summary.to_dict()
+    return lifecycle.summary_view(summary, workflow)
 
 
 @router.get("/generations")

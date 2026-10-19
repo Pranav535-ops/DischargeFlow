@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import lifecycle
 from app.ai.models import AIGeneration, DischargeSummary
 from app.audit.service import write_audit
 from app.core.db import utcnow
@@ -65,7 +66,11 @@ async def workflow_detail(db: AsyncSession, workflow: Workflow) -> dict:
     summary = await db.scalar(select(DischargeSummary).where(DischargeSummary.workflow_id == workflow.workflow_id))
     out = workflow.to_dict()
     out["tasks"] = [t.to_dict() for t in tasks]
-    out["discharge_summary"] = summary.to_dict() if summary else None
+    out["discharge_summary"] = lifecycle.summary_view(summary, workflow) if summary else None
+    # ADR-002 item 13: the policy deadline for a signed summary, and whether it has passed unsigned.
+    deadline = lifecycle.sign_by(workflow)
+    out["summary_sign_by"] = deadline.isoformat()
+    out["summary_overdue"] = not (summary and summary.approved) and deadline < utcnow()
     if summary and summary.generation_id:
         gen = await db.get(AIGeneration, summary.generation_id)
         out["discharge_summary"]["generation"] = {

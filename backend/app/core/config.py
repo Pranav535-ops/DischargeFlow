@@ -96,6 +96,9 @@ class Settings:
     # until `app.cli rewrap-deks` has moved them all to KMS.
     phi_key_provider: str = "local"
     phi_kms_key_id: str | None = None
+    # Hospital policy for signing the discharge summary (ADR-002 item 13): hours after discharge. Unsigned summaries
+    # past it count as overdue in operational metrics, and `app.cli summary-deadlines` notifies physicians.
+    summary_sign_hours: float = 24.0
     # ADR-002 item 12: escalation of overdue tasks. There is no scheduler on Vercel, so something calls
     # /api/escalations/run: Vercel Cron (GET with `Authorization: Bearer <CRON_SECRET>`), an integration client, an
     # admin, or `python -m app.cli escalate`. escalation_pager "webhook" also sends each page to the hospital's
@@ -131,6 +134,17 @@ def _database_url_from_parts() -> str:
     port = os.environ.get("DB_PORT", "5432").strip() or "5432"
     name = os.environ.get("DB_NAME", "dischargeflow").strip() or "dischargeflow"
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode=require"
+
+
+def _hours(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of hours")
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum:g} and {maximum:g} hours")
+    return value
 
 
 def _minutes(name: str, default: float, minimum: float) -> float:
@@ -230,6 +244,7 @@ def load_settings() -> Settings:
         oidc_require_mfa=_bool("OIDC_REQUIRE_MFA"),
         phi_key_provider=phi_key_provider,
         phi_kms_key_id=phi_kms_key_id,
+        summary_sign_hours=_hours("SUMMARY_SIGN_HOURS", 24, 1, 24 * 30),
         cron_secret=cron_secret,
         escalation_pager=escalation_pager,
         escalation_webhook_url=webhook_url,

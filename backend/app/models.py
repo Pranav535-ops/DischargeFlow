@@ -1,5 +1,5 @@
 """Import every module's models so Base.metadata is complete (used by Alembic and tests)."""
-from app.ai.models import AIGeneration, DischargeSummary
+from app.ai.models import AIGeneration, DischargeSummary, DischargeSummaryAddendum, DischargeSummaryVersion
 from app.audit.models import AuditChainHead, AuditLog
 from app.chatbot.models import AssistantAction
 from app.core.db import Base
@@ -21,6 +21,8 @@ __all__ = [
     "AuditLog",
     "AuthSession",
     "DischargeSummary",
+    "DischargeSummaryAddendum",
+    "DischargeSummaryVersion",
     "DowntimePeriod",
     "Encounter",
     "Escalation",
