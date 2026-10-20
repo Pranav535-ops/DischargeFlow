@@ -7,6 +7,7 @@ from app.ai.models import (
     PatientInstructions,
 )
 from app.audit.models import AuditChainHead, AuditLog
+from app.capacity.models import BedTurnover
 from app.chatbot.models import AssistantAction
 from app.core.db import Base
 from app.discharge.models import DelayReason, Task, Workflow, WorkflowTemplate
@@ -36,6 +37,7 @@ __all__ = [
     "AuditChainHead",
     "AuditLog",
     "AuthSession",
+    "BedTurnover",
     "DelayReason",
     "DischargeSummary",
     "DischargeSummaryAddendum",

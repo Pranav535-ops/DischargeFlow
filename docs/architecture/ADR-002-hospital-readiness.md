@@ -189,7 +189,7 @@ which needs monthly partitioning within a year or two.
     c. **Claim permissions.** Creating a claim and changing its status need the new `claim:manage` (nurse, who owns the billing-clearance task, and admin); reads stay open to signed-in users. The assistant's `submit_claim` tool checks the same permission. The insurance screen is read-only for other roles.
     d. **Audit coverage.** Patient create and update (field names only, never values), discharge initiation and completion (including completion by an HL7 A03), task creation, status changes, overrides and reassignments are now audited in the same transaction as the change. Patient-level PHI reads are audited too, with one `PHI_READ` entry per request and no PHI in the details: the patient list (one entry per list, with the record count), patient detail, both workflow-detail routes and the summary read. Reads use resource type `patient` with the patient id, so `GET /api/audit/patients/{id}` answers "who looked at this record". A read that fails is not logged. **Cost:** each audited read appends to the tenant's hash chain, which locks the chain-head row until the request commits, so PHI reads in one tenant now serialize on that lock. The audit call is placed last in each handler to keep the hold short (a few milliseconds plus the commit). At pilot scale this is fine. At hospital scale, read events should move to a separate append-only table, or be batched into the chain by a worker (ADR-001 item 11). SQLite ignores `FOR UPDATE`, so local SQLite request transactions now run one at a time (`core/db.get_db`); without that, concurrent reads appended duplicate sequence numbers, which the Playwright run caught. **Not done:** list endpoints that carry less identifying data (`/workflows`, `/tasks`, `/insurance/claims`) and the assistant's read tools are not read-audited, though every assistant tool call is already audited.
 2. [ ] Hospital single sign-on (OIDC or SAML against the hospital directory) with MFA, plus automated provisioning and
-   deprovisioning, replacing the Emergent demo login. **Code complete (2026-10-20, migration 0019); awaiting an AWS
+   deprovisioning, replacing the Emergent demo login. **Code complete (2026-10-20, migration 0020); awaiting an AWS
    account (Cognito) and a hospital directory to federate with. Not ticked: nothing has signed in through a real
    hospital identity provider yet.**
     - **Per-tenant providers:** `identity_providers` (shared table, like `tenants`; the app role may only read it)
@@ -499,7 +499,25 @@ which needs monthly partitioning within a year or two.
       allergy check would not know that amoxicillin is a penicillin. Not tested against a real EHR sandbox.
 16. [ ] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
     delivery tracked.
-17. [ ] Capacity board: expected discharges by unit and hour, discharge before noon, and the bed-to-cleaning handoff.
+17. [x] Capacity board: expected discharges by unit and hour, discharge before noon, and the bed-to-cleaning handoff
+    (migration 0019, done 2026-10-19).
+    - **Built:** `GET /api/capacity/board` (`capacity:read`: physician, nurse, admin) and the `/capacity` screen. Per
+      unit and for the hospital: patients in house, discharges expected that day from the plan's expected date (item
+      8), by hour, plus tomorrow's, stays past their expected date and stays with none; discharges done that day by
+      hour, and the before-noon rate over 7 days (hospital time). Beds: `bed_turnovers` opens a `dirty` turnover when a
+      stay ends in a bed, whichever way it ends (UI completion, manual status change, ADT A03 with or without a
+      workflow, reconciliation to `externally_discharged`), and when an A02 moves a patient out; an A13 cancels a
+      turnover nobody has started. Charge nurses, admins and the EVS system (an integration client with `bed:manage`)
+      move it to `cleaning` and `available`; each step records the time and who, and is audited. Unit scope applies:
+      RLS on `bed_turnovers` by its own unit, and the board lists only the user's units. The board shows counts and
+      bed locations, never patients.
+    - **Left:** the plan has a date and no time, so the hour comes from the discharge workflow's estimated time, which
+      is a placeholder (start plus 2 hours) until someone sets it; plans without one are counted as "no time". A bed
+      is a unit and room string, as the ADT feed sends it: there is no bed master, so there is no count of empty beds
+      or occupancy percentage, and a room with two beds is one location unless the feed names the bed. There is no EVS
+      role for people: EVS staff work through their own system's API key, or a charge nurse advances beds. No
+      notification goes to EVS when a bed becomes dirty. Tested on SQLite; the unit-scope test runs on PostgreSQL 16
+      in CI.
 18. [x] Patient-facing discharge instructions in plain language and the patient's language, approved by a clinician.
     - **Source:** drafted only from the signed summary (item 13): its latest signed version and that version's
       addenda, never the unsigned draft. `source_sha256` records exactly what was used, so an addendum signed later
@@ -518,7 +536,7 @@ which needs monthly partitioning within a year or two.
       `PATIENT_INSTRUCTIONS_TARGET_GRADE` (default 6, a common health-literacy target) sets the goal: an English
       draft above it is retried once with a request to simplify, and flagged if it is still above. The formula is
       English only, so other languages get no grade rather than a misleading one.
-    - **Language:** `patients.preferred_language` (migration 0019) holds a BCP 47 code, editable on the patient page;
+    - **Language:** `patients.preferred_language` (migration 0017) holds a BCP 47 code, editable on the patient page;
       instructions default to it and can be drafted in any other language too, one set per language. It is stored in
       clear: a language is not an identifier on its own.
     - **Review and print:** a nurse or physician (`instructions:manage`) edits and approves the draft; the edit diff
@@ -541,8 +559,20 @@ which needs monthly partitioning within a year or two.
       (printed handout only; item 16 covers clinician delivery), the language is not read from HL7 PID-15 yet, and
       no real model has drafted instructions here (no BAA-covered provider yet). Tested on SQLite and in CI on
       PostgreSQL 16.
-19. [ ] Outcome analytics: length of stay against expected, accuracy of the expected discharge date, delay reasons,
-    discharge before noon, 30-day readmissions (needs item 7).
+19. [x] Outcome analytics: length of stay against expected, accuracy of the expected discharge date, delay reasons,
+    discharge before noon, 30-day readmissions (needs item 7). Done 2026-10-19.
+    - **Built:** `GET /api/analytics/outcomes?days=` (`insights:read`) and an Outcomes panel on `/insights`. For stays
+      discharged in the window, overall and by unit: length of stay, discharge day against the final expected date,
+      accuracy of the final and of the first expected date (`encounters.first_expected_discharge_date`, kept when
+      the date moves), discharge before noon, and 30-day readmission (another admission of the same patient within 30
+      days, counted only once the 30 days have passed). Delay reasons from item 10 as a Pareto (count, share,
+      cumulative share), by kind and by unit. The same rules as the other aggregates: counts and durations only, and
+      groups under 3 show counts without averages or rates.
+    - **Left:** attribution is by unit only. There is no service line (medicine, surgery) or attending in a usable
+      form in the data model, so "by service" waits for that field. The first expected date is recorded from
+      migration 0019 on; older plans only count toward the final date, because a date moved earlier records no delay
+      reason and the first value can't be reconstructed. A readmission is any later admission in this system, planned
+      or not, at any unit; admissions to other hospitals are not seen. Not yet fed to the AI insights model.
 20. [ ] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
     so it stays explainable and auditable.
 21. [x] Real-time delivery without serverless polling once on AWS (finding 9, design change 4; migration 0016, done
