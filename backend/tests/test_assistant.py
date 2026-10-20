@@ -5,7 +5,9 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from app.ai.llm import LLMResponse, MockLLMClient, ToolCall
+from app.ai.llm import LLMError, LLMResponse, MockLLMClient, ToolCall
+from app.ai.models import AIGeneration
+from app.audit.models import AuditLog
 from app.chatbot import router as chatbot_router
 from app.chatbot.models import AssistantAction
 from app.core.db import utcnow
@@ -223,3 +225,62 @@ async def test_mock_is_used_when_no_provider_is_configured(client, make_user, mo
     _, nurse = await make_user("nurse")
     reply = await _say(client, nurse, "my tasks")
     assert reply["provider"] == "mock" and reply["tool_calls"] == ["list_my_tasks"]
+
+
+SECRET = "Zanzibar-quokka-7731"  # a distinctive phrase that must never reach the audit log
+
+
+async def _chatbot_audit(db) -> list[AuditLog]:
+    return list((await db.scalars(select(AuditLog).where(AuditLog.resource_type == "chatbot"))).all())
+
+
+async def test_audit_details_carry_no_message_text_or_argument_values(client, make_user, create_patient, db,
+                                                                      scripted):
+    """Audit rows are immutable and survive erasure, so they hold tool names, argument names and ids only."""
+    _, nurse = await make_user("nurse")
+    _, pharmacist = await make_user("pharmacist")
+    patient = await create_patient(nurse, name="Ada Lovelace")
+    ref = "[PATIENT_1]"
+    scripted([
+        [ToolCall("t1", "get_patient", {"patient_ref": ref}),
+         ToolCall("t2", "create_task", {"patient_ref": ref, "title": f"Check {SECRET}",
+                                        "description": f"History of {SECRET}"})],
+    ])
+    reply = await _say(client, nurse, f"Ada Lovelace has {SECRET}; make a task")
+    [proposal] = reply["pending_actions"]
+    scripted([[ToolCall("t3", "create_task", {"patient_ref": f"{SECRET} Lovelace", "title": SECRET})]])
+    await _say(client, pharmacist, f"note {SECRET}")  # denied: pharmacists lack task:create
+
+    rows = await _chatbot_audit(db)
+    dumped = json.dumps([r.details for r in rows])
+    assert SECRET not in dumped and "Lovelace" not in dumped and "Check" not in dumped
+
+    by_action = {r.action: json.loads(r.details) for r in rows}
+    message = by_action["CHATBOT_MESSAGE"]
+    assert set(message) == {"message_length", "tools"} and isinstance(message["message_length"], int)
+    assert by_action["ASSISTANT_TOOL_GET_PATIENT"] == {"tool": "get_patient", "arg_keys": ["patient_ref"],
+                                                       "patient_id": patient["patient_id"]}
+    assert by_action["ASSISTANT_PROPOSE_CREATE_TASK"] == {
+        "tool": "create_task", "arg_keys": ["description", "patient_ref", "title"],
+        "patient_id": patient["patient_id"]}
+    # An unresolvable reference is free text: only its argument name is kept.
+    assert by_action["ASSISTANT_DENIED_CREATE_TASK"] == {"tool": "create_task", "arg_keys": ["patient_ref", "title"]}
+    assert proposal["action_id"] in {r.resource_id for r in rows}
+
+
+async def test_failed_model_call_audits_only_the_error_class(client, make_user, db, monkeypatch):
+    class FailingClient(MockLLMClient):
+        async def complete(self, **kwargs):
+            raise LLMError("provider unreachable")
+
+    monkeypatch.setattr(chatbot_router, "assistant_client", lambda: FailingClient())
+    _, nurse = await make_user("nurse")
+    resp = await client.post("/api/chatbot/message", json={"message": f"about {SECRET}"}, headers=nurse)
+    assert resp.status_code == 502
+
+    [row] = await _chatbot_audit(db)
+    assert json.loads(row.details) == {"status": "failed", "error": "LLMError",
+                                       "message_length": len(f"about {SECRET}"), "tools": []}
+    [gen] = (await db.scalars(select(AIGeneration).where(AIGeneration.purpose == "assistant"))).all()
+    assert gen.error == "provider unreachable" and len(gen.input_hash) == 64  # a digest, not the prompt
+    assert SECRET not in json.dumps(gen.to_dict(), default=str)
