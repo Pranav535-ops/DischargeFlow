@@ -10,6 +10,7 @@ Safety properties, in order of importance:
 import hashlib
 import json
 import logging
+import re
 from datetime import timedelta
 from typing import Literal, Optional
 
@@ -35,6 +36,10 @@ MAX_ROUNDS = 5
 MAX_HISTORY = 10
 ASSISTANT_MAX_TOKENS = 4000
 ACTION_TTL = timedelta(minutes=10)
+# Arguments whose values are record ids, kept in the append-only audit log. Every other argument is recorded by name
+# only: titles, descriptions and free-text references can carry PHI, and audit rows outlive erasure.
+AUDIT_ID_KEYS = ("patient_id", "workflow_id", "task_id", "claim_id")
+_ID_RE = re.compile(r"^[a-z]+_[0-9a-f]{6,32}$")
 
 
 class ChatTurn(BaseModel):
@@ -78,6 +83,20 @@ def _record_call(db, user: CurrentUser, client: LLMClient, prompt_id: str, promp
     ))
 
 
+def _tool_audit_details(ctx: ToolContext, tool_name: str, raw_input, ids: Optional[dict] = None) -> str:
+    """Audit details for one tool call: its name, argument names and record ids, never argument values."""
+    raw = raw_input if isinstance(raw_input, dict) else {}
+    details: dict = {"tool": tool_name, "arg_keys": sorted(str(k) for k in raw)}
+    ref = raw.get("patient_ref")
+    if isinstance(ref, str) and ref.strip() in ctx.patient_ids:
+        details["patient_id"] = ctx.patient_ids[ref.strip()]
+    for key in AUDIT_ID_KEYS:
+        value = (ids or {}).get(key, raw.get(key))
+        if isinstance(value, str) and _ID_RE.match(value):
+            details[key] = value
+    return json.dumps(details, sort_keys=True)
+
+
 async def _run_tool(ctx: ToolContext, call, ui_data: dict, pending: list[dict]) -> dict:
     """Execute a read or create a write proposal. Returns the tool_result block for the model."""
     tool = TOOLS.get(call.name)
@@ -88,7 +107,7 @@ async def _run_tool(ctx: ToolContext, call, ui_data: dict, pending: list[dict]) 
         await ensure_permission(ctx.db, ctx.user, tool.permission)
     except HTTPException:
         await write_audit(ctx.db, ctx.user, f"ASSISTANT_DENIED_{tool.name.upper()}", "chatbot", None,
-                          json.dumps(call.input)[:500], ctx.request)
+                          _tool_audit_details(ctx, tool.name, call.input), ctx.request)
         return {"type": "tool_result", "tool_use_id": call.id, "is_error": True,
                 "content": "Permission denied: your role is not allowed to do this."}
     try:
@@ -102,7 +121,7 @@ async def _run_tool(ctx: ToolContext, call, ui_data: dict, pending: list[dict]) 
             pending.append({"action_id": proposal.action_id, "tool": tool.name, "summary": summary,
                             "expires_at": proposal.expires_at.isoformat()})
             await write_audit(ctx.db, ctx.user, action, "chatbot", proposal.action_id,
-                              json.dumps(call.input)[:500], ctx.request)
+                              _tool_audit_details(ctx, tool.name, call.input, arguments), ctx.request)
             content = as_tool_data(tool.name, {"proposal": "created", "action_id": proposal.action_id,
                                                "status": "awaiting user confirmation; nothing has changed yet"})
         else:
@@ -111,7 +130,7 @@ async def _run_tool(ctx: ToolContext, call, ui_data: dict, pending: list[dict]) 
             for key, value in (out.ui_data or {}).items():
                 ui_data[key] = value
             await write_audit(ctx.db, ctx.user, action, "chatbot", out.resource_id,
-                              json.dumps(call.input)[:500], ctx.request)
+                              _tool_audit_details(ctx, tool.name, call.input), ctx.request)
             content = as_tool_data(tool.name, out.model_data)
     except (ValidationError, ToolInputError) as e:
         return {"type": "tool_result", "tool_use_id": call.id, "is_error": True, "content": f"Invalid input: {e}"[:1000]}
@@ -140,7 +159,9 @@ async def chatbot_message(req: ChatRequest, request: Request, db: DB, user: Auth
                                          tools=tools)
         except LLMError as e:
             _record_call(db, user, client, prompt.id, prompt.sha256, messages, error=str(e)[:500])
-            await write_audit(db, user, "CHATBOT_MESSAGE", "chatbot", None, f"failed: {e}"[:500], request)
+            await write_audit(db, user, "CHATBOT_MESSAGE", "chatbot", None,
+                              json.dumps({"status": "failed", "error": type(e).__name__,
+                                          "message_length": len(req.message), "tools": called}), request)
             return JSONResponse(status_code=502, content={"detail": "The assistant is unavailable right now."})
         _record_call(db, user, client, prompt.id, prompt.sha256, messages, resp)
         if not resp.tool_calls:
@@ -156,7 +177,7 @@ async def chatbot_message(req: ChatRequest, request: Request, db: DB, user: Auth
         final_text = "I couldn't complete that request in a few steps. Please try asking more specifically."
 
     await write_audit(db, user, "CHATBOT_MESSAGE", "chatbot", None,
-                      json.dumps({"message": user_text[:200], "tools": called}), request)
+                      json.dumps({"message_length": len(req.message), "tools": called}), request)
     return {
         "intent": called[0] if called else "chat",
         "message": req.message,
