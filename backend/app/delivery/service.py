@@ -37,6 +37,7 @@ from app.delivery import documents
 from app.delivery.models import DeliveryEndpoint, DischargeRecipient, SummaryDelivery
 from app.delivery.transport import Outgoing, Result, get_transport
 from app.discharge.models import Workflow
+from app.downtime.service import read_only_status
 from app.identity.models import Tenant, User
 from app.notifications.service import notify_role
 from app.patients.models import Encounter, Patient
@@ -310,8 +311,17 @@ async def deliver_one(db: AsyncSession, actor: CurrentUser, delivery: SummaryDel
 
 async def run_tenant(db: AsyncSession, actor: CurrentUser, now: Optional[datetime] = None,
                      delivery_ids: Optional[list[str]] = None, limit: int = MAX_PER_RUN) -> dict:
-    """Attempt the due deliveries of one tenant in the caller's transaction (already bound to the tenant)."""
+    """Attempt the due deliveries of one tenant in the caller's transaction (already bound to the tenant).
+
+    A read-only tenant (or a deployment forced read-only) is skipped: nothing is claimed, sent or updated, and its
+    due rows stay queued for the first run after the downtime ends. The cron triggers get past the router-wide
+    read-only check (a GET, or a cron secret that is not an access token), so this is where it is enforced."""
     now = now or utcnow()
+    result: dict = {"tenant_id": actor.tenant_id, "claimed": 0, "acknowledged": 0, "sent": 0,
+                    "retry": 0, "failed": 0, "cancelled": 0, "deferred": 0, "skipped": None}
+    if (await read_only_status(db, actor.tenant_id))["read_only"]:
+        result["skipped"] = "read_only"
+        return result
     stmt = (select(SummaryDelivery)
             .where(SummaryDelivery.tenant_id == actor.tenant_id, SummaryDelivery.status == "queued",
                    SummaryDelivery.next_attempt_at <= now)
@@ -321,8 +331,7 @@ async def run_tenant(db: AsyncSession, actor: CurrentUser, now: Optional[datetim
     if delivery_ids is not None:
         stmt = stmt.where(SummaryDelivery.delivery_id.in_(delivery_ids))
     claimed = list(await db.scalars(stmt))
-    result: dict = {"tenant_id": actor.tenant_id, "claimed": len(claimed), "acknowledged": 0, "sent": 0,
-                    "retry": 0, "failed": 0, "cancelled": 0, "deferred": 0}
+    result["claimed"] = len(claimed)
     started = time.monotonic()
     for delivery in claimed:
         if time.monotonic() - started > RUN_BUDGET_SECONDS:
