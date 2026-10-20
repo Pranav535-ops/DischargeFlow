@@ -43,10 +43,18 @@ const server = http.createServer((req, res) => {
     return json(res, 200, { keys: [{ ...publicKey.export({ format: 'jwk' }), kid: 'e2e-1', alg: 'RS256', use: 'sig' }] });
   }
   if (url.pathname === '/authorize') {
+    // Like a real authorization server, only the registered client and redirect URI are accepted, and the browser
+    // goes back to the registered URI, never to one taken from the request.
+    if (url.searchParams.get('client_id') !== CLIENT_ID || url.searchParams.get('redirect_uri') !== REDIRECT) {
+      return json(res, 400, { error: 'invalid_request' });
+    }
     // The EHR user is already signed in to the EHR: approve and send the browser back.
     const code = crypto.randomUUID();
     codes.set(code, Object.fromEntries(url.searchParams));
-    res.writeHead(302, { Location: `${url.searchParams.get('redirect_uri')}?code=${code}&state=${url.searchParams.get('state')}` });
+    const location = new URL(REDIRECT);
+    location.searchParams.set('code', code);
+    location.searchParams.set('state', url.searchParams.get('state') ?? '');
+    res.writeHead(302, { Location: location.href });
     return res.end();
   }
   if (url.pathname === '/token' && req.method === 'POST') {
