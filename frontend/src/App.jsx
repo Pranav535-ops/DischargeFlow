@@ -6,6 +6,8 @@ import { queryClient } from './lib/queries';
 import { Toaster } from './components/ui/sonner';
 import LoginPage from './pages/LoginPage';
 import AuthCallback from './pages/AuthCallback';
+import SsoCallback from './pages/SsoCallback';
+import { SSO_CALLBACK_PATH } from './lib/sso';
 import { LockGate } from './pages/LockScreen';
 import AppLayout from './pages/AppLayout';
 import PendingApproval from './pages/PendingApproval';
@@ -77,6 +79,7 @@ const AppRouter = () => {
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
       {/* SMART on FHIR EHR launch (ADR-002 item 14): its own sign-in, so neither public nor protected. */}
       <Route path="/launch" element={<SmartLaunch />} />
+      <Route path={SSO_CALLBACK_PATH} element={<SsoCallback />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={page(<HomeView />)} />
         <Route path="/patients" element={page(<PatientList />)} />

@@ -45,6 +45,7 @@ suspend someone.
 | `capacity:read` | physician, nurse (the capacity board) |
 | `bed:manage` | nurse, interface (move a bed through dirty, cleaning, available; the EVS system uses an API key) |
 | `instructions:manage` | physician, nurse (draft, edit, approve and print patient instructions) |
+| `user:provision` | interface (the hospital directory's SCIM connector: create, read and (de)activate accounts) |
 
 ### Unit-scoped access
 
@@ -59,9 +60,10 @@ Notifications about a patient on a unit go only to members of that unit.
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| POST | `/auth/session` | public | Exchanges the Emergent OAuth `session_id` for an access token; sets the refresh cookie. Known (or invited) users sign in with their role. Unknown accounts become `pending` if `SELF_REGISTRATION` is on and their domain is in `ALLOWED_EMAIL_DOMAINS` (any domain when unset), otherwise 403. Admins are notified; audited (`REQUEST_ACCESS`) |
-| GET | `/auth/config` | public | Sign-in methods offered: `{"oidc": {"issuer", "client_id"}}` when hospital SSO is configured, else `{"oidc": null}` |
-| POST | `/auth/oidc` | public | Hospital SSO (ADR-002 item 2, seam): body `{id_token, nonce}`. Verifies the ID token against the provider's JWKS (issuer, audience, expiry, nonce, `token_use`, `email_verified`, `amr` when `OIDC_REQUIRE_MFA`), then signs in like `/auth/session`. 401 naming the failed check; 404 unless `OIDC_ISSUER` and `OIDC_CLIENT_ID` are set |
+| POST | `/auth/session` | public | The demo Google login (Emergent): exchanges the OAuth `session_id` for an access token; sets the refresh cookie. Known (or invited) users sign in with their role. Unknown accounts become `pending` if `SELF_REGISTRATION` is on and their domain is in `ALLOWED_EMAIL_DOMAINS` (any domain when unset), otherwise 403. Deactivated accounts (SCIM) 403. Admins are notified; audited (`REQUEST_ACCESS`). 404 when `EMERGENT_LOGIN` is off (`auto`, the default, turns it off once a hospital identity provider exists) |
+| GET | `/auth/config` | public | Sign-in methods offered: `{"providers": [{provider_id, tenant_id, name, issuer, client_id, authorize_url, scopes}], "emergent": bool}`. Providers are the active `identity_providers` rows plus the `OIDC_*` one (`provider_id` `env`, default tenant) |
+| POST | `/auth/oidc` | public | Hospital SSO (ADR-002 item 2) with an ID token: body `{id_token, nonce, provider_id?}`. Without `provider_id` the token's `iss` and `aud` pick the provider (401 `unknown issuer` if none). Verifies the token against the provider's JWKS (issuer, audience, expiry, nonce, `token_use`, `email_verified`, `amr` when the provider requires MFA), then signs in to the provider's tenant: directory groups set the role and units when the provider has group mappings (see `/identity-providers`); unknown people with a mapped role are created with it (`SSO_PROVISION_USER`), others become `pending` (403 when `SELF_REGISTRATION` is off; the domain allow-list does not apply). 403 for a deactivated account or one belonging to another tenant. Role and unit changes are audited (`SSO_ROLE_SYNC`, `SSO_UNIT_SYNC`). 401 naming the failed check, 404 for an unknown or disabled provider |
+| POST | `/auth/oidc/callback` | public | The login page's authorization-code + PKCE flow: body `{provider_id, code, code_verifier (43-128 chars), redirect_uri, nonce}`. Redeems the code at the provider's token endpoint (public client, no secret), then as `/auth/oidc`. 401 when the provider refuses the code (`invalid_grant`), 502 when it can't be reached |
 | POST | `/auth/refresh` | refresh cookie | Rotates the refresh cookie and returns a new 15-minute access token. 401 (and the session is revoked) if it wasn't refreshed for `SESSION_IDLE_MINUTES` |
 | GET | `/auth/me` | signed in, including `pending` | The current user, role and tenant |
 | POST | `/auth/logout` | refresh cookie | Revokes the session. Optional body `{"reason": "idle"}` when the browser locked itself for inactivity (stored as `idle_lock`) |
@@ -80,6 +82,25 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/integrations/clients` | `user:manage` | API-key clients for hospital systems; never returns key material |
 | POST | `/integrations/clients` | `user:manage` | Returns the API key once |
 | DELETE | `/integrations/clients/{client_id}` | `user:manage` | Revokes the key |
+| GET | `/identity-providers` | `user:manage` | This tenant's identity providers (public values, `require_mfa`, `groups_claim`) with their group `mappings`. Providers themselves are added by operators with `python -m app.cli sso-provider add` |
+| POST | `/identity-providers/{provider_id}/mappings` | `user:manage` | Body `{group_name, role?, unit_id?}` (at least one of role and unit; role one of physician, nurse, pharmacist, admin). Once any mapping has a role, every sign-in through the provider sets the role from the person's groups (most privileged: admin, physician, pharmacist, nurse; none: `pending`); once any has a unit, unit memberships follow groups the same way. 409 if the group is mapped; audited |
+| DELETE | `/identity-providers/{provider_id}/mappings/{mapping_id}` | `user:manage` | Takes effect at each person's next sign-in; audited |
+
+### SCIM 2.0 provisioning (ADR-002 item 2)
+
+For the hospital directory's provisioning connector (Entra ID, Okta). Authenticated with an integration client's API
+key holding `user:provision`, sent as `Authorization: Bearer <key>` (or `X-API-Key`). Responses are
+`application/scim+json`; errors use the SCIM error schema with `scimType`. Exempt from read-only (downtime) mode, so
+deprovisioning never waits. All writes are audited with the client as actor (`SCIM_CREATE_USER`, `SCIM_UPDATE_USER`,
+`SCIM_DEACTIVATE_USER`, `SCIM_REACTIVATE_USER`; field names only).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/scim/v2/ServiceProviderConfig` | patch and filter supported; bulk, sort, etag, password change not |
+| GET | `/scim/v2/Users` | `filter=userName eq "…"` (case-insensitive) or `externalId eq "…"`, `startIndex` (1-based), `count` (max 200). Other filters 400 `invalidFilter` |
+| POST | `/scim/v2/Users` | Core User schema: `userName` (the email), `name`/`displayName`, `externalId`, `active`. Created as `pending`: the role comes from group mappings at the first SSO sign-in, or from an admin. 201; 409 `uniqueness` if the email exists in any tenant |
+| GET | `/scim/v2/Users/{id}` | 404 outside the client's tenant |
+| PATCH | `/scim/v2/Users/{id}` | PatchOp `replace`/`add` of `active`, `displayName`, `name`, `externalId` (with a `path`, or without one and an object value; `"True"`/`"False"` strings accepted). `active: false` sets `deactivated_at`, revokes every session (`revoked_reason` `deprovisioned`) and drops cached identities: the account's requests fail with 401 at once in this process and within 30 s elsewhere, refresh is refused, and every sign-in method answers 403. `active: true` lets them sign in again (revoked sessions stay revoked). Other attributes 400 `invalidPath` |
 
 ## Patients
 

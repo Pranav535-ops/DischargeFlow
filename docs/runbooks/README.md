@@ -10,6 +10,8 @@ Operational procedures for the AWS deployment (`infra/`, ADR-001 Phase 4). Each 
 | Rotating `JWT_SECRET`, `PHI_KEK`, the database password or an API key; a suspected secret leak | [rotate-secrets.md](rotate-secrets.md) |
 | AI summaries failing, slow, or producing suspect output | [ai-incident.md](ai-incident.md) |
 | Planned maintenance or an outage: staff work on paper, then back-enter it | [downtime.md](downtime.md) |
+| The first move to AWS under a BAA: agreements, staging checks, Neon to RDS, KMS, SSO | [infra/README.md, "Go-live on AWS under a BAA"](../../infra/README.md#go-live-on-aws-under-a-baa-adr-002-items-2-and-5) |
+| Someone left and their access must end now | The directory's SCIM connector deactivates them (`PATCH /api/scim/v2/Users/{id}`, `active=false`); by hand, an admin sets their role to `pending` (`docs/api.md`) |
 
 ## First steps for any alarm
 

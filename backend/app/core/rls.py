@@ -37,9 +37,10 @@ TENANT_TABLES = (
     "ehr_user_links",
     "smart_launches",
     "patient_instructions",
+    "idp_group_mappings",
 )
 # Shared reference data the app may read but never change.
-READ_ONLY_TABLES = ("tenants", "role_permissions")
+READ_ONLY_TABLES = ("tenants", "role_permissions", "identity_providers")
 # Append-only: the app may insert and read, never update or delete.
 APPEND_ONLY_TABLES = ("audit_logs",)
 

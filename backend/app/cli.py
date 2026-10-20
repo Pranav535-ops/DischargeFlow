@@ -1,4 +1,5 @@
-"""Operational commands: `python -m app.cli {migrate,encrypt-phi,rewrap-deks,seed,summary-deadlines,escalate}`."""
+"""Operational commands:
+`python -m app.cli {migrate,encrypt-phi,rewrap-deks,seed,summary-deadlines,escalate,sso-provider}`."""
 import argparse
 import asyncio
 import json
@@ -12,7 +13,7 @@ from app.core.db import SessionLocal, engine
 from app.core.migrate import encrypt_legacy_phi, migrate_all, rewrap_deks
 from app.escalations.service import run_all_tenants
 from app.core.tenancy import current_tenant_id, use_tenant
-from app.identity.models import Tenant
+from app.identity.models import IdentityProvider, Tenant
 from app.seed import seed_demo_data
 
 
@@ -49,6 +50,23 @@ def main() -> int:
     sub.add_parser("summary-deadlines",
                    help="Notify physicians of discharge summaries unsigned past SUMMARY_SIGN_HOURS (run on a schedule)")
     sub.add_parser("escalate", help="Escalate overdue tasks in every tenant (idempotent; run every few minutes)")
+    sso = sub.add_parser("sso-provider", help="Register, list or disable a hospital's OIDC identity provider")
+    sso_sub = sso.add_subparsers(dest="sso_command", required=True)
+    add = sso_sub.add_parser("add", help="Register a provider for a tenant (e.g. from the Cognito Terraform outputs)")
+    add.add_argument("--tenant", required=True, help="Tenant (hospital) id people sign in to")
+    add.add_argument("--name", required=True, help="Shown on the sign-in button")
+    add.add_argument("--issuer", required=True)
+    add.add_argument("--client-id", required=True)
+    add.add_argument("--authorize-url", required=True)
+    add.add_argument("--token-url", required=True)
+    add.add_argument("--jwks-url", help="Default: <issuer>/.well-known/jwks.json")
+    add.add_argument("--scopes", default="openid email profile")
+    add.add_argument("--groups-claim", default="groups", help="ID-token claim listing directory groups")
+    add.add_argument("--no-require-mfa", action="store_true",
+                     help="Accept tokens whose amr claim names no second factor (only if the IdP cannot send it)")
+    sso_sub.add_parser("list", help="List providers")
+    disable = sso_sub.add_parser("disable", help="Stop offering a provider (sign-in through it is refused)")
+    disable.add_argument("provider_id")
     args = parser.parse_args()
 
     if args.command == "migrate":
@@ -63,6 +81,8 @@ def main() -> int:
         return asyncio.run(_run(_summary_deadlines()))
     if args.command == "escalate":
         return asyncio.run(_run(run_all_tenants(SessionLocal)))
+    if args.command == "sso-provider":
+        return asyncio.run(_run(_sso_provider(args)))
     return 2
 
 
@@ -89,3 +109,35 @@ async def _summary_deadlines() -> dict:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+async def _sso_provider(args) -> dict | int:
+    """Identity providers are shared configuration (the app role may only read them), so operators manage them
+    here, with the owner connection, rather than tenant admins over the API."""
+    async with SessionLocal() as db:
+        if args.sso_command == "list":
+            rows = await db.scalars(select(IdentityProvider).order_by(IdentityProvider.created_at))
+            return {"providers": [r.to_dict() for r in rows]}
+        if args.sso_command == "disable":
+            row = await db.get(IdentityProvider, args.provider_id)
+            if row is None:
+                print(f"No identity provider {args.provider_id}", file=sys.stderr)
+                return 1
+            row.active = False
+            await db.commit()
+            return {"disabled": row.provider_id}
+        if await db.get(Tenant, args.tenant) is None:
+            print(f"No tenant {args.tenant}", file=sys.stderr)
+            return 1
+        for url in (args.issuer, args.authorize_url, args.token_url, args.jwks_url):
+            if url and not url.startswith("https://") and settings.is_production:
+                print(f"Provider URLs must be https: {url}", file=sys.stderr)
+                return 1
+        row = IdentityProvider(
+            tenant_id=args.tenant, name=args.name, issuer=args.issuer.rstrip("/"), client_id=args.client_id,
+            authorize_url=args.authorize_url, token_url=args.token_url, jwks_url=args.jwks_url, scopes=args.scopes,
+            groups_claim=args.groups_claim, require_mfa=not args.no_require_mfa, active=True,
+        )
+        db.add(row)
+        await db.commit()
+        return {"provider_id": row.provider_id, "tenant_id": row.tenant_id}

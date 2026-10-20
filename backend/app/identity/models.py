@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, UTCDateTime, utcnow
@@ -27,6 +27,11 @@ class User(TenantMixin, Base):
     name: Mapped[str] = mapped_column(String(200))
     picture: Mapped[Optional[str]] = mapped_column(String(2048))
     role: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    # The directory's id for this person (SCIM externalId), set by provisioning (ADR-002 item 2).
+    external_id: Mapped[Optional[str]] = mapped_column(String(200))
+    # Set when the hospital directory deprovisions the account (SCIM active=false): it cannot sign in, and its
+    # sessions were revoked. Cleared by reactivation. Distinct from role `pending`, which an admin sets.
+    deactivated_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, onupdate=utcnow)
 
@@ -101,3 +106,52 @@ class IntegrationClient(TenantMixin, Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+
+
+class IdentityProvider(Base):
+    """A hospital's OpenID Connect identity provider (ADR-002 item 2): usually a Cognito user pool federated with
+    the hospital directory over SAML or OIDC. Its `issuer` decides which tenant a person signs in to.
+
+    Shared across tenants like `tenants`: the login page lists providers before anyone has signed in, so the app
+    role may only read it. Rows are added with `python -m app.cli sso-provider` (an operator, not a tenant admin).
+    """
+
+    __tablename__ = "identity_providers"
+    __table_args__ = (UniqueConstraint("issuer", "client_id", name="uq_identity_providers_issuer_client"),)
+
+    provider_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("idp", 12))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="RESTRICT"), index=True)
+    # Shown on the sign-in button ("Sign in with St. Mary's").
+    name: Mapped[str] = mapped_column(String(200))
+    issuer: Mapped[str] = mapped_column(String(500))
+    client_id: Mapped[str] = mapped_column(String(200))
+    authorize_url: Mapped[str] = mapped_column(String(500))
+    token_url: Mapped[str] = mapped_column(String(500))
+    # Default: the issuer's /.well-known/jwks.json (Cognito's layout).
+    jwks_url: Mapped[Optional[str]] = mapped_column(String(500))
+    scopes: Mapped[str] = mapped_column(String(200), default="openid email profile")
+    # The ID-token claim listing the person's directory groups (a list, or a comma-separated string).
+    groups_claim: Mapped[str] = mapped_column(String(100), default="groups")
+    # Refuse ID tokens whose `amr` names no second factor.
+    require_mfa: Mapped[bool] = mapped_column(Boolean, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class IdpGroupMapping(TenantMixin, Base):
+    """A directory group's meaning in this hospital: a role, a unit membership, or both (ADR-002 item 2).
+
+    When a provider has any mapping with a role, sign-in sets the person's role from their groups every time (no
+    mapped group: `pending`); when it has any mapping with a unit, sign-in replaces their unit memberships likewise.
+    `provider_id` is an `identity_providers` id, or `env` for the provider configured by OIDC_* variables.
+    """
+
+    __tablename__ = "idp_group_mappings"
+    __table_args__ = (UniqueConstraint("tenant_id", "provider_id", "group_name", name="uq_idp_group_mappings_group"),)
+
+    mapping_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("idpm", 12))
+    provider_id: Mapped[str] = mapped_column(String(40), index=True)
+    group_name: Mapped[str] = mapped_column(String(200))
+    role: Mapped[Optional[str]] = mapped_column(String(20))
+    unit_id: Mapped[Optional[str]] = mapped_column(ForeignKey("units.unit_id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
