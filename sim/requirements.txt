@@ -1,0 +1,4 @@
+# Hospital simulation tools (not needed by the app). Python 3.12; install in its own virtualenv:
+#   python -m venv sim/.venv && sim/.venv/Scripts/pip install -r sim/requirements.txt   (Windows)
+httpx>=0.28.1
+locust>=2.32

@@ -6,6 +6,9 @@ import crypto from 'node:crypto';
 import { test, expect } from '@playwright/test';
 import { signInAs } from './helpers';
 
+// The fake EHR listens on this machine, which a deployment can't reach (and its redirect URI is localhost).
+test.skip(!!process.env.E2E_BASE_URL, 'needs the local fake EHR; runs only against the local build');
+
 const PORT = 4199;
 const EHR = `http://localhost:${PORT}`;
 const ISS = `${EHR}/fhir`;

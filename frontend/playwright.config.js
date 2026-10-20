@@ -5,6 +5,8 @@
 //   E2E_DATABASE_URL  database for the backend (CI: the Postgres service; default: a throwaway SQLite file)
 //   E2E_PYTHON        Python with the backend requirements installed (default: python)
 //   PW_CHANNEL        e.g. "chrome" to use an installed Chrome instead of Playwright's Chromium
+//   E2E_BASE_URL      run against a deployment instead (the hospital simulation, sim/README.md): nothing is started
+//                     locally, and the deployment must allow the dev login (APP_ENV=test, ENABLE_DEV_LOGIN=true)
 import os from 'node:os';
 import path from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
@@ -13,6 +15,7 @@ const CI = !!process.env.CI;
 const database = process.env.E2E_DATABASE_URL
   ?? `sqlite+aiosqlite:///${path.join(os.tmpdir(), `dischargeflow-e2e-${Date.now()}.db`).replaceAll('\\', '/')}`;
 const python = process.env.E2E_PYTHON ?? 'python';
+const remote = process.env.E2E_BASE_URL?.replace(/\/$/, '');
 
 export default defineConfig({
   testDir: './e2e',
@@ -22,13 +25,13 @@ export default defineConfig({
   timeout: 60_000,
   reporter: CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
-    baseURL: 'http://localhost:4173',
+    baseURL: remote ?? 'http://localhost:4173',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     ...devices['Desktop Chrome'],
     ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),
   },
-  webServer: [
+  webServer: remote ? undefined : [
     {
       command: `${python} -m app.cli migrate && ${python} -m uvicorn server:app --port 8000`,
       cwd: '../backend',

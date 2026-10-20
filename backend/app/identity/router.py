@@ -97,6 +97,8 @@ async def create_session(request: Request, response: Response, db: DB):
 class DevLogin(BaseModel):
     role: str
     name: str = ""
+    # Distinct test users of one role (the hospital simulation signs in hundreds); empty keeps one user per role.
+    handle: str = Field(default="", pattern=r"^[a-z0-9-]{0,40}$")
 
 
 @auth_router.post("/dev-login", include_in_schema=False)
@@ -108,7 +110,7 @@ async def dev_login(body: DevLogin, request: Request, response: Response, db: DB
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
     await use_tenant(db, sessions.default_tenant())
-    email = f"e2e.{body.role}@dischargeflow.test"
+    email = f"e2e.{body.role}{'.' + body.handle if body.handle else ''}@dischargeflow.test"
     user = await db.scalar(select(User).where(User.email == email))
     if user is None:
         user = User(email=email, name=body.name or f"E2E {body.role.capitalize()}", role=body.role)
