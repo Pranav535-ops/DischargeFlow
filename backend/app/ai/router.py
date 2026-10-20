@@ -20,6 +20,7 @@ from app.discharge import service as discharge_service
 from app.discharge.models import Task, Workflow
 from app.identity.models import User
 from app.patients.models import LANGUAGE_TAG_PATTERN, Patient
+from app.patients.service import ensure_not_erased
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -49,6 +50,7 @@ async def generate_discharge_summary(
     patient = await db.get(Patient, req.patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    ensure_not_erased(patient)
     workflow = await db.get(Workflow, req.workflow_id)
     if not workflow or workflow.patient_id != patient.patient_id:
         raise HTTPException(status_code=404, detail="Workflow not found")

@@ -25,6 +25,14 @@ from app.risk import service as risk
 
 BREAK_GLASS_HOURS = 8
 RESTRICTED_DETAIL = "This patient is outside your units. Request break-glass access to open the record."
+ERASED_DETAIL = "This patient's data was erased"
+
+
+def ensure_not_erased(patient: Patient) -> None:
+    """Refuse (409) a write that would store new PHI or open new clinical work for an erased patient: with the data
+    key destroyed, writing would mint a new key and bring the record back. The row stays only for audit references."""
+    if patient.gdpr_erased:
+        raise HTTPException(status_code=409, detail=ERASED_DETAIL)
 
 
 async def ensure_unit(db: AsyncSession, unit_id: Optional[str]) -> None:

@@ -122,6 +122,7 @@ async def update_patient(
     user: CurrentUser = Depends(requires("patient:write")),
 ):
     patient = await get_patient_or_404(db, patient_id)
+    service.ensure_not_erased(patient)
     changes = updates.model_dump(exclude_unset=True, exclude_none=True)
     await service.ensure_unit(db, changes.get("unit_id"))
     for field, value in changes.items():
@@ -136,7 +137,10 @@ async def update_patient(
 
 
 @router.post("/{patient_id}/consent")
-async def update_patient_consent(patient_id: str, body: ConsentUpdate, request: Request, db: DB, user: AuthUser):
+async def update_patient_consent(
+    patient_id: str, body: ConsentUpdate, request: Request, db: DB,
+    user: CurrentUser = Depends(requires("patient:write")),
+):
     patient = await get_patient_or_404(db, patient_id)
     patient.gdpr_consent = body.gdpr_consent
     await write_audit(db, user, "UPDATE_CONSENT", "patient", patient_id, f"GDPR consent → {body.gdpr_consent}", request)

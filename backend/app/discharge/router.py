@@ -12,6 +12,7 @@ from app.discharge import planning, service, templates
 from app.discharge.models import DELAY_CODES, DISPOSITIONS, Task, Workflow
 from app.identity.permissions import ROLES
 from app.patients.models import Encounter
+from app.patients.service import ensure_not_erased
 from app.risk import lace
 from app.risk import service as risk
 
@@ -277,6 +278,7 @@ async def update_risk_inputs(encounter_id: str, body: RiskInputs, request: Reque
                              user: CurrentUser = Depends(requires("plan:manage"))):
     """Record the readmission risk inputs (admission type, comorbidities, ED visits) and recompute the score."""
     encounter = await _encounter_or_404(db, encounter_id)
+    ensure_not_erased(encounter.patient)
     await risk.update_inputs(db, user, encounter, body.model_dump(exclude_unset=True), request)
     return await planning.plan_detail(db, encounter)
 

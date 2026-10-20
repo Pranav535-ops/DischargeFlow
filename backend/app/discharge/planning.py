@@ -25,6 +25,7 @@ from app.discharge.models import (ACTIVE_WORKFLOW_STATUSES, DELAY_CODES, DISPOSI
 from app.discharge.templates import due_at_for, hospital_today, hospital_zone
 from app.identity.models import Unit, User
 from app.patients.models import REDACTED, Encounter
+from app.patients.service import ensure_not_erased
 from app.risk import lace
 from app.risk import service as risk
 
@@ -46,6 +47,7 @@ async def _active_encounter(db: AsyncSession, encounter_id: str) -> Encounter:
         raise HTTPException(status_code=404, detail="Encounter not found")
     if encounter.status != "active":
         raise HTTPException(status_code=400, detail="The patient has already been discharged from this stay")
+    ensure_not_erased(encounter.patient)
     return encounter
 
 

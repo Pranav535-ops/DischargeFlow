@@ -116,9 +116,9 @@ deprovisioning never waits. All writes are audited with the client as actor (`SC
 | POST | `/patients/{patient_id}/break-glass` | signed in (unit-scoped users) | Body `{reason}` (10–500 characters). Opens one patient outside your units for 8 hours. The reason is stored on the grant, not in the audit entry; audited (`BREAK_GLASS`) and admins are notified. 400 if you are not unit-scoped, 409 if you can already see the patient |
 | GET | `/access-grants` | `audit:read` | Break-glass grants for review, newest first, with user name, reason and `active`; `?active_only=true` |
 | POST | `/patients` | `patient:write` | Optional `unit_id` and `preferred_language` (BCP 47 code such as `es` or `zh-Hant`; 422 otherwise); opens the patient's first encounter from the admission fields; audited (`CREATE_PATIENT`) |
-| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only (including `preferred_language`); audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one |
-| POST | `/patients/{patient_id}/consent` | signed in | GDPR consent; audited |
-| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries, patient instructions and visit numbers; audited |
+| PUT | `/patients/{patient_id}` | `patient:write` | Whitelisted fields only (including `preferred_language`); audited with the field names, never values. Room, unit and admission date are copied to the current encounter; `status: discharged` closes it, and setting a discharged patient back opens a new one. 409 if the patient was erased |
+| POST | `/patients/{patient_id}/consent` | `patient:write` | GDPR consent; audited |
+| DELETE | `/patients/{patient_id}/data` | `patient:erase` | Right to erasure: destroys the patient's data key and overwrites summaries, patient instructions and visit numbers; audited. Repeating it is harmless. Afterwards the record takes no new PHI or clinical work: editing it, starting a discharge, generating a summary, creating tasks or claims, and changing the plan or risk inputs of its encounters (also through the assistant) return 409 "This patient's data was erased" |
 
 ## Discharge workflows and tasks
 

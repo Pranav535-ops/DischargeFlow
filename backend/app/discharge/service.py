@@ -29,7 +29,7 @@ from app.identity.models import User
 from app.identity.permissions import PENDING_ROLE
 from app.notifications.service import notify_role
 from app.patients.models import Encounter, Patient
-from app.patients.service import current_encounter, ensure_current_encounter
+from app.patients.service import current_encounter, ensure_current_encounter, ensure_not_erased
 
 STANDARD_TASKS = [
     {"title": "Complete Discharge Summary", "description": "Generate and approve AI discharge summary", "category": "documentation", "assigned_role": "physician", "priority": 1},
@@ -118,6 +118,7 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
     patient = await db.get(Patient, patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    ensure_not_erased(patient)
     if await active_workflow_for(db, patient_id):
         raise HTTPException(status_code=400, detail="Active workflow already exists")
     if patient.status == "discharged":
@@ -167,8 +168,10 @@ async def initiate_discharge(db: AsyncSession, patient_id: str, user: CurrentUse
 async def create_task(db: AsyncSession, user: CurrentUser, *, patient_id: str, title: str, description: str,
                       category: str, assigned_role: str, priority: int = 2) -> Task:
     """A manual task, attached to the patient's active workflow if there is one."""
-    if not await db.get(Patient, patient_id):
+    patient = await db.get(Patient, patient_id)
+    if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    ensure_not_erased(patient)
     workflow = await active_workflow_for(db, patient_id)
     task = Task(patient_id=patient_id, title=title, description=description, category=category,
                 assigned_role=assigned_role, priority=priority,

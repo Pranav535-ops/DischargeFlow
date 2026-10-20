@@ -25,6 +25,11 @@ _ACTIVE_ENCOUNTER_SQL = text("status = 'active'")
 MRN_INDEX_PURPOSE = "mrn"
 
 
+class ErasedPatientError(ValueError):
+    """New PHI for a patient whose data was erased. Routes refuse such writes first (patients.service.ensure_not_erased);
+    this is the backstop that keeps a fresh data key from bringing the record back."""
+
+
 def mrn_index_parts(tenant_id: str, authority: Optional[str], mrn: str) -> tuple[str, str, str]:
     """What the MRN blind index covers. The tenant is included so one MRN gives unrelated values in two hospitals,
     and the assigning authority (PID-3.4) because MRNs are only unique within the system that issued them."""
@@ -102,6 +107,8 @@ class Patient(TenantMixin, Base):
         if value is None:
             setattr(self, f"_{field}", None)
             return
+        if self.gdpr_erased:
+            raise ErasedPatientError(f"Cannot store {field} for an erased patient")
         if self.patient_id is None:
             self.patient_id = new_id("pat")  # the id is part of the ciphertext's associated data
         if self.phi_dek is None:
@@ -242,6 +249,8 @@ class Encounter(TenantMixin, Base):
     def _patient_key(self) -> bytes:
         if self.patient is None:
             raise ValueError("Set Encounter.patient first: its identifiers are encrypted with the patient's key")
+        if self.patient.gdpr_erased:
+            raise ErasedPatientError("Cannot store encounter identifiers for an erased patient")
         if self.patient.phi_dek is None:
             self.patient.phi_dek = crypto.new_wrapped_dek()
         if self.encounter_id is None:
