@@ -168,7 +168,7 @@ def hl7_timestamp(when: Optional[datetime] = None) -> str:
 def parse_date(value: str) -> Optional[str]:
     """HL7 DT/DTM (YYYYMMDD[HHMM[SS]][+ZZZZ]) to ISO YYYY-MM-DD, or None if it isn't a valid date."""
     digits = value[:8]
-    if len(digits) != 8 or not digits.isdigit():
+    if len(digits) != 8 or not (digits.isascii() and digits.isdigit()):
         return None
     try:
         return datetime.strptime(digits, "%Y%m%d").date().isoformat()
@@ -186,19 +186,23 @@ def parse_datetime(value: str) -> Optional[datetime]:
     for sign in ("+", "-"):
         if sign in value[8:]:
             value, zone = value.rsplit(sign, 1)
-            if len(zone) != 4 or not zone.isdigit():
+            # ASCII only: str.isdigit() also accepts characters such as "²" that int() refuses.
+            if len(zone) != 4 or not (zone.isascii() and zone.isdigit()):
                 return None
-            minutes = int(zone[:2]) * 60 + int(zone[2:])
-            offset = timezone(timedelta(minutes=minutes if sign == "+" else -minutes))
+            hours, minutes = int(zone[:2]), int(zone[2:])
+            if hours >= 24 or minutes >= 60:  # timezone() refuses an offset of a day or more
+                return None
+            total = hours * 60 + minutes
+            offset = timezone(timedelta(minutes=total if sign == "+" else -total))
             break
     digits = value.split(".", 1)[0]
-    if len(digits) < 8 or len(digits) > 14 or len(digits) % 2 or not digits.isdigit():
+    if len(digits) < 8 or len(digits) > 14 or len(digits) % 2 or not (digits.isascii() and digits.isdigit()):
         return None
     try:
         parsed = datetime.strptime(digits.ljust(14, "0"), "%Y%m%d%H%M%S")
-    except ValueError:
+        return parsed.replace(tzinfo=offset).astimezone(timezone.utc)
+    except (ValueError, OverflowError):  # OverflowError: the offset moves year 1 or 9999 out of range
         return None
-    return parsed.replace(tzinfo=offset).astimezone(timezone.utc)
 
 
 def build_ack(message: Optional[Message], ack_code: str, text: str = "", error_code: Optional[str] = None) -> str:
