@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import write_audit
+from app.capacity import beds
 from app.core import crypto
 from app.core.db import utcnow
 from app.core.security import CurrentUser
@@ -274,6 +275,8 @@ async def transfer(db: AsyncSession, client: CurrentUser, message: Message) -> O
     if not room:
         raise _ae("101", "PV1-3 assigned location is required")
     unit_id = await unit_for(db, message)
+    if (unit_id, room) != (encounter.unit_id, encounter.room_number):
+        await beds.mark_dirty(db, encounter.unit_id, encounter.room_number, encounter.encounter_id, "transfer")
     patient.room_number = encounter.room_number = room
     patient.unit_id = encounter.unit_id = unit_id
     return Outcome("AA", f"Patient transferred (unit {unit_id or 'unassigned'})", patient_id=patient.patient_id)
@@ -294,6 +297,7 @@ async def discharge(db: AsyncSession, client: CurrentUser, message: Message) -> 
         departed = departure_from(message)
         if encounter is not None:
             encounter.close(departed, disposition)
+            await beds.bed_vacated(db, encounter)
         patient.status = "discharged"
         await _notify(db, patient, "Patient Left Without a Discharge Workflow",
                       f"The hospital ADT system discharged {patient.name}; no discharge workflow had been started.",
@@ -382,6 +386,7 @@ async def cancel_discharge(db: AsyncSession, client: CurrentUser, message: Messa
     _check_visit(message, latest)
 
     latest.reopen()
+    await beds.departure_cancelled(db, latest.encounter_id)
     patient.status = "admitted"
     patient.room_number = latest.room_number or patient.room_number
     patient.unit_id = latest.unit_id

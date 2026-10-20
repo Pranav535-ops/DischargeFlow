@@ -5,6 +5,7 @@ import { Sparkles, Loader2, ShieldCheck, AlertCircle, BarChart3, Gauge } from 'l
 import { api, errorMessage } from '@/lib/api';
 import { useAggregates, useOperations } from '@/lib/queries';
 import { Button } from './ui/button';
+import OutcomesPanel from './OutcomesPanel';
 
 const ROLE_LABEL = { physician: 'Physician', nurse: 'Nurse', pharmacist: 'Pharmacist', admin: 'Admin' };
 
@@ -159,6 +160,8 @@ const InsightsView = () => {
       )}
 
       <OperationsPanel />
+
+      <OutcomesPanel />
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
         <h2 className="text-lg font-medium text-zinc-50 mb-4 flex items-center gap-2">
