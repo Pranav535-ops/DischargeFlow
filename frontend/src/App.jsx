@@ -26,6 +26,7 @@ const InsightsView = lazy(() => import('./components/InsightsView'));
 const CensusView = lazy(() => import('./components/CensusView'));
 const PlanReviewView = lazy(() => import('./components/PlanReviewView'));
 const DeliveriesView = lazy(() => import('./components/SummaryDelivery'));
+const CapacityBoardView = lazy(() => import('./components/CapacityBoardView'));
 const PatientInstructionsPrint = lazy(() => import('./components/PatientInstructionsPrint'));
 
 export const Spinner = ({ full = false }) => (
@@ -87,6 +88,8 @@ const AppRouter = () => {
         <Route path="/assistant" element={page(<ChatbotView />)} />
         <Route path="/census" element={page(<CensusView />)} />
         <Route path="/plans" element={page(<PlanReviewView />)} />
+        <Route path="/capacity" element={
+          <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<CapacityBoardView />)}</RoleRoute>} />
         <Route path="/instructions/:instructionsId/print" element={
           <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<PatientInstructionsPrint />)}</RoleRoute>} />
         <Route path="/analytics" element={

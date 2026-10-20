@@ -92,6 +92,8 @@ async def update_plan(db: AsyncSession, user: CurrentUser, encounter_id: str, ch
         details += f" slip: delay={delay.delay_id} code={code}"
     for field in changed:
         setattr(encounter, field, changes[field])
+    if encounter.first_expected_discharge_date is None and encounter.expected_discharge_date is not None:
+        encounter.first_expected_discharge_date = encounter.expected_discharge_date
     if "expected_discharge_date" in changed:
         await _move_due_times(db, encounter)
     encounter.plan_reviewed_at = utcnow()

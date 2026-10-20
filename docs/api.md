@@ -46,6 +46,8 @@ suspend someone.
 | `delivery:manage` | nurse (the delivery worklist: list, retry and cancel deliveries) |
 | `delivery:run` | interface (a hospital scheduler running the delivery queue) |
 | `delivery:acknowledge` | interface (a receiver or interface engine confirming a delivery it accepted with 202) |
+| `capacity:read` | physician, nurse (the capacity board) |
+| `bed:manage` | nurse, interface (move a bed through dirty, cleaning, available; the EVS system uses an API key) |
 | `instructions:manage` | physician, nurse (draft, edit, approve and print patient instructions) |
 
 ### Unit-scoped access
@@ -159,6 +161,7 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 | GET | `/analytics/tasks-by-role` | signed in | |
 | GET | `/analytics/aggregates` | `insights:read` | Aggregate-only metrics sent to the insights model |
 | GET | `/analytics/operations` | `insights:read` | Throughput, approval wait, task SLA (a task is late after its template due time, else its priority's SLA target), summary signing against the sign-by policy, `stays`: length of stay of encounters discharged in the window and readmissions within 30 days, and `delays`: delay reasons recorded in the window, by kind (`expected_date_slip`, `task_sla_breach`) and code, with the average slip in days only for groups of 3 or more (`?days=30`) |
+| GET | `/analytics/outcomes` | `insights:read` | Outcomes of stays discharged in the window (`?days=90`, 1 to 365), `overall` and `by_unit` (unit code, or `unassigned`): `discharges`, `length_of_stay_days`, `vs_expected_date` (discharge day minus the final expected date, plus `on_or_before`), `expected_date_accuracy` (exact on the final and on the first expected date, absolute error in days, how many first estimates changed), `before_noon` (hospital time) and `readmitted_within_30_days` (another admission within 30 days, counted only for discharges at least 30 days ago; the rest are `follow_up_pending`). `delay_reasons`: a Pareto of codes (`n`, `share`, `cumulative_share`), by kind and by unit. Counts and durations only; a group under 3 gets its count but no averages or rates. Attribution is by unit only (no service line in the data model) |
 | POST | `/analytics/insights` | `insights:read` | AI explanation of the aggregates |
 | GET | `/notifications` | signed in | |
 | GET | `/notifications/stream` | signed in | Server-Sent Events (`ready`, `notification` with the id only, `end`); closes after `NOTIFICATION_STREAM_SECONDS` and the client reconnects. A `ready` mid-stream means "refetch the list". `NOTIFICATION_TRANSPORT=listen` delivers over Postgres LISTEN/NOTIFY, `poll` (default, Vercel) polls every 5 s |
@@ -175,6 +178,22 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 | POST | `/downtime/periods` | `downtime:manage` | Body `{started_at, ended_at, reason}`: records an unplanned outage after it is over, so work done on paper during it can be back-entered. 400 if it ends before it starts or in the future, 409 if it overlaps a recorded period; audited (`RECORD_OUTAGE`) |
 | GET | `/downtime/periods` | signed in | The latest 50 periods (`read_only` or `outage`), newest first |
 | GET | `/census` | signed in | Discharge census: patients not yet discharged (erased ones left out), by unit and room, with the current encounter (id, visit number, admission, room), discharge status, estimated discharge, whether the summary is approved and the open tasks. `?unit_id=` (or `unassigned`; 404 for an unknown unit); `?format=csv` downloads it (spreadsheet formulas neutralised). Unit scope applies as for `/patients`. One `PHI_READ` entry per request with the scope and count |
+
+## Capacity and beds
+
+Capacity board and the bed-to-cleaning handoff (ADR-002 item 17). A bed is a unit plus a room (the location strings
+encounters carry). When a stay ends in it (discharge completed in the UI, a manual status change to discharged, an
+HL7 A03 with or without a workflow) or a patient is transferred out of it (A02), the bed gets a turnover in state
+`dirty`; at most one open turnover per bed. A13 (discharge cancelled) cancels a `dirty` turnover from that discharge.
+Responses never include the encounter or patient. Unit scope applies: Postgres RLS on `bed_turnovers` by its own
+`unit_id`, and the board lists only the user's units.
+
+| Method | Path | Access | Notes |
+|---|---|---|---|
+| GET | `/capacity/board` | `capacity:read` | `?date=YYYY-MM-DD` (hospital day, default today). Per unit (`units`, unassigned last) and in `totals`: `in_house`, `expected` (plan's expected date is that day), `expected_by_hour` (hour of the active workflow's `estimated_discharge_time`, hospital time) and `unscheduled` (expected with no time that day), `expected_tomorrow`, `past_expected_date` (today only), `no_expected_date`, `discharged`, `discharged_by_hour`, `discharged_before_noon`, `before_noon_7d` (`n`, `before_noon`, `rate`), bed counts (`beds_dirty`, `beds_cleaning`, `beds_available` in the last 12 h) and `turnaround_minutes_7d` (median dirty to available). `beds`: open turnovers and ones made available in the last 12 h, with `minutes_out_of_service`. Operational: small counts are shown as they are |
+| GET | `/beds` | `bed:manage` (signed in or `X-API-Key`) | Turnovers oldest first: open ones, or `?status=dirty\|cleaning\|available\|cancelled` (≤500) |
+| POST | `/beds` | `bed:manage` (signed in or `X-API-Key`) | `{unit_id, room_number}`: a bed that needs cleaning without a discharge the system saw. Returns the open turnover if there is one. 400 unknown unit, 403 a unit the user isn't on. Audited `BED_DIRTY` |
+| PUT | `/beds/{turnover_id}` | `bed:manage` (signed in or `X-API-Key`) | `{status: "cleaning" \| "available"}`: dirty to cleaning, cleaning to available, or dirty to available (no start time recorded). 409 for any other move. Records the time and who. Audited `BED_STATUS` with the unit and the move, never the room |
 
 ## Escalations
 

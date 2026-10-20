@@ -52,6 +52,10 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "delivery:manage": ("nurse",),
     "delivery:run": (INTEGRATION_ROLE,),
     "delivery:acknowledge": (INTEGRATION_ROLE,),
+    # The capacity board: expected discharges by unit and hour, beds being cleaned (ADR-002 item 17).
+    "capacity:read": ("physician", "nurse"),
+    # Move a bed through dirty -> cleaning -> available: charge nurses, and the EVS system as an integration client.
+    "bed:manage": ("nurse", INTEGRATION_ROLE),
     # Draft, edit, approve and print patient-facing discharge instructions (ADR-002 item 18).
     "instructions:manage": ("physician", "nurse"),
 }

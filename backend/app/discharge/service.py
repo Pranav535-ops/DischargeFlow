@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import lifecycle
 from app.ai.models import AIGeneration, DischargeSummary
 from app.audit.service import write_audit
+from app.capacity.beds import bed_vacated
 from app.core.config import settings
 from app.core.db import utcnow
 from app.core.security import CurrentUser, ensure_permission
@@ -370,6 +371,7 @@ async def complete_discharge(db: AsyncSession, workflow_id: str, user: CurrentUs
         encounter = await encounter_for(db, workflow)
         if encounter is not None and encounter.status == "active":
             encounter.close(done, disposition)
+            await bed_vacated(db, encounter)
             details += f" encounter={encounter.encounter_id}"
         patient = await db.get(Patient, workflow.patient_id)
         if patient:
@@ -396,6 +398,7 @@ async def record_external_discharge(db: AsyncSession, workflow: Workflow, user: 
     encounter = await encounter_for(db, workflow)
     if encounter is not None and encounter.status == "active":
         encounter.close(departed_at, disposition)
+        await bed_vacated(db, encounter)
         details += f" encounter={encounter.encounter_id}"
     patient = await db.get(Patient, workflow.patient_id)
     if patient:
