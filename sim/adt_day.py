@@ -31,7 +31,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from common import OUT_DIR, UNIT_CODES, Api, SimPatient, adt_message, load_state, make_patient, post_hl7
+from common import (OUT_DIR, UNIT_CODES, Api, SimPatient, adt_message, integration_key, load_state, make_patient,
+                    post_hl7)
 
 
 @dataclass
@@ -205,7 +206,7 @@ def main() -> None:
     args = parser.parse_args()
 
     state = load_state()
-    if not state.get("api_key") or state.get("base_url") != args.base_url:
+    if not state.get("staff") or state.get("base_url") != args.base_url:
         sys.exit("Run sim/seed.py against this deployment first.")
     rng = random.Random(args.seed)
     admin = Api(args.base_url, "admin", "sim-admi-001")
@@ -221,7 +222,8 @@ def main() -> None:
     if args.dry_run:
         return
 
-    results = replay(events, args.base_url, state["api_key"], args.duration, args.senders, args.unordered, rng)
+    with integration_key(admin, "ADT day") as api_key:  # revoked when the replay ends; never stored
+        results = replay(events, args.base_url, api_key, args.duration, args.senders, args.unordered, rng)
     failures, stats = check(results, expected, admin)
     report = {"tag": tag, "base_url": args.base_url, "duration_s": args.duration, "senders": args.senders,
               "unordered": args.unordered, "stats": stats, "failures": failures, "results": results}

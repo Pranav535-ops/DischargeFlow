@@ -59,7 +59,7 @@ The seed creates:
 - about 390 patients admitted through HL7 A01 (18 beds × 24 units × 90% occupancy)
 - a discharge plan (expected date and disposition) for each stay
 
-Seeding is idempotent. The integration key and the staff list are kept in `sim/.state.json`, which is gitignored and is the only copy of the key. Delete it and revoke the client on the admin screen to start over.
+Seeding is idempotent. `sim/.state.json` (gitignored) keeps the target deployment, unit ids and staff list, and no credentials. The seed and the ADT day each create a short-lived integration client and revoke it when they finish, so no API key is ever written to disk.
 
 ## 3. Playwright against the sim
 

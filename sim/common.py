@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +18,7 @@ from pathlib import Path
 import httpx
 
 HERE = Path(__file__).resolve().parent
-STATE_FILE = HERE / ".state.json"  # gitignored: unit ids, seeded users, the sim's integration key
+STATE_FILE = HERE / ".state.json"  # gitignored: the target deployment, unit ids, seeded staff (no credentials)
 OUT_DIR = HERE / "out"
 HL7_MEDIA_TYPE = "x-application/hl7-v2+er7"
 
@@ -172,6 +174,19 @@ class Api:
 
     def put(self, path: str, **kw) -> httpx.Response:
         return self.request("PUT", path, **kw)
+
+
+@contextmanager
+def integration_key(admin: Api, purpose: str) -> Iterator[str]:
+    """A short-lived ADT integration client: created for one run and revoked when it ends, so its key is never
+    written anywhere (it lives only in this process's memory)."""
+    resp = admin.post("/integrations/clients", json={"name": f"Sim {purpose} {datetime.now(timezone.utc):%Y-%m-%d %H:%M}"})
+    resp.raise_for_status()
+    body = resp.json()
+    try:
+        yield body["api_key"]
+    finally:
+        admin.request("DELETE", f"/integrations/clients/{body['client_id']}")
 
 
 def post_hl7(http: httpx.Client, api_key: str, message: str) -> tuple[str, str, float]:

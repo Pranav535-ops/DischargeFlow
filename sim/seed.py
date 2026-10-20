@@ -3,8 +3,9 @@ admitted patients (through HL7 A01, as a real hospital would load them) and a di
 
     python sim/seed.py --base-url https://<sim deployment> [--occupancy 0.9] [--beds-per-unit 18]
 
-Idempotent: units and users are matched by code and handle, the integration key is kept in sim/.state.json, and a
-patient whose MRN is already admitted is skipped (AE 205). Run it again after a reset to top the census back up.
+Idempotent: units and users are matched by code and handle, and a patient whose MRN is already admitted is skipped
+(AE 205); run it again to top the census back up. The ADT feed uses a short-lived integration client, revoked when the
+seed ends, so no key is stored. sim/.state.json keeps the deployment, unit ids and staff list only.
 """
 from __future__ import annotations
 
@@ -16,8 +17,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
-from common import (DISPOSITION_WEIGHTS, STAFF, UNIT_CODES, Api, load_state, make_patient, post_hl7, save_state,
-                    weighted, adt_message)
+from common import (DISPOSITION_WEIGHTS, STAFF, UNIT_CODES, Api, adt_message, integration_key, load_state,
+                    make_patient, post_hl7, save_state, weighted)
 
 
 def ensure_units(admin: Api) -> dict[str, str]:
@@ -60,16 +61,6 @@ def ensure_staff(base_url: str, admin: Api, units: dict[str, str]) -> list[dict]
         return list(pool.map(sign_in, staff))
 
 
-def ensure_client(admin: Api, state: dict) -> str:
-    if state.get("api_key"):
-        return state["api_key"]
-    resp = admin.post("/integrations/clients", json={"name": "Sim ADT feed"})
-    resp.raise_for_status()
-    state["api_key"] = resp.json()["api_key"]  # shown once; kept only in the gitignored state file
-    save_state(state)
-    return state["api_key"]
-
-
 def admit_patients(base_url: str, api_key: str, units: dict[str, str], beds_per_unit: int, occupancy: float,
                    rng: random.Random) -> dict:
     now = datetime.now(timezone.utc)
@@ -89,8 +80,10 @@ def admit_patients(base_url: str, api_key: str, units: dict[str, str], beds_per_
     def send(msg: str) -> str:
         with httpx.Client(base_url=f"{base_url.rstrip('/')}/api", timeout=60) as http:
             code, text, _ = post_hl7(http, api_key, msg)
-        # AE 205: this MRN is already admitted (a re-run). Anything else unexpected is reported.
-        return "already_admitted" if code == "AE" and "already admitted" in text.lower() else code
+        # AE 205 on a re-run: the MRN is in house, or this stay's visit number was admitted before (and may have been
+        # discharged by an ADT day since). Anything else unexpected is reported.
+        seen = code == "AE" and "already" in text.lower() and "admitted" in text.lower()
+        return "already_admitted" if seen else code
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         for result in pool.map(send, messages):
@@ -136,8 +129,9 @@ def main() -> None:
     print(f"units: {len(units)}")
     staff = ensure_staff(args.base_url, admin, units)
     print(f"staff: {len(staff)} ({', '.join(f'{r} {n}' for r, n in STAFF.items())})")
-    api_key = ensure_client(admin, state)
-    admitted = admit_patients(args.base_url, api_key, units, args.beds_per_unit, args.occupancy, rng)
+    state.pop("api_key", None)  # written by earlier versions of this script; keys are no longer stored
+    with integration_key(admin, "seed") as api_key:
+        admitted = admit_patients(args.base_url, api_key, units, args.beds_per_unit, args.occupancy, rng)
     print(f"A01 admissions: {admitted}")
     print(f"plans set: {plan_stays(admin, rng)}")
 
