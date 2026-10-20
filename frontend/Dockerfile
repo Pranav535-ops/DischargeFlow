@@ -12,6 +12,7 @@ RUN npm run build
 # the backend so the app and API share an origin, as they do behind CloudFront and on Vercel.
 FROM nginx:alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=builder /app/build /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
