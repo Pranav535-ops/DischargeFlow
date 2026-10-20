@@ -8,6 +8,7 @@ from app.ai.models import DischargeSummary, PatientInstructions
 from app.audit.service import audit_phi_read, write_audit
 from app.core.db import DB, utcnow
 from app.core.security import AuthUser, CurrentUser, requires
+from app.delivery.service import cancel_for_patient as cancel_deliveries
 from app.discharge.planning import redact_delay_notes
 from app.identity.models import User
 from app.patients import service
@@ -160,6 +161,7 @@ async def delete_patient_data(
         encounter.shred()
     await service.redact_grant_reasons(db, patient_id)
     await redact_delay_notes(db, patient_id)
+    await cancel_deliveries(db, patient_id)
     await write_audit(db, user, "GDPR_ERASURE", "patient", patient_id, "Patient data key destroyed and identifiers erased", request)
     return {"message": "Patient data erased per GDPR right-to-be-forgotten"}
 

@@ -27,6 +27,7 @@ const AdminView = lazy(() => import('./components/AdminView'));
 const InsightsView = lazy(() => import('./components/InsightsView'));
 const CensusView = lazy(() => import('./components/CensusView'));
 const PlanReviewView = lazy(() => import('./components/PlanReviewView'));
+const DeliveriesView = lazy(() => import('./components/SummaryDelivery'));
 const CapacityBoardView = lazy(() => import('./components/CapacityBoardView'));
 const PatientInstructionsPrint = lazy(() => import('./components/PatientInstructionsPrint'));
 
@@ -96,6 +97,8 @@ const AppRouter = () => {
           <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<PatientInstructionsPrint />)}</RoleRoute>} />
         <Route path="/analytics" element={
           <RoleRoute roles={['physician', 'nurse', 'admin']}>{page(<AnalyticsView />)}</RoleRoute>} />
+        <Route path="/deliveries" element={
+          <RoleRoute roles={['nurse', 'admin']}>{page(<DeliveriesView />)}</RoleRoute>} />
         <Route path="/admin" element={<RoleRoute roles={['admin']}>{page(<AdminView />)}</RoleRoute>} />
         <Route path="/insights" element={<RoleRoute roles={['admin']}>{page(<InsightsView />)}</RoleRoute>} />
       </Route>

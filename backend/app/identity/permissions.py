@@ -45,6 +45,13 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "plan:manage": ("physician", "nurse"),
     # Create and edit workflow templates per disposition (ADR-002 item 9). Admin only.
     "template:manage": (),
+    # Outbound summary delivery (ADR-002 item 16): manage the receiver directory (admin only); work the delivery
+    # worklist, retry and cancel (nurses, who do case management here); run the delivery queue and acknowledge a
+    # delivery (hospital systems with an API key).
+    "delivery:configure": (),
+    "delivery:manage": ("nurse",),
+    "delivery:run": (INTEGRATION_ROLE,),
+    "delivery:acknowledge": (INTEGRATION_ROLE,),
     # The capacity board: expected discharges by unit and hour, beds being cleaned (ADR-002 item 17).
     "capacity:read": ("physician", "nurse"),
     # Move a bed through dirty -> cleaning -> available: charge nurses, and the EVS system as an integration client.

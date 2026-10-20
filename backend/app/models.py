@@ -10,6 +10,7 @@ from app.audit.models import AuditChainHead, AuditLog
 from app.capacity.models import BedTurnover
 from app.chatbot.models import AssistantAction
 from app.core.db import Base
+from app.delivery.models import DeliveryEndpoint, DischargeRecipient, SummaryDelivery
 from app.discharge.models import DelayReason, Task, Workflow, WorkflowTemplate
 from app.downtime.models import DowntimePeriod
 from app.escalations.models import Escalation
@@ -39,6 +40,8 @@ __all__ = [
     "AuthSession",
     "BedTurnover",
     "DelayReason",
+    "DeliveryEndpoint",
+    "DischargeRecipient",
     "DischargeSummary",
     "DischargeSummaryAddendum",
     "DischargeSummaryVersion",
@@ -56,6 +59,7 @@ __all__ = [
     "Patient",
     "PatientInstructions",
     "RolePermission",
+    "SummaryDelivery",
     "SmartIssuer",
     "SmartLaunch",
     "Task",

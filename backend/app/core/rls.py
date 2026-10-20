@@ -32,6 +32,9 @@ TENANT_TABLES = (
     "workflow_templates",
     "delay_reasons",
     "hl7_parked_messages",
+    "delivery_endpoints",
+    "discharge_recipients",
+    "summary_deliveries",
     "bed_turnovers",
     "smart_issuers",
     "ehr_user_links",
@@ -60,7 +63,8 @@ PATIENT_VISIBLE = (
 # Rows about one patient are visible when the patient is: the subquery itself runs under the patients policies.
 UNIT_SCOPED_CHILD_TABLES = ("workflows", "tasks", "discharge_summaries", "insurance_claims", "encounters",
                             "discharge_summary_versions", "discharge_summary_addenda",
-                            "delay_reasons", "patient_instructions")
+                            "delay_reasons", "patient_instructions", "discharge_recipients",
+                            "summary_deliveries")
 # Rows about a place rather than a patient (ADR-002 item 17: beds being cleaned) are visible by their own unit_id.
 UNIT_SCOPED_LOCATION_TABLES = ("bed_turnovers",)
 UNIT_SCOPED_TABLES = ("patients",) + UNIT_SCOPED_CHILD_TABLES + UNIT_SCOPED_LOCATION_TABLES

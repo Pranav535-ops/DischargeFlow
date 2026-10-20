@@ -32,6 +32,7 @@ forbidden_modules =
     app.audit
     app.capacity
     app.chatbot
+    app.delivery
     app.discharge
     app.downtime
     app.escalations
@@ -60,6 +61,7 @@ forbidden_modules =
     app.analytics
     app.capacity
     app.chatbot
+    app.delivery
     app.discharge
     app.escalations
     app.insurance
@@ -76,6 +78,7 @@ source_modules =
     app.audit
     app.capacity
     app.core
+    app.delivery
     app.discharge
     app.downtime
     app.escalations
@@ -97,6 +100,7 @@ source_modules =
     app.audit
     app.chatbot
     app.core
+    app.delivery
     app.discharge
     app.downtime
     app.escalations
@@ -111,6 +115,7 @@ forbidden_modules =
     app.audit.router
     app.capacity.router
     app.chatbot.router
+    app.delivery.router
     app.discharge.router
     app.downtime.router
     app.escalations.router

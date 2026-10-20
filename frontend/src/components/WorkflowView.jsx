@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import SummaryLifecycle, { SignByBadge } from './SummaryLifecycle';
+import { SummaryRecipients } from './SummaryDelivery';
 import EhrClinicalContext, { EhrSummaryNote } from './EhrClinicalContext';
 import PatientInstructionsPanel from './PatientInstructionsPanel';
 import { Checkbox } from '../components/ui/checkbox';
@@ -424,6 +425,7 @@ const WorkflowView = () => {
         )}
       </div>
 
+      <SummaryRecipients workflow={workflow} canManage={['physician', 'nurse', 'admin'].includes(user?.role)} />
       <PatientInstructionsPanel workflow={workflow} patient={patient} role={user?.role} readOnly={readOnly} />
 
       {/* Tasks */}

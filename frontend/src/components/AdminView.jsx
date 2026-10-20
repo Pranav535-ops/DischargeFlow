@@ -23,6 +23,7 @@ import { toast } from 'sonner';
 import { BreakGlassReview, UnitsCard, UserUnitsPicker } from './AdminUnits';
 import AdminDowntime from './AdminDowntime';
 import AdminEscalations from './AdminEscalations';
+import { AdminDeliveryEndpoints } from './SummaryDelivery';
 import AdminTemplates from './AdminTemplates';
 import AdminSmart from './AdminSmart';
 
@@ -190,6 +191,7 @@ const AdminView = () => {
 
       <AdminTemplates />
 
+      <AdminDeliveryEndpoints />
       <AdminSmart />
 
       {/* Users Table */}

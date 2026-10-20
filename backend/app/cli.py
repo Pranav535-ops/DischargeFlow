@@ -1,5 +1,5 @@
 """Operational commands:
-`python -m app.cli {migrate,encrypt-phi,rewrap-deks,seed,summary-deadlines,escalate,sso-provider}`."""
+`python -m app.cli {migrate,encrypt-phi,rewrap-deks,seed,summary-deadlines,escalate,deliver-summaries,sso-provider}`."""
 import argparse
 import asyncio
 import json
@@ -11,6 +11,7 @@ from app.ai import lifecycle
 from app.core.config import settings
 from app.core.db import SessionLocal, engine
 from app.core.migrate import encrypt_legacy_phi, migrate_all, rewrap_deks
+from app.delivery.service import run_all_tenants as deliver_all_tenants
 from app.escalations.service import run_all_tenants
 from app.core.tenancy import current_tenant_id, use_tenant
 from app.identity.models import IdentityProvider, Tenant
@@ -50,6 +51,8 @@ def main() -> int:
     sub.add_parser("summary-deadlines",
                    help="Notify physicians of discharge summaries unsigned past SUMMARY_SIGN_HOURS (run on a schedule)")
     sub.add_parser("escalate", help="Escalate overdue tasks in every tenant (idempotent; run every few minutes)")
+    sub.add_parser("deliver-summaries",
+                   help="Send queued signed discharge summaries to their recipients, with retries (run every few minutes)")
     sso = sub.add_parser("sso-provider", help="Register, list or disable a hospital's OIDC identity provider")
     sso_sub = sso.add_subparsers(dest="sso_command", required=True)
     add = sso_sub.add_parser("add", help="Register a provider for a tenant (e.g. from the Cognito Terraform outputs)")
@@ -81,6 +84,8 @@ def main() -> int:
         return asyncio.run(_run(_summary_deadlines()))
     if args.command == "escalate":
         return asyncio.run(_run(run_all_tenants(SessionLocal)))
+    if args.command == "deliver-summaries":
+        return asyncio.run(_run(deliver_all_tenants(SessionLocal)))
     if args.command == "sso-provider":
         return asyncio.run(_run(_sso_provider(args)))
     return 2

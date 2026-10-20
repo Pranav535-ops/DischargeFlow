@@ -14,6 +14,7 @@ import {
   Sparkles,
   ClipboardList,
   CalendarCheck,
+  Send,
   BedDouble
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -30,6 +31,7 @@ const Sidebar = ({ user }) => {
     { id: 'insurance', to: '/insurance', label: 'Insurance',    icon: DollarSign,      roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'chatbot',   to: '/assistant', label: 'AI Assistant', icon: Bot,             roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
     { id: 'census',    to: '/census',    label: 'Census',       icon: ClipboardList,   roles: ['physician', 'nurse', 'pharmacist', 'admin'] },
+    { id: 'deliveries', to: '/deliveries', label: 'Deliveries',  icon: Send,            roles: ['nurse', 'admin'] },
     { id: 'analytics', to: '/analytics', label: 'Analytics',    icon: BarChart3,       roles: ['physician', 'nurse', 'admin'] },
     { id: 'insights',  to: '/insights',  label: 'AI Insights',  icon: Sparkles,        roles: ['admin'] },
     { id: 'admin',     to: '/admin',     label: 'Admin',        icon: Settings,        roles: ['admin'] },
