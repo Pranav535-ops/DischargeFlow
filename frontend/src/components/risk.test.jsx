@@ -13,6 +13,7 @@ vi.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: { user_id: 'u
 beforeEach(() => {
   vi.restoreAllMocks();
   queryClient.clear();
+  ehr = { available: false, reason: 'no_launch', detail: 'Open this patient from the EHR.' };
 });
 
 const risk = {
@@ -53,8 +54,21 @@ const mockApi = () => vi.spyOn(api, 'get').mockImplementation(async (url) => {
   }
   if (url === '/discharge-plans/codes') return { data: codes };
   if (url === '/downtime/status') return { data: { read_only: false } };
+  if (url === '/smart/clinical-context/pat_1') return { data: ehr };
   throw new Error(`unexpected ${url}`);
 });
+
+let ehr = { available: false, reason: 'no_launch', detail: 'Open this patient from the EHR.' };
+const ehrWithProposals = {
+  available: true, medications: [], allergies: [], errors: {},
+  problems: [{ name: 'Chronic systolic heart failure' }, { name: 'COPD' }],
+  charlson_citation: 'Quan H, et al. Med Care 2005;43(11):1130-1139.',
+  charlson_proposals: [
+    { key: 'congestive_heart_failure', label: 'Congestive heart failure', weight: 2,
+      sources: [{ condition: 'Chronic systolic heart failure', system: 'ICD-10-CM', code: 'I50.22' }] },
+    { key: 'aids', label: 'AIDS', weight: 4, sources: [{ condition: 'AIDS', system: 'SNOMED CT', code: '62479008' }] },
+  ],
+};
 
 describe('Readmission risk on the discharge plan', () => {
   it('explains each LACE component, offers the suggested tasks and records inputs', async () => {
@@ -84,6 +98,56 @@ describe('Readmission risk on the discharge plan', () => {
     await userEvent.click(screen.getByTestId('risk-save'));
     await waitFor(() => expect(put).toHaveBeenCalledWith('/encounters/enc_1/risk-inputs', {
       admission_type: 'C', comorbidities: ['aids', 'congestive_heart_failure', 'dementia'] }));
+  });
+
+  it('proposes Charlson flags from the EHR problem list, unchecked until the clinician confirms and saves', async () => {
+    ehr = ehrWithProposals;
+    const { default: DischargePlanCard } = await import('./DischargePlanCard');
+    mockApi();
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: {} });
+    render(<QueryClientProvider client={queryClient}><DischargePlanCard patientId="pat_1" /></QueryClientProvider>);
+
+    const proposals = await screen.findByTestId('risk-proposals');
+    expect(within(proposals).getByText(/not counted until a clinician confirms/)).toBeInTheDocument();
+    // Each proposal names the condition and code it came from.
+    const chf = screen.getByTestId('risk-proposal-congestive_heart_failure');
+    expect(chf).toHaveTextContent('from Chronic systolic heart failure (ICD-10-CM I50.22)');
+    expect(within(chf).getByText('Recorded')).toBeInTheDocument();  // already on the plan: nothing to accept
+    expect(screen.queryByTestId('risk-proposal-accept-congestive_heart_failure')).not.toBeInTheDocument();
+    const accept = screen.getByTestId('risk-proposal-accept-aids');
+    expect(accept).not.toBeChecked();
+    expect(screen.getByTestId('risk-proposal-aids')).toHaveTextContent('from AIDS (SNOMED CT 62479008)');
+    expect(screen.getByTestId('risk-score')).toHaveTextContent('14 / 19');  // the score ignores proposals
+
+    // Ticking opens the form with the flag set; nothing is saved until the clinician saves.
+    await userEvent.click(accept);
+    expect(accept).toBeChecked();
+    expect(await screen.findByTestId('risk-comorbidity-aids')).toBeChecked();
+    expect(screen.getByTestId('risk-form')).toHaveTextContent('proposed by the EHR');
+    expect(put).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId('risk-save'));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/encounters/enc_1/risk-inputs', {
+      comorbidities: ['aids', 'congestive_heart_failure', 'dementia'] }));
+  });
+
+  it('cancelling drops an accepted proposal, and no EHR launch means no proposals', async () => {
+    ehr = ehrWithProposals;
+    const { default: DischargePlanCard } = await import('./DischargePlanCard');
+    mockApi();
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: {} });
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}><DischargePlanCard patientId="pat_1" /></QueryClientProvider>);
+    await userEvent.click(await screen.findByTestId('risk-proposal-accept-aids'));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByTestId('risk-proposal-accept-aids')).not.toBeChecked();
+    expect(put).not.toHaveBeenCalled();
+    unmount();
+
+    ehr = { available: false, reason: 'no_launch', detail: 'Open this patient from the EHR.' };
+    queryClient.clear();
+    render(<QueryClientProvider client={queryClient}><DischargePlanCard patientId="pat_1" /></QueryClientProvider>);
+    expect(await screen.findByTestId('risk-score')).toBeInTheDocument();
+    expect(screen.queryByTestId('risk-proposals')).not.toBeInTheDocument();
   });
 
   it('marks a partial score', async () => {

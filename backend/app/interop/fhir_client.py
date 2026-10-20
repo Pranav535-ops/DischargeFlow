@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.risk import charlson_codes
+
 TIMEOUT = httpx.Timeout(8.0, connect=4.0)
 MAX_PAGES = 5
 PAGE_SIZE = 100
@@ -114,6 +116,14 @@ def _code(concept: Any) -> str:
     return ""
 
 
+def _codings(concept: Any) -> list[dict]:
+    """(system, code) pairs of a CodeableConcept, for the Charlson proposals; never shown or sent on their own."""
+    if not isinstance(concept, dict):
+        return []
+    return [{"system": str(c.get("system") or ""), "code": str(c["code"])[:20]}
+            for c in concept.get("coding") or [] if isinstance(c, dict) and c.get("code")][:10]
+
+
 EXCLUDED_VERIFICATION = {"entered-in-error", "refuted"}
 INACTIVE_CLINICAL = {"inactive", "resolved", "remission"}
 
@@ -175,6 +185,9 @@ class ClinicalContext:
     errors: dict[str, str] = field(default_factory=dict)
     fetched_at: float = 0.0
     unauthorized: bool = False  # the EHR refused the token (expired or revoked there)
+    # LACE Charlson flags proposed from the problem list's ICD-10 / SNOMED CT codes (app.risk.charlson_codes), for
+    # the plan screen to offer a clinician. Not in as_dict(): the summary path (smart.summary_context) never sees it.
+    charlson_proposals: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"medications": self.medications, "problems": self.problems, "allergies": self.allergies,
@@ -193,14 +206,17 @@ async def fetch_clinical_context(client: FhirClient, ehr_patient: str) -> Clinic
             ctx.errors[key] = str(e)
             ctx.unauthorized = ctx.unauthorized or e.status == 401
             continue
-        items = [item for item in (parse(r) for r in resources) if item]
+        parsed = [(item, r) for item, r in ((parse(r), r) for r in resources) if item]
         # Dedupe repeated entries (same name) the EHR may return for reorders.
         seen: set[str] = set()
-        for item in items:
+        for item, _ in parsed:
             name = (item.get("name") or item.get("substance") or "").lower()
             if name not in seen:
                 seen.add(name)
                 getattr(ctx, key).append(item)
+        if key == "problems":
+            ctx.charlson_proposals = charlson_codes.propose(
+                {"name": item["name"], "codings": _codings(r.get("code"))} for item, r in parsed)
     return ctx
 
 
