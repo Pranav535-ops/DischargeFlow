@@ -15,7 +15,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core import crypto, kms
 from app.identity import oidc
-from app.identity import router as identity_router
 
 pytestmark = pytest.mark.anyio
 
@@ -45,9 +44,7 @@ def idp(monkeypatch):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     configured = dataclasses.replace(oidc.settings, oidc_issuer=ISSUER, oidc_client_id=CLIENT_ID)
     monkeypatch.setattr(oidc, "settings", configured)
-    monkeypatch.setattr(identity_router, "settings", dataclasses.replace(identity_router.settings,
-                                                                         oidc_issuer=ISSUER, oidc_client_id=CLIENT_ID))
-    monkeypatch.setattr(oidc, "jwks_client", lambda: FakeJwks({"k1": key}))
+    monkeypatch.setattr(oidc, "jwks_client", lambda url: FakeJwks({"k1": key}))
 
     def issue(signing_key=key, kid="k1", **overrides):
         now = int(time.time())
@@ -61,8 +58,8 @@ def idp(monkeypatch):
 
 
 async def test_oidc_is_off_unless_configured(client):
-    assert (await client.get("/api/auth/config")).json() == {"oidc": None}
-    resp = await client.post("/api/auth/oidc", json={"id_token": "x", "nonce": NONCE})
+    assert (await client.get("/api/auth/config")).json() == {"providers": [], "emergent": True}
+    resp = await client.post("/api/auth/oidc", json={"id_token": "x", "nonce": NONCE, "provider_id": "env"})
     assert resp.status_code == 404
 
 
@@ -71,7 +68,10 @@ async def test_oidc_sign_in_matches_invited_user(client, idp, make_user, db):
     resp = await client.post("/api/users", json={"email": "dr.ward@hospital.example", "role": "physician"},
                              headers=admin)
     assert resp.status_code == 200
-    assert (await client.get("/api/auth/config")).json() == {"oidc": {"issuer": ISSUER, "client_id": CLIENT_ID}}
+    config = (await client.get("/api/auth/config")).json()
+    assert config["emergent"] is False  # "auto": the demo login steps aside once hospital SSO is configured
+    providers = [(p["provider_id"], p["issuer"], p["client_id"]) for p in config["providers"]]
+    assert providers == [("env", ISSUER, CLIENT_ID)]
 
     resp = await client.post("/api/auth/oidc", json={"id_token": idp(), "nonce": NONCE})
     assert resp.status_code == 200, resp.text
@@ -88,8 +88,9 @@ async def test_oidc_unknown_user_waits_for_approval(client, idp):
 
 
 @pytest.mark.parametrize("overrides, reason", [
-    ({"iss": "https://evil.example"}, "InvalidIssuerError"),
-    ({"aud": "another-client"}, "InvalidAudienceError"),
+    # Without provider_id the token's issuer and audience pick the provider, so a foreign one matches none.
+    ({"iss": "https://evil.example"}, "unknown issuer"),
+    ({"aud": "another-client"}, "unknown issuer"),
     ({"exp": int(time.time()) - 3600}, "expired"),
     ({"nonce": "m" * 32}, "nonce mismatch"),
     ({"nonce": None}, "nonce mismatch"),

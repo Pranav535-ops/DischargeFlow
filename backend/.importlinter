@@ -112,6 +112,8 @@ forbidden_modules =
     app.downtime.router
     app.escalations.router
     app.identity.router
+    app.identity.scim_router
+    app.identity.sso_router
     app.insurance.router
     app.interop.router
     app.interop.hl7_router

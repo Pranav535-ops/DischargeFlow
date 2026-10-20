@@ -33,6 +33,53 @@ variable "llm_provider" {
   default = "none"
 }
 
+# Hospital SSO (ADR-002 item 2), see modules/cognito. Without saml_metadata_url or oidc_issuer the pool only has
+# operator-created local accounts (MFA required), which is enough to test the sign-in path.
+variable "cognito_domain_prefix" {
+  description = "Hosted-UI domain prefix (globally unique). Default: dischargeflow-<environment>."
+  type        = string
+  default     = ""
+}
+variable "sso_provider_name" {
+  description = "Shown on the login page's button."
+  type        = string
+  default     = "Hospital sign-in"
+}
+variable "sso_saml_metadata_url" {
+  type    = string
+  default = ""
+}
+variable "sso_saml_groups_attribute" {
+  type    = string
+  default = "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
+}
+variable "sso_oidc_issuer" {
+  type    = string
+  default = ""
+}
+variable "sso_oidc_client_id" {
+  type    = string
+  default = ""
+}
+variable "sso_oidc_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "sso_allow_local_users" {
+  type    = bool
+  default = false
+}
+variable "sso_require_mfa_claim" {
+  description = <<-EOT
+    Refuse ID tokens whose amr claim names no second factor. Fails closed: if the hospital IdP enforces MFA but
+    Cognito does not pass amr through for its federation, staging sign-in says so, and this can be set to false
+    (see the go-live checklist in infra/README.md).
+  EOT
+  type        = bool
+  default     = true
+}
+
 locals {
   name       = "dischargeflow-${var.environment}"
   app_domain = var.environment == "prod" ? "app.${var.domain}" : "app.${var.environment}.${var.domain}"
@@ -65,6 +112,31 @@ module "app" {
   desired_count        = var.api_desired_count
   max_count            = var.api_max_count
   llm_provider         = var.llm_provider
+  sso = {
+    issuer        = module.cognito.issuer
+    client_id     = module.cognito.client_id
+    authorize_url = module.cognito.authorize_url
+    token_url     = module.cognito.token_url
+    groups_claim  = module.cognito.groups_claim
+    provider_name = var.sso_provider_name
+    require_mfa   = var.sso_require_mfa_claim
+  }
+}
+
+module "cognito" {
+  source                = "../cognito"
+  name                  = local.name
+  environment           = var.environment
+  aws_region            = var.aws_region
+  domain_prefix         = var.cognito_domain_prefix != "" ? var.cognito_domain_prefix : local.name
+  callback_urls         = ["https://${local.app_domain}/auth/sso/callback"]
+  logout_urls           = ["https://${local.app_domain}/login"]
+  saml_metadata_url     = var.sso_saml_metadata_url
+  saml_groups_attribute = var.sso_saml_groups_attribute
+  oidc_issuer           = var.sso_oidc_issuer
+  oidc_client_id        = var.sso_oidc_client_id
+  oidc_client_secret    = var.sso_oidc_client_secret
+  allow_local_users     = var.sso_allow_local_users
 }
 
 module "database" {
@@ -133,3 +205,21 @@ output "github_environment_variables" {
 }
 
 output "secret_arns" { value = module.app.secret_arns }
+
+output "phi_kms_key_arn" { value = module.app.phi_kms_key_arn }
+
+# What the hospital's identity team needs (SAML: ACS URL and audience), and what a second hospital's
+# `python -m app.cli sso-provider add` takes.
+output "sso" {
+  value = {
+    issuer             = module.cognito.issuer
+    client_id          = module.cognito.client_id
+    authorize_url      = module.cognito.authorize_url
+    token_url          = module.cognito.token_url
+    jwks_url           = module.cognito.jwks_url
+    groups_claim       = module.cognito.groups_claim
+    identity_providers = module.cognito.identity_providers
+    saml_acs_url       = "${trimsuffix(module.cognito.authorize_url, "/oauth2/authorize")}/saml2/idpresponse"
+    saml_audience      = "urn:amazon:cognito:sp:${module.cognito.user_pool_id}"
+  }
+}

@@ -47,6 +47,28 @@ variable "llm_provider" {
   type        = string
   default     = "none"
 }
+variable "phi_key_provider" {
+  description = "kms: patient data keys are wrapped by the KMS key below (ADR-002 item 5); local: by PHI_KEK alone."
+  type        = string
+  default     = "kms"
+  validation {
+    condition     = contains(["kms", "local"], var.phi_key_provider)
+    error_message = "phi_key_provider must be kms or local."
+  }
+}
+variable "sso" {
+  description = "Hospital SSO (ADR-002 item 2): the Cognito issuer and app client the API trusts, or null for none."
+  type = object({
+    issuer        = string
+    client_id     = string
+    authorize_url = string
+    token_url     = string
+    groups_claim  = string
+    provider_name = string
+    require_mfa   = bool
+  })
+  default = null
+}
 variable "enable_tracing" {
   description = "Run an AWS Distro for OpenTelemetry collector sidecar and send traces to X-Ray."
   type        = bool
@@ -82,6 +104,22 @@ locals {
     # push notifications as they commit. Streams last 5 minutes; 15 s heartbeats keep the ALB's 60 s idle timeout open.
     { name = "NOTIFICATION_TRANSPORT", value = "listen" },
     { name = "NOTIFICATION_STREAM_SECONDS", value = "300" },
+    # ADR-002 item 5: the PHI key-encryption key lives in KMS. PHI_KEK (a secret) still unwraps data keys wrapped
+    # before the switch (until `app.cli rewrap-deks`) and derives the MRN blind-index key.
+    { name = "PHI_KEY_PROVIDER", value = var.phi_key_provider },
+    { name = "PHI_KMS_KEY_ID", value = aws_kms_alias.phi.arn },
+  ]
+  # ADR-002 item 2: the environment's identity provider signs people in to DEFAULT_TENANT_ID; more hospitals are
+  # added with `python -m app.cli sso-provider add`. With SSO configured the demo Google login is off.
+  sso_env = var.sso == null ? [] : [
+    { name = "OIDC_ISSUER", value = var.sso.issuer },
+    { name = "OIDC_CLIENT_ID", value = var.sso.client_id },
+    { name = "OIDC_AUTHORIZE_URL", value = var.sso.authorize_url },
+    { name = "OIDC_TOKEN_URL", value = var.sso.token_url },
+    { name = "OIDC_GROUPS_CLAIM", value = var.sso.groups_claim },
+    { name = "OIDC_PROVIDER_NAME", value = var.sso.provider_name },
+    { name = "OIDC_REQUIRE_MFA", value = tostring(var.sso.require_mfa) },
+    { name = "EMERGENT_LOGIN", value = "false" },
   ]
   tracing_env = var.enable_tracing ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://localhost:4318" }] : []
   # A task can't start while a referenced secret has no value, so the API key is only wired in when used.
@@ -133,6 +171,20 @@ resource "aws_ecr_lifecycle_policy" "api" {
 resource "aws_kms_key" "secrets" {
   description         = "${var.name} application secrets"
   enable_key_rotation = true
+}
+
+# The PHI key-encryption key (ADR-002 item 5). It never leaves KMS: the API asks KMS to wrap and unwrap each
+# patient's data key, CloudTrail logs every use, and scheduling its deletion makes every wrapped data key unreadable,
+# including those in database backups. The deletion window is the longest KMS allows.
+resource "aws_kms_key" "phi" {
+  description             = "${var.name} PHI key-encryption key (wraps per-patient data keys)"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+}
+
+resource "aws_kms_alias" "phi" {
+  name          = "alias/${var.name}-phi"
+  target_key_id = aws_kms_key.phi.key_id
 }
 
 resource "aws_secretsmanager_secret" "app" {
@@ -206,6 +258,18 @@ resource "aws_iam_role_policy" "task" {
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
         Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.*"
+      },
+      {
+        # core/kms.KmsKeyProvider: wrap and unwrap patient data keys, only with the app's encryption context.
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:Decrypt"]
+        Resource = aws_kms_key.phi.arn
+        Condition = {
+          StringEquals = {
+            "kms:EncryptionContext:app"     = "dischargeflow"
+            "kms:EncryptionContext:purpose" = "phi-dek"
+          }
+        }
       },
       {
         Effect   = "Allow"
@@ -362,7 +426,7 @@ resource "aws_ecs_task_definition" "api" {
     essential              = true
     readonlyRootFilesystem = false
     portMappings           = [{ containerPort = 8000, protocol = "tcp" }]
-    environment            = concat(local.environment, local.tracing_env)
+    environment            = concat(local.environment, local.sso_env, local.tracing_env)
     secrets                = local.secrets
     logConfiguration       = { logDriver = "awslogs", options = local.log_options }
   }], local.collector))
@@ -433,4 +497,6 @@ output "target_group_arn_suffix" { value = aws_lb_target_group.api.arn_suffix }
 output "api_domain" { value = var.api_domain }
 output "log_group_name" { value = aws_cloudwatch_log_group.api.name }
 output "pass_role_arns" { value = [aws_iam_role.execution.arn, aws_iam_role.task.arn] }
+output "phi_kms_key_arn" { value = aws_kms_key.phi.arn }
+output "phi_kms_alias_arn" { value = aws_kms_alias.phi.arn }
 output "secret_arns" { value = { for k, s in aws_secretsmanager_secret.app : k => s.arn } }

@@ -20,9 +20,13 @@ variable "multi_az" {
   default = false
 }
 variable "backup_retention_days" {
-  description = "Point-in-time recovery window (RPO target 5 min within it)."
+  description = "Point-in-time recovery window (RPO target 5 min within it). ADR-002 item 5 requires at least 7 days."
   type        = number
   default     = 7
+  validation {
+    condition     = var.backup_retention_days >= 7 && var.backup_retention_days <= 35
+    error_message = "backup_retention_days must be 7 to 35 (ADR-002 item 5: at least 7 days of point-in-time recovery)."
+  }
 }
 variable "deletion_protection" {
   type    = bool
