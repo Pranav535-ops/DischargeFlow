@@ -4,11 +4,17 @@ The refresh token lives only in an httpOnly, SameSite=Strict cookie scoped to /a
 it and other sites can't send it. Every refresh rotates it. Presenting the previous token is tolerated for a few
 seconds (two tabs refreshing at once); after that it means the token leaked, and the whole session is revoked.
 
+Each new secret is an HMAC of the one presented, so tabs that refresh the same token at once all get the same next
+token, whichever response the browser stores last. Without that, a tab could keep a token that a concurrent refresh had
+already rotated out, and its next refresh would look like reuse and log the user out.
+
 Shared workstations (ADR-002 item 4): the browser locks itself after IDLE_LOCK_MINUTES without input and revokes the
 session through /auth/logout. A tab that is closed or killed never gets to do that, so a session not refreshed for
 SESSION_IDLE_MINUTES is revoked here as well. An open tab refreshes about every 14 minutes, which sets the floor.
 """
+import base64
 import hashlib
+import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
@@ -31,6 +37,13 @@ ROTATION_GRACE = timedelta(seconds=30)
 
 def _hash(secret: str) -> str:
     return hashlib.sha256(secret.encode("ascii")).hexdigest()
+
+
+def _next_secret(session_id: str, secret: str) -> str:
+    """The secret that replaces `secret` when it is rotated. Only the server can compute it."""
+    key = hmac.new(settings.require_jwt_secret().encode(), b"df-refresh-rotation", hashlib.sha256).digest()
+    mac = hmac.new(key, f"{session_id}.{secret}".encode("ascii"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
 
 
 def _token(tenant_id: str, session_id: str, secret: str) -> str:
@@ -99,19 +112,25 @@ async def rotate(db: AsyncSession, raw_token: Optional[str]) -> Optional[Refresh
         return None
 
     presented = _hash(secret)
+    new_secret = _next_secret(session_id, secret)
+    in_grace = bool(session.rotated_at and now - session.rotated_at <= ROTATION_GRACE)
     if presented == session.current_hash:
-        pass
-    elif presented == session.previous_hash and session.rotated_at and now - session.rotated_at <= ROTATION_GRACE:
-        pass  # concurrent refresh from another tab; issue a fresh token without reusing the old one
+        session.previous_hash = session.current_hash
+        session.current_hash = _hash(new_secret)
+        session.rotated_at = now
+    elif presented == session.previous_hash and in_grace:
+        # Concurrent refresh from another tab: it gets the token the first refresh issued, which is still current.
+        if _hash(new_secret) != session.current_hash:
+            # Rotated by a release that drew secrets at random, so that token can't be reissued; rotate once more.
+            session.previous_hash = session.current_hash
+            session.current_hash = _hash(new_secret)
+            session.rotated_at = now
     else:
-        if presented == session.previous_hash:
+        # The previous token after the grace window, or the one before it, means a rotated-out token was replayed.
+        older = presented == session.previous_hash or _hash(new_secret) == session.previous_hash
+        if older and not in_grace:
             await revoke(db, session, "refresh_token_reuse")
         return None
-
-    new_secret = secrets.token_urlsafe(32)
-    session.previous_hash = session.current_hash
-    session.current_hash = _hash(new_secret)
-    session.rotated_at = now
     session.last_used_at = now
     user = await db.get(User, session.user_id)
     if user is None:
