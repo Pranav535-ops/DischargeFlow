@@ -16,6 +16,7 @@ from app.delivery import router as delivery_router
 from app.delivery import service, transport
 from app.delivery.models import SummaryDelivery
 from app.delivery.transport import HttpsTransport, MockTransport, Result
+from app.downtime import service as downtime_service
 from app.main import app
 from app.notifications.models import Notification
 from tests.conftest import DEFAULT_TENANT, requires_postgres
@@ -434,6 +435,68 @@ async def test_run_endpoint_authentication(client, make_user, create_patient, db
     assert tenant["acknowledged"] == 1 and len(fake.requests) == 2
     resp = await client.post("/api/deliveries/run", headers=admin)
     assert resp.status_code == 200 and resp.json()["tenants"][0]["claimed"] == 0
+
+
+async def _queued_due(client, make_user, create_patient, db, receiver):
+    """A signed summary whose delivery failed once and is due again now."""
+    fake = receiver(503, 201)
+    _, admin = await make_user("admin")
+    ep = await _endpoint(client, admin, transport="https", url="https://pcp.example.test/fhir")
+    d = await _discharge(client, make_user, create_patient, [ep])
+    await _sign(client, d)
+    await db.execute(text("UPDATE summary_deliveries SET next_attempt_at = :t"),
+                     {"t": utcnow() - timedelta(minutes=1)})
+    await db.commit()
+    [delivery] = await _deliveries(db)
+    assert delivery.status == "queued" and delivery.attempts == 1 and len(fake.requests) == 1
+    return fake, admin, delivery
+
+
+_STATE = ("status", "attempts", "next_attempt_at", "last_attempt_at", "last_error", "last_http_status")
+
+
+def _state(delivery: SummaryDelivery) -> dict:
+    return {k: getattr(delivery, k) for k in _STATE}
+
+
+async def test_read_only_tenant_is_not_delivered(client, make_user, create_patient, db, factory, receiver,
+                                                 monkeypatch):
+    fake, admin, delivery = await _queued_due(client, make_user, create_patient, db, receiver)
+    before = _state(delivery)
+    assert (await client.post("/api/downtime/start", json={"reason": "EHR upgrade"}, headers=admin)).status_code         == 200
+    monkeypatch.setattr(delivery_router, "settings", dataclasses.replace(delivery_router.settings, cron_secret=CRON))
+
+    # The daily cron (a GET) and the cron POST both get past the router's read-only check; the runner skips.
+    for method in ("GET", "POST"):
+        resp = await client.request(method, "/api/deliveries/run", headers={"Authorization": f"Bearer {CRON}"})
+        assert resp.status_code == 200, resp.text
+        [tenant] = resp.json()["tenants"]
+        assert tenant["skipped"] == "read_only" and tenant["claimed"] == 0
+    # So does a background first attempt that was scheduled before the downtime began.
+    await service.kick(factory, DEFAULT_TENANT, [delivery.delivery_id])
+    [after] = await _deliveries(db)
+    assert _state(after) == before and len(fake.requests) == 1
+    assert not [a for a in await _audit(db, "DELIVER_SUMMARY") if "attempt=2" in a.details]
+
+    # After the downtime the same row goes out on the next run.
+    assert (await client.post("/api/downtime/end", headers=admin)).status_code == 200
+    result = await _run(factory)
+    assert result["skipped"] is None and result["acknowledged"] == 1 and len(fake.requests) == 2
+
+
+async def test_forced_read_only_mode_delivers_nothing(client, make_user, create_patient, db, factory, receiver,
+                                                     monkeypatch):
+    fake, _, delivery = await _queued_due(client, make_user, create_patient, db, receiver)
+    before = _state(delivery)
+    monkeypatch.setattr(downtime_service, "settings", dataclasses.replace(downtime_service.settings,
+                                                                          read_only_mode=True))
+    monkeypatch.setattr(delivery_router, "settings", dataclasses.replace(delivery_router.settings, cron_secret=CRON))
+    resp = await client.get("/api/deliveries/run", headers={"Authorization": f"Bearer {CRON}"})
+    assert resp.status_code == 200 and resp.json()["tenants"][0]["skipped"] == "read_only"
+    assert (await _run(factory))["skipped"] == "read_only"
+    await service.kick(factory, DEFAULT_TENANT, [delivery.delivery_id])
+    [after] = await _deliveries(db)
+    assert _state(after) == before and len(fake.requests) == 1
 
 
 async def test_transport_failures_are_codes():
