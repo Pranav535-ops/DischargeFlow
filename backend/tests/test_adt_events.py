@@ -60,9 +60,33 @@ def _no_phi(entry: AuditLog) -> None:
     ("20261019143000-0500", datetime(2026, 10, 19, 19, 30, tzinfo=timezone.utc)),
     ("2026101914", datetime(2026, 10, 19, 14, tzinfo=timezone.utc)),
     ("20261319", None), ("2026101", None), ("202610191", None), ("20261019+02", None), ("abc", None),
+    # Offsets timezone() can't hold, digits int() can't read, and offsets that leave the datetime range.
+    ("20261019100000+9999", None), ("20261019100000+2400", None), ("20261019100000-2400", None),
+    ("20261019100000+0060", None), ("20261019100000+2359", datetime(2026, 10, 18, 10, 1, tzinfo=timezone.utc)),
+    ("20261019100000+²²00", None), ("2026101910²0", None),
+    ("00010101000000+0100", None), ("99991231230000-0200", None),
 ])
 def test_parse_datetime(value, expected):
     assert hl7.parse_datetime(value) == expected
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("19700101", "1970-01-01"), ("197001011230+0200", "1970-01-01"),
+    ("19701301", None), ("1970010", None), ("1970²101", None), ("", None),
+])
+def test_parse_date(value, expected):
+    assert hl7.parse_date(value) == expected
+
+
+async def test_a03_with_an_impossible_offset_is_acknowledged(make_client, send, db):
+    """A bad PV1-45 must not turn into a 500: the interface engine would resend it forever and stall the queue."""
+    _, key, _ = await make_client()
+    assert (await send(key, with_pv1(adt("A01", "TZ1"), f19="V1")))["code"] == "AA"
+    ack = await send(key, with_pv1(adt("A03", "TZ2"), f19="V1", f45="20261019100000+9999"))
+    assert ack["code"] == "AA"
+    encounter = await db.scalar(select(Encounter))
+    # PV1-45 is skipped; EVN-2 of the test message is the next valid time.
+    assert encounter.discharged_at == datetime(2026, 10, 18, 11, 55, tzinfo=timezone.utc)
 
 
 # ---------- A03 reconciliation ----------
