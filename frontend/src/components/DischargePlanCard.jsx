@@ -8,9 +8,11 @@ import {
   DISPOSITION_LABELS, canManagePlan, formatPlanDate, planReviewBody, planUpdateBody,
 } from '@/lib/plans';
 import { Button } from './ui/button';
+import ReadmissionRiskPanel from './ReadmissionRiskPanel';
 
 // The discharge plan of the current stay (ADR-002 item 8): expected date and disposition, set from admission and
-// reviewed daily. The disposition picks the workflow template when the discharge starts (item 9).
+// reviewed daily. The disposition picks the workflow template when the discharge starts (item 9). The readmission
+// risk score (item 20) is shown with it, since it is meant to shape the plan.
 const DischargePlanCard = ({ patientId }) => {
   const { user } = useAuth();
   const readOnly = useReadOnly();
@@ -143,6 +145,8 @@ const DischargePlanCard = ({ patientId }) => {
               </ul>
             </div>
           )}
+
+          <ReadmissionRiskPanel encounterId={current.encounter_id} risk={plan.readmission_risk} canEdit={canEdit} />
         </div>
       )}
     </div>

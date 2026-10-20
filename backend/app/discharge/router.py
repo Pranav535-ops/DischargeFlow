@@ -12,6 +12,8 @@ from app.discharge import planning, service, templates
 from app.discharge.models import DELAY_CODES, DISPOSITIONS, Task, Workflow
 from app.identity.permissions import ROLES
 from app.patients.models import Encounter
+from app.risk import lace
+from app.risk import service as risk
 
 workflows_router = APIRouter(prefix="/workflows", tags=["Workflows"])
 tasks_router = APIRouter(prefix="/tasks", tags=["Tasks"])
@@ -61,6 +63,26 @@ class PlanReview(BaseModel):
     # Required when the expected date has passed and the patient is still in (once per day).
     delay_code: Optional[DelayCode] = None
     delay_note: Optional[str] = Field(default=None, max_length=500)
+
+
+ADMISSION_TYPE_CODES = tuple(lace.ADMISSION_TYPES)
+COMORBIDITY_KEYS = tuple(lace.COMORBIDITIES)
+AdmissionType = Literal[ADMISSION_TYPE_CODES]  # type: ignore[valid-type]
+Comorbidity = Literal[COMORBIDITY_KEYS]  # type: ignore[valid-type]
+SuggestedTask = Literal[risk.SUGGESTED_KEYS]  # type: ignore[valid-type]
+
+
+class RiskInputs(BaseModel):
+    """Readmission risk inputs (ADR-002 item 20). Fields left out stay as they are; null clears one."""
+    admission_type: Optional[AdmissionType] = None
+    patient_class: Optional[str] = Field(default=None, pattern=r"^[A-Z]{1,2}$")
+    comorbidities: Optional[list[Comorbidity]] = Field(default=None, max_length=len(lace.COMORBIDITIES))
+    # From the hospital's records, used instead of counting this system's encounters; null goes back to counting.
+    ed_visits_recorded: Optional[int] = Field(default=None, ge=0, le=99)
+
+
+class RiskTasks(BaseModel):
+    keys: list[SuggestedTask] = Field(min_length=1, max_length=len(risk.SUGGESTED_KEYS))
 
 
 class TaskBackfill(BaseModel):
@@ -198,8 +220,15 @@ async def backfill_task(task_id: str, body: TaskBackfill, request: Request, db: 
 
 @plans_router.get("/discharge-plans/codes")
 async def plan_codes(user: AuthUser):
-    """The coded lists the plan and template screens offer."""
-    return {"dispositions": list(DISPOSITIONS), "delay_codes": list(DELAY_CODES), "roles": list(ROLES)}
+    """The coded lists the plan and template screens offer, including the readmission risk inputs."""
+    return {"dispositions": list(DISPOSITIONS), "delay_codes": list(DELAY_CODES), "roles": list(ROLES),
+            "admission_types": [{"code": code, "label": label, "acute": lace.is_acute(code)}
+                                for code, label in lace.ADMISSION_TYPES.items()],
+            "comorbidities": [{"key": key, "label": label, "weight": weight}
+                              for key, (label, weight) in lace.COMORBIDITIES.items()],
+            "readmission_risk": {"method": "LACE index", "version": lace.SCORE_VERSION,
+                                 "threshold": lace.HIGH_RISK_THRESHOLD, "max_score": lace.MAX_SCORE,
+                                 "citation": lace.CITATION}}
 
 
 @plans_router.get("/discharge-plans/review")
@@ -241,6 +270,25 @@ async def review_plan(encounter_id: str, request: Request, db: DB, body: Optiona
     encounter = await planning.review_plan(db, user, encounter_id, body.delay_code if body else None,
                                            body.delay_note if body else None, request)
     return await planning.plan_detail(db, encounter)
+
+
+@plans_router.put("/encounters/{encounter_id}/risk-inputs")
+async def update_risk_inputs(encounter_id: str, body: RiskInputs, request: Request, db: DB,
+                             user: CurrentUser = Depends(requires("plan:manage"))):
+    """Record the readmission risk inputs (admission type, comorbidities, ED visits) and recompute the score."""
+    encounter = await _encounter_or_404(db, encounter_id)
+    await risk.update_inputs(db, user, encounter, body.model_dump(exclude_unset=True), request)
+    return await planning.plan_detail(db, encounter)
+
+
+@plans_router.post("/encounters/{encounter_id}/risk-tasks")
+async def add_risk_tasks(encounter_id: str, body: RiskTasks, request: Request, db: DB,
+                         user: CurrentUser = Depends(requires("plan:manage"))):
+    """Add suggested tasks for a high readmission risk (the clinician picks which; nothing is added on its own)."""
+    tasks = await planning.add_risk_tasks(db, user, encounter_id, body.keys, request)
+    for workflow_id in {t.workflow_id for t in tasks if t.workflow_id}:
+        await service.sync_workflow_status(db, workflow_id)  # new open tasks send pending_approval back
+    return {"added": [t.to_dict() for t in tasks]}
 
 
 # ---------- workflow templates (ADR-002 item 9) ----------

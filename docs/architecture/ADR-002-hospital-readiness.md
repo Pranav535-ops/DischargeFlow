@@ -573,8 +573,42 @@ which needs monthly partitioning within a year or two.
       migration 0019 on; older plans only count toward the final date, because a date moved earlier records no delay
       reason and the first value can't be reconstructed. A readmission is any later admission in this system, planned
       or not, at any unit; admissions to other hospitals are not seen. Not yet fed to the AI insights model.
-20. [ ] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
+20. [x] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
     so it stays explainable and auditable.
+    - **Score:** the LACE index (van Walraven C, Dhalla IA, Bell C, et al. Derivation and validation of an index to
+      predict early death or unplanned readmission after discharge from hospital to the community. CMAJ
+      2010;182(6):551-557. doi:10.1503/cmaj.091117). It predicts death or unplanned readmission within 30 days; the
+      paper reports scores from 0 (2.0% expected risk) to 19 (43.7%) and a C statistic of 0.684 in validation. L is
+      the length of stay (<1 day 0, 1-3 days 1-3, 4-6 days 4, 7-13 days 5, 14 or more 7), A an acute (emergent)
+      admission (3), C the Charlson comorbidity index (0-3 as is, 4 or more 5), E emergency department visits in the 6
+      months before admission (one point each, at most 4). `app/risk/lace.py` is pure functions with no app imports
+      (an import-linter contract), tested at every band boundary and over the whole 0-19 range.
+    - **Inputs:** on the encounter (migration 0021). Length of stay is to the expected discharge date at planning (so
+      far, when there is no future expected date) and the actual stay once discharged, in calendar days in hospital
+      time. Acuity is the HL7 PV1-4 admission type (table 0007: accident, emergency and urgent count as acute), from
+      A01/A08 or set on the plan. Comorbidities are structured Charlson flags recorded on the plan, encrypted with the
+      patient's data key. ED visits are counted from the patient's other encounters (patient class E from PV1-2, or an
+      emergency admission) in the 182 days before admission, or recorded by staff from the hospital's records.
+    - **Stored and shown:** the score, its version (`lace-2010.1`), the points per component with the non-identifying
+      inputs behind them, and when it was computed. It is recomputed whenever an input changes (admission, plan date,
+      risk inputs, A08, A40 merge, discharge, A13), and on read when its version is old. The plan shows each component
+      with its input; the daily review list shows the score and the flag. A score with inputs not recorded is marked
+      partial (it is a lower bound). At 10 or more, three tasks are suggested (follow-up within 7 days, medication
+      teach-back, a call within 72 hours); a clinician adds the ones that fit, nothing is added on its own.
+    - **Audit and models:** score reads are part of the plan's existing `PHI_READ`; input changes are audited with
+      field names and the score version only. Nothing is sent to a model: the summary prompt's facts are an explicit
+      list without it, and an import-linter contract keeps `app.ai` and `app.chatbot` from importing `app.risk`.
+    - **Limits:** the Charlson weights are those of the LACE scoring worksheet as widely reproduced; the paper's full
+      text was not available when this was built, so clinical governance must confirm them (and the cut-off of 10,
+      which is the usual local convention, not a figure from the paper) against the worksheet the hospital uses before
+      relying on the flag. LACE was derived on adult medical and surgical patients discharged to the community in
+      Ontario, discriminates only moderately (C 0.684), and is not validated for every population (obstetrics,
+      paediatrics, discharge to another facility); the flag supports, and does not replace, clinical judgement. This
+      system only sees the ED visits the ADT feed sends, so the count is low unless staff record it. Comorbidities are
+      recorded by hand. Item 15 now reads the patient's problem list from the EHR, but mapping those conditions to the
+      Charlson flags (ICD-10 or SNOMED coding) is not built: it is the follow-up, as a proposal of `comorbidities` keys
+      that a clinician confirms on the plan, never written into the score on its own. The suggested tasks are not tracked against
+      outcomes yet (item 19). Tested on SQLite; PostgreSQL 16 in CI.
 21. [x] Real-time delivery without serverless polling once on AWS (finding 9, design change 4; migration 0016, done
     2026-10-19 in code; production on Vercel still polls until the AWS move).
     - **Built:** an AFTER INSERT trigger on `notifications` calls `pg_notify('notifications',

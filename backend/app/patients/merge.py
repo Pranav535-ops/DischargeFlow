@@ -2,8 +2,8 @@
 
 Everything about the non-surviving record moves to the survivor: its stays (encounters), discharge workflows, tasks,
 summaries, claims and break-glass grants (the HL7 feed moves its own message records). Encrypted fields are bound to
-the owning patient's data key (and their row id as associated data), so encounter visit numbers and summary texts are
-decrypted with the old patient's key and re-encrypted with the survivor's. The non-surviving row stays for audit
+the owning patient's data key (and their row id as associated data), so encounter visit numbers and comorbidity flags
+and summary texts are decrypted with the old patient's key and re-encrypted with the survivor's. The non-surviving row stays for audit
 references, with `merged_into` set and its MRN blind index retired, so the old MRN no longer matches anyone.
 """
 from fastapi import HTTPException
@@ -20,6 +20,7 @@ from app.ai.models import (
 from app.discharge.models import ACTIVE_WORKFLOW_STATUSES, Task, Workflow
 from app.insurance.models import InsuranceClaim
 from app.patients.models import AccessGrant, Encounter, Patient
+from app.risk import service as risk
 
 
 async def merge_into(db: AsyncSession, prior: Patient, survivor: Patient) -> dict[str, int]:
@@ -40,10 +41,11 @@ async def merge_into(db: AsyncSession, prior: Patient, survivor: Patient) -> dic
         raise HTTPException(status_code=409, detail="Both records have a discharge in progress; merge them by hand")
 
     for encounter in encounters:
-        visit_number = encounter.visit_number  # decrypted with the old patient's key
+        visit_number, comorbidities = encounter.visit_number, encounter.comorbidities  # with the old patient's key
         encounter.patient = survivor
         encounter.patient_id = survivor.patient_id
         encounter.visit_number = visit_number  # re-encrypted with the survivor's
+        encounter.comorbidities = comorbidities
 
     # Summaries, their signed versions and addenda (ADR-002 item 13) all hold text under the patient's key.
     # Patient instructions (ADR-002 item 18) too.
@@ -73,4 +75,10 @@ async def merge_into(db: AsyncSession, prior: Patient, survivor: Patient) -> dic
     prior.status = "discharged"
     prior.mrn_index = None  # retired: the old MRN no longer finds anyone
     await db.flush()
+    # One person's history now: the stay in progress may have prior ED visits it did not see before.
+    active = await db.scalar(select(Encounter).where(Encounter.patient_id == survivor.patient_id,
+                                                     Encounter.status == "active"))
+    if active is not None:
+        await risk.recompute(db, active)
+        await db.flush()
     return moved

@@ -21,6 +21,7 @@ from app.discharge.models import Workflow
 from app.identity.models import Unit
 from app.notifications.service import notify_role
 from app.patients.models import REDACTED, AccessGrant, Encounter, Patient, admitted_at_from
+from app.risk import service as risk
 
 BREAK_GLASS_HOURS = 8
 RESTRICTED_DETAIL = "This patient is outside your units. Request break-glass access to open the record."
@@ -89,13 +90,17 @@ async def current_encounter(db: AsyncSession, patient_id: str) -> Optional[Encou
     return await db.scalar(select(Encounter).where(Encounter.patient_id == patient_id, Encounter.status == "active"))
 
 
-async def open_encounter(db: AsyncSession, patient: Patient, visit_number: Optional[str] = None) -> Encounter:
-    """Start a stay from the patient's current admission fields (admission, readmission)."""
+async def open_encounter(db: AsyncSession, patient: Patient, visit_number: Optional[str] = None,
+                         admission_type: Optional[str] = None, patient_class: Optional[str] = None) -> Encounter:
+    """Start a stay from the patient's current admission fields (admission, readmission), and score its
+    readmission risk (ADR-002 item 20) with what is known so far."""
     encounter = Encounter(patient=patient, patient_id=patient.patient_id, unit_id=patient.unit_id,
-                          room_number=patient.room_number, admitted_at=admitted_at_from(patient.admission_date))
+                          room_number=patient.room_number, admitted_at=admitted_at_from(patient.admission_date),
+                          admission_type=admission_type, patient_class=patient_class)
     encounter.visit_number = visit_number
     db.add(encounter)
     await db.flush()
+    await risk.recompute(db, encounter)
     return encounter
 
 
@@ -118,6 +123,7 @@ async def sync_encounter(db: AsyncSession, patient: Patient, changed: set[str]) 
         return
     if "admission_date" in changed:
         encounter.admitted_at = admitted_at_from(patient.admission_date)
+        await risk.recompute(db, encounter)  # length of stay and the 6-month ED window move with it
     if "room_number" in changed:
         encounter.room_number = patient.room_number
     if "unit_id" in changed:
