@@ -336,6 +336,21 @@ async def test_dev_login_signs_in_when_enabled(client, monkeypatch):
     assert me.json()["email"] == "e2e.physician@dischargeflow.test"
 
 
+async def test_dev_login_handle_makes_distinct_users(client, monkeypatch):
+    import dataclasses
+
+    from app.identity import router as identity_router
+
+    monkeypatch.setattr(identity_router, "settings", dataclasses.replace(identity_router.settings, enable_dev_login=True))
+    ids = set()
+    for handle in ("n001", "n002", "n001"):
+        resp = await client.post("/api/auth/dev-login", json={"role": "nurse", "handle": handle})
+        assert resp.status_code == 200
+        ids.add(resp.json()["user"]["user_id"])
+    assert len(ids) == 2  # the same handle signs in as the same user
+    assert (await client.post("/api/auth/dev-login", json={"role": "nurse", "handle": "Bad Handle"})).status_code == 422
+
+
 def test_dev_login_cannot_be_enabled_in_production(monkeypatch):
     from app.core.config import load_settings
 

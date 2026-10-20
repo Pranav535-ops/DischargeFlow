@@ -42,6 +42,8 @@ npx playwright test                  # E2E: starts the backend (mock AI, dev log
 ```
 For E2E locally, set `E2E_PYTHON` to the backend venv's python (absolute path on Windows), and `PW_CHANNEL=chrome` to use an installed Chrome instead of downloading Playwright's Chromium. `E2E_DATABASE_URL` picks the database (default: a throwaway SQLite file). `VITE_BACKEND_URL` (or the legacy `REACT_APP_BACKEND_URL`) points the built app at another API origin; empty means same-origin `/api`.
 
+Hospital simulation (`sim/`, own virtualenv from `sim/requirements.txt`; see `sim/README.md` and `docs/testing/hospital-simulation-test-plan.md`): `seed.py` loads a synthetic 24-unit hospital through the API (dev login with `handle` for distinct staff, units, HL7 A01s, plans), `adt_day.py` replays and checks a compressed ADT day, `locustfile.py` holds the load profiles (`DF_PROFILE`). They run against any deployment with the dev login on: the `sim` git branch's Vercel preview (`APP_ENV=test`), or a local backend. `E2E_BASE_URL` points Playwright at a deployment instead of starting servers. `sim/.state.json` (gitignored) holds the sim's integration key.
+
 Full stack: `docker compose up --build` starts Postgres, runs a one-shot `migrate` service, then the backend (with `SEED_ON_STARTUP=true`) and the frontend.
 
 ## Configuration (`app/core/config.py`)

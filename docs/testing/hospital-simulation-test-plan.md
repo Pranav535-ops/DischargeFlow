@@ -37,7 +37,7 @@ environment variables differ, so the results transfer to production.
 - ~430 occupied beds with synthetic patients and encounters
 - expected discharge dates spread over the next 1–6 days
 - dispositions distributed as: home 60%, home health 15%, SNF 12%, rehab 5%, hospice 3%, AMA 2%, transfer 3%
-- users: 120 nurses, 40 physicians, 12 pharmacists, 10 case managers, 3 admins, each assigned to units
+- users: 120 nurses, 40 physicians, 12 pharmacists, 3 admins, each assigned to units (the app has no case-manager role; nurses plan and review discharges)
 - one integration client (ADT feed)
 
 **A simulated day (driver script, compressible 24 h → 2 h):**
@@ -248,6 +248,15 @@ Target: SUS ≥ 70, no critical task failure.
 | 7 | Resilience drills F1–F8 | 1–2 days |
 | 8 | AI runs (G) and clinician walkthrough (H) | 1 day + scheduling |
 | 9 | Production monitoring (I) | 0.5 day |
+
+**Status (2026-10-20):**
+- **Built in `sim/`** ([README](../../sim/README.md)):
+  - steps 1, 3 (B1 and B2) and 4 (C1–C6)
+  - the existing Playwright specs, which now run against a deployment (`E2E_BASE_URL`)
+- **Not built yet:**
+  - the new browser journeys A6–A15
+  - B3–B5
+  - the SQL invariant checks (D4–D6); the audit chain (D3) is checked after every replay and load run
 
 Run order per release: CI → `sim` journeys → B1 replay → C1 + C3 → D checks → production smoke.
 Run C4/C5, F and H before any pilot decision.

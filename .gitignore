@@ -102,3 +102,8 @@ infra/**/terraform.tfvars
 frontend/build/
 frontend/test-results/
 frontend/playwright-report/
+
+# Hospital simulation (sim/README.md): seeded state with the sim integration key, and run reports
+sim/.state.json
+sim/out/
+sim/.venv/
