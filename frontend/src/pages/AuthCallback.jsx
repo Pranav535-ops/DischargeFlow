@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { errorMessage } from '@/lib/api';
 
 // A same-origin path saved by login(), used once; anything else lands on the dashboard.
-const takeReturnPath = () => {
+export const takeReturnPath = () => {
   try {
     const path = sessionStorage.getItem(RETURN_TO_KEY);
     sessionStorage.removeItem(RETURN_TO_KEY);

@@ -49,6 +49,7 @@ suspend someone.
 | `capacity:read` | physician, nurse (the capacity board) |
 | `bed:manage` | nurse, interface (move a bed through dirty, cleaning, available; the EVS system uses an API key) |
 | `instructions:manage` | physician, nurse (draft, edit, approve and print patient instructions) |
+| `user:provision` | interface (the hospital directory's SCIM connector: create, read and (de)activate accounts) |
 
 ### Unit-scoped access
 
@@ -63,9 +64,10 @@ Notifications about a patient on a unit go only to members of that unit.
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| POST | `/auth/session` | public | Exchanges the Emergent OAuth `session_id` for an access token; sets the refresh cookie. Known (or invited) users sign in with their role. Unknown accounts become `pending` if `SELF_REGISTRATION` is on and their domain is in `ALLOWED_EMAIL_DOMAINS` (any domain when unset), otherwise 403. Admins are notified; audited (`REQUEST_ACCESS`) |
-| GET | `/auth/config` | public | Sign-in methods offered: `{"oidc": {"issuer", "client_id"}}` when hospital SSO is configured, else `{"oidc": null}` |
-| POST | `/auth/oidc` | public | Hospital SSO (ADR-002 item 2, seam): body `{id_token, nonce}`. Verifies the ID token against the provider's JWKS (issuer, audience, expiry, nonce, `token_use`, `email_verified`, `amr` when `OIDC_REQUIRE_MFA`), then signs in like `/auth/session`. 401 naming the failed check; 404 unless `OIDC_ISSUER` and `OIDC_CLIENT_ID` are set |
+| POST | `/auth/session` | public | The demo Google login (Emergent): exchanges the OAuth `session_id` for an access token; sets the refresh cookie. Known (or invited) users sign in with their role. Unknown accounts become `pending` if `SELF_REGISTRATION` is on and their domain is in `ALLOWED_EMAIL_DOMAINS` (any domain when unset), otherwise 403. Deactivated accounts (SCIM) 403. Admins are notified; audited (`REQUEST_ACCESS`). 404 when `EMERGENT_LOGIN` is off (`auto`, the default, turns it off once a hospital identity provider exists) |
+| GET | `/auth/config` | public | Sign-in methods offered: `{"providers": [{provider_id, tenant_id, name, issuer, client_id, authorize_url, scopes}], "emergent": bool}`. Providers are the active `identity_providers` rows plus the `OIDC_*` one (`provider_id` `env`, default tenant) |
+| POST | `/auth/oidc` | public | Hospital SSO (ADR-002 item 2) with an ID token: body `{id_token, nonce, provider_id?}`. Without `provider_id` the token's `iss` and `aud` pick the provider (401 `unknown issuer` if none). Verifies the token against the provider's JWKS (issuer, audience, expiry, nonce, `token_use`, `email_verified`, `amr` when the provider requires MFA), then signs in to the provider's tenant: directory groups set the role and units when the provider has group mappings (see `/identity-providers`); unknown people with a mapped role are created with it (`SSO_PROVISION_USER`), others become `pending` (403 when `SELF_REGISTRATION` is off; the domain allow-list does not apply). 403 for a deactivated account or one belonging to another tenant. Role and unit changes are audited (`SSO_ROLE_SYNC`, `SSO_UNIT_SYNC`). 401 naming the failed check, 404 for an unknown or disabled provider |
+| POST | `/auth/oidc/callback` | public | The login page's authorization-code + PKCE flow: body `{provider_id, code, code_verifier (43-128 chars), redirect_uri, nonce}`. Redeems the code at the provider's token endpoint (public client, no secret), then as `/auth/oidc`. 401 when the provider refuses the code (`invalid_grant`), 502 when it can't be reached |
 | POST | `/auth/refresh` | refresh cookie | Rotates the refresh cookie and returns a new 15-minute access token. 401 (and the session is revoked) if it wasn't refreshed for `SESSION_IDLE_MINUTES` |
 | GET | `/auth/me` | signed in, including `pending` | The current user, role and tenant |
 | POST | `/auth/logout` | refresh cookie | Revokes the session. Optional body `{"reason": "idle"}` when the browser locked itself for inactivity (stored as `idle_lock`) |
@@ -84,6 +86,25 @@ Notifications about a patient on a unit go only to members of that unit.
 | GET | `/integrations/clients` | `user:manage` | API-key clients for hospital systems; never returns key material |
 | POST | `/integrations/clients` | `user:manage` | Returns the API key once |
 | DELETE | `/integrations/clients/{client_id}` | `user:manage` | Revokes the key |
+| GET | `/identity-providers` | `user:manage` | This tenant's identity providers (public values, `require_mfa`, `groups_claim`) with their group `mappings`. Providers themselves are added by operators with `python -m app.cli sso-provider add` |
+| POST | `/identity-providers/{provider_id}/mappings` | `user:manage` | Body `{group_name, role?, unit_id?}` (at least one of role and unit; role one of physician, nurse, pharmacist, admin). Once any mapping has a role, every sign-in through the provider sets the role from the person's groups (most privileged: admin, physician, pharmacist, nurse; none: `pending`); once any has a unit, unit memberships follow groups the same way. 409 if the group is mapped; audited |
+| DELETE | `/identity-providers/{provider_id}/mappings/{mapping_id}` | `user:manage` | Takes effect at each person's next sign-in; audited |
+
+### SCIM 2.0 provisioning (ADR-002 item 2)
+
+For the hospital directory's provisioning connector (Entra ID, Okta). Authenticated with an integration client's API
+key holding `user:provision`, sent as `Authorization: Bearer <key>` (or `X-API-Key`). Responses are
+`application/scim+json`; errors use the SCIM error schema with `scimType`. Exempt from read-only (downtime) mode, so
+deprovisioning never waits. All writes are audited with the client as actor (`SCIM_CREATE_USER`, `SCIM_UPDATE_USER`,
+`SCIM_DEACTIVATE_USER`, `SCIM_REACTIVATE_USER`; field names only).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/scim/v2/ServiceProviderConfig` | patch and filter supported; bulk, sort, etag, password change not |
+| GET | `/scim/v2/Users` | `filter=userName eq "…"` (case-insensitive) or `externalId eq "…"`, `startIndex` (1-based), `count` (max 200). Other filters 400 `invalidFilter` |
+| POST | `/scim/v2/Users` | Core User schema: `userName` (the email), `name`/`displayName`, `externalId`, `active`. Created as `pending`: the role comes from group mappings at the first SSO sign-in, or from an admin. 201; 409 `uniqueness` if the email exists in any tenant |
+| GET | `/scim/v2/Users/{id}` | 404 outside the client's tenant |
+| PATCH | `/scim/v2/Users/{id}` | PatchOp `replace`/`add` of `active`, `displayName`, `name`, `externalId` (with a `path`, or without one and an object value; `"True"`/`"False"` strings accepted). `active: false` sets `deactivated_at`, revokes every session (`revoked_reason` `deprovisioned`) and drops cached identities: the account's requests fail with 401 at once in this process and within 30 s elsewhere, refresh is refused, and every sign-in method answers 403. `active: true` lets them sign in again (revoked sessions stay revoked). Other attributes 400 `invalidPath` |
 
 ## Patients
 
@@ -124,11 +145,25 @@ note). Notes stay on the delay row (never in audit entries) and erasure redacts 
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| GET | `/discharge-plans/codes` | signed in | `{dispositions, delay_codes, roles}` for the plan and template screens |
-| GET | `/discharge-plans/review` | signed in | Active stays grouped by unit (`unit_id`, `unit_code`, `unit_name`, `total`, `not_reviewed_today`, `plans`), not-reviewed first. Each plan: patient name and room, `expected_discharge_date`, `planned_disposition`, `plan_reviewed_at`/`_by`/`_by_name`, `reviewed_today`, `expected_date_passed`, `workflow_status`. `?unit_id=` (or `unassigned`), `?pending_only=true`. Unit scope applies; one `PHI_READ` entry per request |
-| GET | `/encounters/{encounter_id}/plan` | signed in | The plan with its review state and `delays`; `PHI_READ` audited |
+| GET | `/discharge-plans/codes` | signed in | `{dispositions, delay_codes, roles, admission_types, comorbidities, readmission_risk}` for the plan and template screens: admission types are HL7 table 0007 (`{code, label, acute}`), comorbidities the Charlson conditions with their LACE weights (`{key, label, weight}`), `readmission_risk` the method, score version, threshold, maximum and citation |
+| GET | `/discharge-plans/review` | signed in | Active stays grouped by unit (`unit_id`, `unit_code`, `unit_name`, `total`, `not_reviewed_today`, `plans`), not-reviewed first. Each plan: patient name and room, `expected_discharge_date`, `planned_disposition`, `plan_reviewed_at`/`_by`/`_by_name`, `reviewed_today`, `expected_date_passed`, `workflow_status`, `readmission_risk` (`{score, high_risk, complete}` or null). `?unit_id=` (or `unassigned`), `?pending_only=true`. Unit scope applies; one `PHI_READ` entry per request |
+| GET | `/encounters/{encounter_id}/plan` | signed in | The plan with its review state, `delays` and `readmission_risk` (below); `PHI_READ` audited |
 | PUT | `/encounters/{encounter_id}/plan` | `plan:manage` | Body `{expected_discharge_date?, planned_disposition?, delay_code?, delay_note?}`; fields left out stay, null clears. Moving the date later needs a `delay_code` (recorded as an `expected_date_slip` with `slip_days`). Moves the due times of the open template tasks of the active workflow. Counts as today's review. 400 for a discharged stay. Audited as `UPDATE_DISCHARGE_PLAN` with field names and the delay code only |
 | POST | `/encounters/{encounter_id}/plan/review` | `plan:manage` | Optional body `{delay_code?, delay_note?}`. Records today's review (who and when). When the expected date has passed, the first review of the day needs a `delay_code`. Audited as `REVIEW_DISCHARGE_PLAN` |
+| PUT | `/encounters/{encounter_id}/risk-inputs` | `plan:manage` | Body `{admission_type?, patient_class?, comorbidities?, ed_visits_recorded?}` (fields left out stay, null clears; `ed_visits_recorded` null goes back to counting this system's encounters). Recomputes the readmission score and returns the plan. 422 for an unknown admission type or condition; 400 for a discharged stay. Audited as `UPDATE_RISK_INPUTS` with field names and the score version only |
+| POST | `/encounters/{encounter_id}/risk-tasks` | `plan:manage` | Body `{keys: [...]}` from the suggested tasks (`follow_up_7_days`, `medication_teach_back`, `post_discharge_call`). Adds them to the stay's running discharge workflow, or as ad hoc tasks, each once; returns `{added}`. 409 unless the score is high. Audited (`CREATE_TASK` per task, `ADD_RISK_TASKS`) |
+
+**Readmission risk (ADR-002 item 20).** The LACE index (van Walraven et al., CMAJ 2010;182(6):551-557,
+doi:10.1503/cmaj.091117), computed from structured data by `app/risk` and never sent to a model. `readmission_risk`
+on the plan is null until the stay is scored, else `{score, max_score (19), high_risk (score >= threshold),
+threshold (10), complete, missing, version, computed_at, method, citation, components, inputs, suggested_tasks}`.
+`components` has one entry per letter (`key`, `letter`, `label`, `points`, `max_points`, `explanation` naming the
+input). `missing` lists inputs not recorded (`length_of_stay`, `acuity`, `comorbidity`, `ed_visits`), which count 0, so
+a partial score is a lower bound. `inputs` carries the recorded values for the edit form, including
+`ed_visits_counted`. `suggested_tasks` (high risk only, stay in progress) lists `{key, title, description, category,
+assigned_role, priority, added}`. The length of stay is to the expected discharge date while the patient is in (or so
+far, when there is none or it has passed) and the actual stay once discharged. HL7 A01 sets the admission type from
+PV1-4 and the patient class from PV1-2; A08 updates them on the stay in progress.
 | GET | `/workflow-templates` | signed in | Every template of the tenant: `disposition`, `name`, `version`, `active`, `tasks` (`key`, `title`, `description`, `category`, `assigned_role`, `priority`, `due_offset_hours` from 00:00 on the expected date, `depends_on` keys) |
 | POST | `/workflow-templates` | `template:manage` | Body as a template above (without id and version). 409 if the disposition already has one; 422 for unknown roles, dispositions or prerequisites, duplicate keys or a dependency cycle. Audited |
 | PUT | `/workflow-templates/{template_id}` | `template:manage` | Replaces name, tasks and `active`; the version goes up. Running workflows keep their tasks. The disposition can't change (400). Audited |

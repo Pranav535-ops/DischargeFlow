@@ -25,6 +25,8 @@ from app.discharge.models import (ACTIVE_WORKFLOW_STATUSES, DELAY_CODES, DISPOSI
 from app.discharge.templates import due_at_for, hospital_today, hospital_zone
 from app.identity.models import Unit, User
 from app.patients.models import REDACTED, Encounter
+from app.risk import lace
+from app.risk import service as risk
 
 PLAN_FIELDS = ("expected_discharge_date", "planned_disposition")
 
@@ -96,6 +98,7 @@ async def update_plan(db: AsyncSession, user: CurrentUser, encounter_id: str, ch
         encounter.first_expected_discharge_date = encounter.expected_discharge_date
     if "expected_discharge_date" in changed:
         await _move_due_times(db, encounter)
+        encounter.rescore()  # the expected length of stay is the readmission score's L (ADR-002 item 20)
     encounter.plan_reviewed_at = utcnow()
     encounter.plan_reviewed_by = user.user_id
     await db.flush()
@@ -145,11 +148,74 @@ def plan_view(encounter: Encounter, reviewer_name: Optional[str] = None) -> dict
 
 
 async def plan_detail(db: AsyncSession, encounter: Encounter) -> dict:
+    await risk.ensure_current(db, encounter)
     reviewer = await db.get(User, encounter.plan_reviewed_by) if encounter.plan_reviewed_by else None
     delays = await db.scalars(select(DelayReason).where(DelayReason.encounter_id == encounter.encounter_id)
                               .order_by(DelayReason.created_at.desc()))
+    readmission_risk = risk.view(encounter)
+    if readmission_risk is not None:
+        readmission_risk["suggested_tasks"] = await _suggestions(db, encounter, readmission_risk["high_risk"])
     return {**plan_view(encounter, reviewer.name if reviewer else None),
-            "delays": [d.to_dict() for d in delays]}
+            "delays": [d.to_dict() for d in delays], "readmission_risk": readmission_risk}
+
+
+# ---------- readmission risk (ADR-002 item 20) ----------
+
+async def _risk_task_titles(db: AsyncSession, encounter: Encounter) -> set[str]:
+    """Titles of the suggested tasks this stay already has (in any workflow of the stay, or ad hoc since admission)."""
+    titles = {t["title"] for t in risk.SUGGESTED_TASKS}
+    workflow_ids = select(Workflow.workflow_id).where(Workflow.encounter_id == encounter.encounter_id)
+    stmt = select(Task.title).where(Task.patient_id == encounter.patient_id, Task.title.in_(titles),
+                                    Task.workflow_id.in_(workflow_ids) | (
+                                        Task.workflow_id.is_(None) & (Task.created_at >= encounter.created_at)))
+    return set(await db.scalars(stmt))
+
+
+async def _suggestions(db: AsyncSession, encounter: Encounter, high_risk: bool) -> list[dict]:
+    """The extra tasks offered for a high-risk stay (never added on their own), each marked if already added."""
+    if not high_risk or encounter.status != "active":
+        return []
+    have = await _risk_task_titles(db, encounter)
+    return [{**{k: t[k] for k in ("key", "title", "description", "category", "assigned_role", "priority")},
+             "added": t["title"] in have} for t in risk.SUGGESTED_TASKS]
+
+
+async def add_risk_tasks(db: AsyncSession, user: CurrentUser, encounter_id: str, keys: list[str],
+                         request: Optional[Request] = None) -> list[Task]:
+    """Add the chosen suggested tasks to the stay: to its discharge workflow if one is running, otherwise as ad hoc
+    tasks. Only for a high-risk score, and each task once. Due times follow the expected date, as template tasks."""
+    encounter = await _active_encounter(db, encounter_id)
+    await risk.ensure_current(db, encounter)
+    if encounter.readmission_score is None or not lace.is_high_risk(encounter.readmission_score):
+        raise HTTPException(status_code=409, detail="Extra tasks are suggested only for a high readmission risk")
+    unknown = sorted(set(keys) - set(risk.SUGGESTED_KEYS))
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown suggested tasks: {', '.join(unknown)}")
+    have = await _risk_task_titles(db, encounter)
+    workflow = await db.scalar(select(Workflow).where(Workflow.encounter_id == encounter.encounter_id,
+                                                      Workflow.status.in_(ACTIVE_WORKFLOW_STATUSES)))
+    now = utcnow()
+    added = []
+    for spec in risk.SUGGESTED_TASKS:
+        if spec["key"] not in keys or spec["title"] in have:
+            continue
+        task = Task(patient_id=encounter.patient_id, workflow_id=workflow.workflow_id if workflow else None,
+                    title=spec["title"], description=spec["description"], category=spec["category"],
+                    assigned_role=spec["assigned_role"], priority=spec["priority"], created_by=user.user_id,
+                    due_offset_hours=spec["due_offset_hours"],
+                    due_at=due_at_for(encounter.expected_discharge_date, spec["due_offset_hours"], spec["priority"],
+                                      now))
+        db.add(task)
+        added.append(task)
+    if not added:
+        return []
+    await db.flush()
+    for task in added:
+        await write_audit(db, user, "CREATE_TASK", "task", task.task_id,
+                          f"patient={task.patient_id} role={task.assigned_role} source=readmission_risk", request)
+    await write_audit(db, user, "ADD_RISK_TASKS", "patient", encounter.patient_id,
+                      f"encounter={encounter_id} tasks: {', '.join(t.task_id for t in added)}", request)
+    return added
 
 
 async def plans_for_review(db: AsyncSession, user: CurrentUser, unit_id: Optional[str] = None,
@@ -170,7 +236,9 @@ async def plans_for_review(db: AsyncSession, user: CurrentUser, unit_id: Optiona
 
     groups: dict[Optional[str], dict] = {}
     for encounter in encounters:
+        await risk.ensure_current(db, encounter)
         view = plan_view(encounter, reviewers.get(encounter.plan_reviewed_by or ""))
+        view["readmission_risk"] = risk.summary(encounter)  # the list carries the flag; the plan explains it
         if pending_only and view["reviewed_today"]:
             continue
         patient = encounter.patient

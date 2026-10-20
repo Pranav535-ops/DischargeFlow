@@ -20,7 +20,7 @@ from app.core.security import (
     requires,
 )
 from app.core.tenancy import use_tenant
-from app.identity import integrations, oidc, sessions
+from app.identity import integrations, sessions, sso
 from app.identity import service as identity_service
 from app.identity.models import IntegrationClient, Unit, User, UserUnit
 
@@ -41,11 +41,6 @@ class RoleUpdate(BaseModel):
 class Logout(BaseModel):
     # "idle" when the browser locked itself after IDLE_LOCK_MINUTES without input; kept as the revocation reason.
     reason: Literal["user", "idle"] = "user"
-
-
-class OidcSignIn(BaseModel):
-    id_token: str = Field(min_length=1, max_length=16384)
-    nonce: str = Field(min_length=16, max_length=256)
 
 
 class UserInvite(BaseModel):
@@ -87,6 +82,9 @@ async def create_session(request: Request, response: Response, db: DB):
     Known users (including ones an admin invited) sign in with the role on their row. An unknown account gets the
     no-access role `pending` if self-registration and the domain allow-list let it, and waits for an admin.
     """
+    if not await sso.emergent_login_enabled(db):
+        # Hospital SSO is configured (ADR-002 item 2): the demo Google login is off unless EMERGENT_LOGIN=true.
+        raise HTTPException(status_code=404, detail="Not Found")
     body = await request.json()
     session_id = body.get("session_id")
     if not session_id:
@@ -94,22 +92,6 @@ async def create_session(request: Request, response: Response, db: DB):
 
     profile = await fetch_oauth_profile(session_id)
     return await identity_service.sign_in(db, request, response, profile["email"], profile["name"], profile.get("picture"))
-
-
-@auth_router.get("/config")
-async def auth_config():
-    """Which sign-in methods this deployment offers (public: the login page reads it before anyone signs in)."""
-    return {"oidc": {"issuer": settings.oidc_issuer, "client_id": settings.oidc_client_id} if oidc.enabled() else None}
-
-
-@auth_router.post("/oidc")
-async def oidc_sign_in(body: OidcSignIn, request: Request, response: Response, db: DB):
-    """Hospital single sign-on (ADR-002 item 2): exchange a verified OIDC ID token for a session, under the same
-    user matching and approval rules as the Google login. 404 unless OIDC_ISSUER and OIDC_CLIENT_ID are set."""
-    if not oidc.enabled():
-        raise HTTPException(status_code=404, detail="Not Found")
-    claims = await oidc.verify_id_token(body.id_token, body.nonce)
-    return await identity_service.sign_in(db, request, response, claims["email"], oidc.display_name(claims), claims.get("picture"))
 
 
 class DevLogin(BaseModel):

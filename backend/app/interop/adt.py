@@ -10,7 +10,8 @@ encounter, so earlier stays are kept.
   tasks, unapproved summary), the A03 is still accepted (AA): the patient has left, so the stay closes and the
   workflow becomes `externally_discharged`, with the departure time and a policy deadline for the tasks still open.
   Physicians and the unit's nurses are told. With no workflow at all, the stay simply closes.
-- A08 update: only whitelisted fields (UPDATABLE_FIELDS), and only those the message carries.
+- A08 update: only whitelisted fields (UPDATABLE_FIELDS), and only those the message carries; PV1-4 admission type
+  and PV1-2 patient class update the stay in progress (readmission risk inputs, ADR-002 item 20).
 - A11 cancel admit: the current encounter is marked `cancelled`.
 - A13 cancel discharge: the last stay reopens, and an externally discharged workflow goes back to in progress.
 - A40 merge: the MRG-1 record's stays and everything else move to the PID-3 (surviving) record, and the old MRN's
@@ -44,6 +45,8 @@ from app.notifications.service import notify_role
 from app.patients.merge import merge_into
 from app.patients.models import MRN_INDEX_PURPOSE, Encounter, Patient, mrn_index_parts
 from app.patients.service import current_encounter, open_encounter
+from app.risk import service as risk
+from app.risk.lace import ADMISSION_TYPES
 
 SUPPORTED_EVENTS = ("A01", "A02", "A03", "A08", "A11", "A13", "A40")
 # Stored when an A01 leaves a required column empty, so nobody mistakes it for clinical information.
@@ -168,6 +171,23 @@ def visit_number_from(message: Message) -> Optional[str]:
     return (pv1.component(19).strip() or None) if pv1 else None
 
 
+def acuity_from(message: Message) -> dict:
+    """PV1-4 admission type (HL7 table 0007) and PV1-2 patient class (table 0004), the readmission risk score's
+    acuity and ED-visit inputs (ADR-002 item 20). Only the codes the message carries; unknown admission types are
+    dropped rather than guessed."""
+    pv1 = message.segment("PV1")
+    if pv1 is None:
+        return {}
+    out = {}
+    admission_type = pv1.component(4).strip().upper()
+    if admission_type in ADMISSION_TYPES:
+        out["admission_type"] = admission_type
+    patient_class = pv1.component(2).strip().upper()[:2]
+    if patient_class:
+        out["patient_class"] = patient_class
+    return out
+
+
 def disposition_from(message: Message) -> Optional[str]:
     """PV1-36 discharge disposition, as the sending system codes it (HL7 table 0112, e.g. 01 home)."""
     pv1 = message.segment("PV1")
@@ -228,7 +248,7 @@ async def admit(db: AsyncSession, client: CurrentUser, message: Message) -> Outc
         patient.status = "admitted"
         patient.set_mrn(client.tenant_id, authority, mrn)  # re-keys a pre-rotation index
         await db.flush()
-        await open_encounter(db, patient, visit_number)
+        await open_encounter(db, patient, visit_number, **acuity_from(message))
         return Outcome("AA", "Patient readmitted", patient_id=patient.patient_id, replay=(authority, mrn))
 
     patient = Patient(**fields, status="admitted")
@@ -239,7 +259,7 @@ async def admit(db: AsyncSession, client: CurrentUser, message: Message) -> Outc
     except IntegrityError:
         # Another message admitted the same MRN concurrently. Fail the request so the sender retries and gets AE.
         raise HTTPException(status_code=409, detail="Concurrent admission for this MRN; retry")
-    await open_encounter(db, patient, visit_number)
+    await open_encounter(db, patient, visit_number, **acuity_from(message))
     return Outcome("AA", "Patient admitted", patient_id=patient.patient_id, replay=(authority, mrn))
 
 
@@ -309,6 +329,15 @@ async def update_patient(db: AsyncSession, client: CurrentUser, message: Message
     changed = [f for f in UPDATABLE_FIELDS if values.get(f) and values[f] != getattr(patient, f)]
     for field in changed:
         setattr(patient, field, values[field])
+    encounter = await current_encounter(db, patient.patient_id)
+    if encounter is not None:
+        # The readmission risk inputs the PV1 carries (ADR-002 item 20), on the stay in progress.
+        stay = {k: v for k, v in acuity_from(message).items() if v != getattr(encounter, k)}
+        for field, value in stay.items():
+            setattr(encounter, field, value)
+        if stay:
+            changed += sorted(stay)
+            await risk.recompute(db, encounter)
     text = f"Patient updated: {', '.join(changed)}" if changed else "No changes"
     return Outcome("AA", text, patient_id=patient.patient_id)
 
@@ -356,7 +385,7 @@ async def cancel_discharge(db: AsyncSession, client: CurrentUser, message: Messa
         return Outcome("AA", "Patient is not discharged; nothing to cancel", patient_id=patient.patient_id)
     _check_visit(message, latest)
 
-    latest.status, latest.discharged_at, latest.disposition = "active", None, None
+    latest.reopen()
     await beds.departure_cancelled(db, latest.encounter_id)
     patient.status = "admitted"
     patient.room_number = latest.room_number or patient.room_number

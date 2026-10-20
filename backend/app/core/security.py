@@ -84,7 +84,7 @@ async def load_identity(db, user_id: str, session_id: str) -> Optional[CurrentUs
     if row is None:
         return None
     user, session = row
-    if session.revoked_at is not None or session.expires_at <= utcnow():
+    if session.revoked_at is not None or session.expires_at <= utcnow() or user.deactivated_at is not None:
         return None
     unit_ids = sorted(await db.scalars(select(UserUnit.unit_id).where(UserUnit.user_id == user.user_id)))
     scoped = unit_scope_enabled() and "patient:read_all" not in await permissions_for(db, user.role)

@@ -116,6 +116,10 @@ async def rotate(db: AsyncSession, raw_token: Optional[str]) -> Optional[Refresh
     user = await db.get(User, session.user_id)
     if user is None:
         return None
+    if user.deactivated_at is not None:
+        # Deprovisioned by the hospital directory (SCIM); its sessions were revoked then, this is a backstop.
+        await revoke(db, session, "deprovisioned")
+        return None
     return Refreshed(session=session, user=user, token=_token(tenant_id, session_id, new_secret))
 
 

@@ -23,6 +23,8 @@ from app.downtime.router import router as downtime_router
 from app.downtime.service import READ_ONLY_HEADER, enforce_read_only
 from app.escalations.router import router as escalations_router
 from app.identity.router import auth_router, integrations_router, units_router, users_router
+from app.identity.scim_router import router as scim_router
+from app.identity.sso_router import identity_providers_router, sso_auth_router
 from app.insurance.router import router as insurance_router
 from app.interop.hl7_router import router as hl7_router
 from app.interop import smart
@@ -96,6 +98,7 @@ def create_app() -> FastAPI:
         integrations_router, hl7_router, units_router, access_router, downtime_router, census_router,
         escalations_router, capacity_router, smart_router,
         plans_router, templates_router, endpoints_router, recipients_router, deliveries_router,
+        sso_auth_router, identity_providers_router, scim_router,
     ):
         api.include_router(router)
 

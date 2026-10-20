@@ -11,8 +11,8 @@ the primary care physician or receiving facility, tracked per delivery.
 
 Nothing changes for existing rows: nothing is sent until an admin adds an endpoint and a stay gets a recipient.
 
-Revision ID: 0020
-Revises: 0019
+Revision ID: 0022
+Revises: 0021
 Create Date: 2026-10-19 23:00:00
 """
 from typing import Sequence, Union
@@ -21,8 +21,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = '0020'
-down_revision: Union[str, None] = '0019'
+revision: str = '0022'
+down_revision: Union[str, None] = '0021'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

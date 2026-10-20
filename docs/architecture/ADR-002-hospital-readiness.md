@@ -189,24 +189,46 @@ which needs monthly partitioning within a year or two.
     c. **Claim permissions.** Creating a claim and changing its status need the new `claim:manage` (nurse, who owns the billing-clearance task, and admin); reads stay open to signed-in users. The assistant's `submit_claim` tool checks the same permission. The insurance screen is read-only for other roles.
     d. **Audit coverage.** Patient create and update (field names only, never values), discharge initiation and completion (including completion by an HL7 A03), task creation, status changes, overrides and reassignments are now audited in the same transaction as the change. Patient-level PHI reads are audited too, with one `PHI_READ` entry per request and no PHI in the details: the patient list (one entry per list, with the record count), patient detail, both workflow-detail routes and the summary read. Reads use resource type `patient` with the patient id, so `GET /api/audit/patients/{id}` answers "who looked at this record". A read that fails is not logged. **Cost:** each audited read appends to the tenant's hash chain, which locks the chain-head row until the request commits, so PHI reads in one tenant now serialize on that lock. The audit call is placed last in each handler to keep the hold short (a few milliseconds plus the commit). At pilot scale this is fine. At hospital scale, read events should move to a separate append-only table, or be batched into the chain by a worker (ADR-001 item 11). SQLite ignores `FOR UPDATE`, so local SQLite request transactions now run one at a time (`core/db.get_db`); without that, concurrent reads appended duplicate sequence numbers, which the Playwright run caught. **Not done:** list endpoints that carry less identifying data (`/workflows`, `/tasks`, `/insurance/claims`) and the assistant's read tools are not read-audited, though every assistant tool call is already audited.
 2. [ ] Hospital single sign-on (OIDC or SAML against the hospital directory) with MFA, plus automated provisioning and
-   deprovisioning, replacing the Emergent demo login. **Deferred: needs an AWS account (Cognito) and a hospital
-   directory to federate with. The code seam is in place (2026-10-19).**
-    - **Built:** `POST /api/auth/oidc` (`identity/oidc.py`) takes an OIDC ID token and the nonce the browser generated,
-      and checks it locally: RS256 signature by a key from the provider's JWKS (`OIDC_JWKS_URL`, default the issuer's
-      `/.well-known/jwks.json`, Cognito's layout; keys cached an hour, refetched on an unknown `kid`), `iss` =
-      `OIDC_ISSUER`, `aud` = `OIDC_CLIENT_ID`, expiry, nonce, `token_use` = `id`, `email_verified`, and with
-      `OIDC_REQUIRE_MFA=true` an `amr` claim naming a second factor. A verified token signs the person in through the
-      same code as the Google login (match by email, invited role, `pending` for strangers, domain allow-list), so
-      approval, unit scope and idle lock apply unchanged. Off (404) until both variables are set;
-      `GET /api/auth/config` tells the login page whether SSO is offered. Tested with a local RSA key standing in for
-      the provider's JWKS.
-    - **Left for the AWS phase:** the Cognito user pool and its SAML/OIDC federation with the hospital directory
-      (Terraform), the login page's PKCE redirect to it, SCIM (or Cognito's directory sync) for provisioning and
-      deprovisioning, per-hospital tenant assignment from a token claim, and switching the Emergent login off once
-      SSO works. Until SCIM exists, deprovisioning is an admin setting the user to `pending`, which takes effect within
-      30 seconds. MFA is enforced at the hospital's identity provider; `OIDC_REQUIRE_MFA` only checks that the token
-      says so, and Cognito passes `amr` through only for some federation setups, so it must be tested against the
-      real provider before it is switched on.
+   deprovisioning, replacing the Emergent demo login. **Code complete (2026-10-20, migration 0020); awaiting an AWS
+   account (Cognito) and a hospital directory to federate with. Not ticked: nothing has signed in through a real
+   hospital identity provider yet.**
+    - **Per-tenant providers:** `identity_providers` (shared table, like `tenants`; the app role may only read it)
+      maps an OIDC issuer and client id to a tenant, so the provider, never the token, decides which hospital someone
+      signs in to. Operators add rows with `python -m app.cli sso-provider add` (from the Cognito Terraform outputs);
+      the `OIDC_*` variables still configure one provider for the default tenant (id `env`), which is how the ECS task
+      is wired. `GET /api/auth/config` lists the active providers.
+    - **Sign-in:** the login page runs the authorization-code flow with PKCE (S256 verifier, `state`, `nonce`,
+      `prompt=login` so a provider session left on a shared workstation does not let the next person in) and posts
+      the code to `POST /api/auth/oidc/callback`; the server redeems it at the token endpoint as a public client and
+      verifies the ID token (signature from the provider's JWKS, issuer, audience, expiry, nonce, `token_use`,
+      `email_verified`, and `amr` naming a second factor when the provider requires MFA, the default). No provider
+      token reaches page scripts. `POST /api/auth/oidc` still takes an ID token directly.
+    - **Directory groups → role and units:** `idp_group_mappings` (tenant-scoped, admin API at
+      `/api/identity-providers`). Once a provider has a role mapping, every sign-in sets the role from the person's
+      groups (most privileged mapped role; none → `pending`), so leaving the directory group removes access at the
+      next sign-in; unit mappings replace unit memberships the same way. Unknown people with a mapped role are
+      provisioned with it; others become `pending` and admins are notified (403 if `SELF_REGISTRATION=false`). The
+      email allow-list does not apply to SSO: the hospital's own directory authenticated them. Changes are audited.
+    - **Provisioning and deprovisioning:** a SCIM 2.0 subset at `/api/scim/v2` (Users: create, get, list by
+      `userName`/`externalId`, PATCH `active` and profile; ServiceProviderConfig) for an integration client holding the
+      new `user:provision`. `active=false` sets `users.deactivated_at`, revokes every session and drops cached
+      identities, so the account's requests fail at once in that process and within 30 s elsewhere, and every
+      sign-in method refuses it. SCIM is exempt from read-only mode: deprovisioning must not wait for a downtime.
+    - **Emergent login:** `EMERGENT_LOGIN=auto` (default) offers the demo Google login only while no hospital provider
+      exists; the Terraform stack sets it to `false`. The Vercel deployment keeps it until it moves to AWS.
+    - **Cognito (Terraform, `infra/modules/cognito`):** user pool with MFA required for local accounts, self sign-up
+      off, SAML and/or OIDC federation from variables (groups mapped into `custom:groups`), hosted-UI domain, public
+      app client (code flow, callback `/auth/sso/callback`), outputs for the hospital's identity team (SAML ACS URL
+      and audience) and for `sso-provider add`. Passes `terraform fmt`/`validate`; not applied.
+    - **Tested** with a fake identity provider (local RSA key as its JWKS, stubbed token endpoint) and SCIM tests:
+      tenant from issuer, group sync, PKCE exchange, MFA, deactivation (sessions, refresh, sign-in), tenant
+      boundaries, downtime.
+    - **Left (needs AWS and a hospital):** apply the Cognito stack, federate it with the hospital directory, point the
+      directory's SCIM connector at `/api/scim/v2` with an API key, and verify against the real provider whether
+      Cognito passes `amr` through for its federation (`OIDC_REQUIRE_MFA` / `--no-require-mfa`; MFA is enforced at
+      the hospital IdP either way). Limits: SCIM PUT, DELETE and Groups are not implemented (connectors deactivate
+      with PATCH); a role changed by group mapping takes effect at the next sign-in, not mid-session; identity
+      providers are managed by operators from the CLI, not by tenant admins.
 3. [x] Unit-scoped access with break-glass (design change 3; migration 0009, done 2026-10-19).
     - **Model:** `units` (code matching HL7 PV1-3.1, so an A01 lands the patient on its unit), `user_units`, `patients.unit_id` (NULL = unassigned) and `access_grants` (break-glass), all tenant-scoped. Admins create units, set memberships and patient units in the admin and patient screens.
     - **Enforcement:** RESTRICTIVE `unit_scope` RLS policies on patients, workflows, tasks, discharge_summaries and insurance_claims, active only when the request sets `app.unit_scope='on'`. The API does that for users whose role lacks the new `patient:read_all` (admin and the ADT `interface` hold it) when `UNIT_SCOPED_ACCESS=true`. Lists, detail routes, FHIR, analytics and the assistant all go through the same policies, so there is one enforcement point, as for tenants.
@@ -227,21 +249,27 @@ which needs monthly partitioning within a year or two.
    Google is still signed in on that browser it may re-enter without a password (hospital SSO, item 2, should require
    a fresh login or a badge tap); the URL path of the locked screen (opaque ids, no PHI) stays in the address bar.
 5. [ ] Hosting and model provider under a BAA; backups with at least 7 days of point-in-time recovery (finding 8).
-   **Deferred: needs an AWS account under a BAA (ECS, RDS with point-in-time recovery, Bedrock, KMS; the Terraform in
-   `infra/` is written but not applied). The key-management seam is in place (2026-10-19).**
-    - **Built:** `core/kms.KmsKeyProvider` implements `core/crypto.KeyProvider` with a KMS symmetric key
+   **Code complete (2026-10-20); awaiting an AWS account and a signed BAA. Not ticked: the remaining steps are legal
+   and operational (sign the BAA, request Bedrock model access, apply, migrate), and none can be done without the
+   account.** The step-by-step go-live checklist is in `infra/README.md` ("Go-live on AWS under a BAA").
+    - **Key management:** `core/kms.KmsKeyProvider` implements `core/crypto.KeyProvider` with a KMS symmetric key
       (`PHI_KEY_PROVIDER=kms`, `PHI_KMS_KEY_ID`). Data keys are wrapped by KMS `Encrypt` with a fixed encryption
       context and marked with a prefix; the local KEK becomes a retired key, so existing rows still read and
       `app.cli rewrap-deks` moves them to KMS like any rotation. Unwrapped keys are cached in memory for 5 minutes
-      (bounded), so a patient list does not make one KMS call per field. boto3 is imported lazily and only by this
-      module (an `.importlinter` exception next to the AI gateway's). Tested with a fake KMS client: wrap, unwrap,
-      cache, refusal mapping and a local-to-KMS rewrap of a stored patient.
+      (bounded), so a patient list makes one KMS call per patient, not per field, and repeat reads none. boto3 is
+      imported lazily and only by this module. Terraform creates the key (`alias/dischargeflow-<env>-phi`, rotation
+      on, 30-day deletion window), grants the ECS task role `kms:Encrypt`/`kms:Decrypt` only with the app's encryption
+      context, and sets `PHI_KEY_PROVIDER=kms` in the task. Tested with a fake KMS client.
+    - **Backups:** RDS point-in-time recovery is 7 days in staging and 35 in prod (`db_backup_retention_days`); the
+      database module now refuses anything under 7. `docs/runbooks/restore-database.md` is the restore procedure.
+    - **Model provider:** both environments set `llm_provider = "bedrock"` (Claude on Bedrock, inside the AWS account
+      under the BAA); the task role already allows invoking Anthropic models in the region.
     - **What it changes:** with the KEK in KMS, scheduling the key's deletion makes every wrapped data key unreadable,
       including copies in backups, and every unwrap is in CloudTrail. Per-patient erasure is still `Patient.shred()`;
       the blind-index key (MRN lookup) is still derived from `PHI_KEK`, which therefore stays a secret.
-    - **Left for the AWS phase:** the BAA itself, applying `infra/` (KMS key and grants to the ECS task role, RDS
-      PITR of at least 7 days, Bedrock as the model provider), running the switch and `rewrap-deks` against real
-      KMS, and a restore drill.
+    - **Left (needs the account):** sign the AWS BAA in AWS Artifact, request Bedrock model access, apply staging then
+      prod, migrate Neon to RDS (copying `PHI_KEK` exactly), run `rewrap-deks` against real KMS, switch DNS, and a
+      restore drill. Until then production stays on Vercel + Neon, which is not under a BAA: no real patient data.
 6. [x] Downtime procedure: read-only mode, printable discharge census per unit, and a backfill path afterwards
    (migration 0010, done 2026-10-19; procedure in `docs/runbooks/downtime.md`).
     - **Where the flag lives:** a per-tenant `downtime_periods` row that an admin opens and closes
@@ -470,7 +498,7 @@ which needs monthly partitioning within a year or two.
       `MedicationRequest`s only (no `MedicationStatement` or dispense history), names are matched lexically, and the
       allergy check would not know that amoxicillin is a penicillin. Not tested against a real EHR sandbox.
 16. [x] Outbound summary delivery (C-CDA or a FHIR document) to the primary care physician or receiving facility, with
-    delivery tracked (migration 0020, done 2026-10-20 against synthetic endpoints; no real HIE or Direct yet).
+    delivery tracked (migration 0022, done 2026-10-20 against synthetic endpoints; no real HIE or Direct yet).
     - **Built:** an admin-managed directory of receivers (`delivery_endpoints`: name, primary care or receiving
       facility, document format, transport, URL) and the recipients of each stay, set on its encounter with the
       discharge plan (`discharge_recipients`, `plan:manage`). Signing the summary queues one `summary_deliveries` row
@@ -584,8 +612,42 @@ which needs monthly partitioning within a year or two.
       migration 0019 on; older plans only count toward the final date, because a date moved earlier records no delay
       reason and the first value can't be reconstructed. A readmission is any later admission in this system, planned
       or not, at any unit; admissions to other hospitals are not seen. Not yet fed to the AI insights model.
-20. [ ] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
+20. [x] Readmission risk flag at planning time from a published, validated score over structured data, not an LLM,
     so it stays explainable and auditable.
+    - **Score:** the LACE index (van Walraven C, Dhalla IA, Bell C, et al. Derivation and validation of an index to
+      predict early death or unplanned readmission after discharge from hospital to the community. CMAJ
+      2010;182(6):551-557. doi:10.1503/cmaj.091117). It predicts death or unplanned readmission within 30 days; the
+      paper reports scores from 0 (2.0% expected risk) to 19 (43.7%) and a C statistic of 0.684 in validation. L is
+      the length of stay (<1 day 0, 1-3 days 1-3, 4-6 days 4, 7-13 days 5, 14 or more 7), A an acute (emergent)
+      admission (3), C the Charlson comorbidity index (0-3 as is, 4 or more 5), E emergency department visits in the 6
+      months before admission (one point each, at most 4). `app/risk/lace.py` is pure functions with no app imports
+      (an import-linter contract), tested at every band boundary and over the whole 0-19 range.
+    - **Inputs:** on the encounter (migration 0021). Length of stay is to the expected discharge date at planning (so
+      far, when there is no future expected date) and the actual stay once discharged, in calendar days in hospital
+      time. Acuity is the HL7 PV1-4 admission type (table 0007: accident, emergency and urgent count as acute), from
+      A01/A08 or set on the plan. Comorbidities are structured Charlson flags recorded on the plan, encrypted with the
+      patient's data key. ED visits are counted from the patient's other encounters (patient class E from PV1-2, or an
+      emergency admission) in the 182 days before admission, or recorded by staff from the hospital's records.
+    - **Stored and shown:** the score, its version (`lace-2010.1`), the points per component with the non-identifying
+      inputs behind them, and when it was computed. It is recomputed whenever an input changes (admission, plan date,
+      risk inputs, A08, A40 merge, discharge, A13), and on read when its version is old. The plan shows each component
+      with its input; the daily review list shows the score and the flag. A score with inputs not recorded is marked
+      partial (it is a lower bound). At 10 or more, three tasks are suggested (follow-up within 7 days, medication
+      teach-back, a call within 72 hours); a clinician adds the ones that fit, nothing is added on its own.
+    - **Audit and models:** score reads are part of the plan's existing `PHI_READ`; input changes are audited with
+      field names and the score version only. Nothing is sent to a model: the summary prompt's facts are an explicit
+      list without it, and an import-linter contract keeps `app.ai` and `app.chatbot` from importing `app.risk`.
+    - **Limits:** the Charlson weights are those of the LACE scoring worksheet as widely reproduced; the paper's full
+      text was not available when this was built, so clinical governance must confirm them (and the cut-off of 10,
+      which is the usual local convention, not a figure from the paper) against the worksheet the hospital uses before
+      relying on the flag. LACE was derived on adult medical and surgical patients discharged to the community in
+      Ontario, discriminates only moderately (C 0.684), and is not validated for every population (obstetrics,
+      paediatrics, discharge to another facility); the flag supports, and does not replace, clinical judgement. This
+      system only sees the ED visits the ADT feed sends, so the count is low unless staff record it. Comorbidities are
+      recorded by hand. Item 15 now reads the patient's problem list from the EHR, but mapping those conditions to the
+      Charlson flags (ICD-10 or SNOMED coding) is not built: it is the follow-up, as a proposal of `comorbidities` keys
+      that a clinician confirms on the plan, never written into the score on its own. The suggested tasks are not tracked against
+      outcomes yet (item 19). Tested on SQLite; PostgreSQL 16 in CI.
 21. [x] Real-time delivery without serverless polling once on AWS (finding 9, design change 4; migration 0016, done
     2026-10-19 in code; production on Vercel still polls until the AWS move).
     - **Built:** an AFTER INSERT trigger on `notifications` calls `pg_notify('notifications',

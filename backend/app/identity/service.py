@@ -69,6 +69,9 @@ async def match_or_register(db: AsyncSession, email: str, name: str,
     Returns (user, newly registered). The caller has selected the tenant."""
     email = email.strip()
     user = await find_user_by_email(db, email)
+    if user and user.deactivated_at is not None:
+        # Deprovisioned by the hospital directory (SCIM active=false, ADR-002 item 2).
+        raise HTTPException(status_code=403, detail="This account has been deactivated by the hospital directory")
     if user:
         user.name = name
         user.picture = picture
