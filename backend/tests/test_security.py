@@ -82,6 +82,59 @@ async def test_reused_refresh_token_after_grace_revokes_session(client, oauth, d
     assert (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {signed['token']}"})).status_code == 401
 
 
+async def test_concurrent_refresh_responses_arriving_out_of_order_keep_the_session(client, oauth, db):
+    # Two tabs share the cookie and refresh together while holding T0. Tab B's response lands first, tab A's last,
+    # so the cookie jar keeps A's token. The next refresh, outside the grace window, must not count as reuse.
+    signed = await sign_in(client)
+    t0 = client.cookies.get(REFRESH_COOKIE)
+    assert (await client.post("/api/auth/refresh")).status_code == 200  # tab A
+    t1 = client.cookies.get(REFRESH_COOKIE)
+    client.cookies.set(REFRESH_COOKIE, t0, path="/api/auth")
+    assert (await client.post("/api/auth/refresh")).status_code == 200  # tab B, within grace
+    client.cookies.set(REFRESH_COOKIE, t1, path="/api/auth")  # A's Set-Cookie wins
+
+    session = await db.scalar(select(AuthSession).where(AuthSession.user_id == signed["user"]["user_id"]))
+    session.rotated_at = utcnow() - timedelta(minutes=14)
+    await db.commit()
+
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+    await db.refresh(session)
+    assert session.revoked_at is None
+
+    # Theft detection still holds: replaying T0 after the grace window revokes the session.
+    session.rotated_at = utcnow() - timedelta(minutes=5)
+    await db.commit()
+    client.cookies.set(REFRESH_COOKIE, t0, path="/api/auth")
+    assert (await client.post("/api/auth/refresh")).status_code == 401
+    await db.refresh(session)
+    assert session.revoked_reason == "refresh_token_reuse"
+
+
+async def test_concurrent_refreshes_of_the_same_token_get_the_same_token(client, oauth):
+    await sign_in(client)
+    t0 = client.cookies.get(REFRESH_COOKIE)
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+    t1 = client.cookies.get(REFRESH_COOKIE)
+    client.cookies.set(REFRESH_COOKIE, t0, path="/api/auth")
+    resp = await client.post("/api/auth/refresh")
+    assert resp.status_code == 200
+    assert resp.cookies.get(REFRESH_COOKIE) == t1
+
+
+async def test_token_two_rotations_old_revokes_the_session(client, oauth, db):
+    signed = await sign_in(client)
+    t0 = client.cookies.get(REFRESH_COOKIE)
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+    session = await db.scalar(select(AuthSession).where(AuthSession.user_id == signed["user"]["user_id"]))
+    session.rotated_at = utcnow() - timedelta(minutes=5)
+    await db.commit()
+    client.cookies.set(REFRESH_COOKIE, t0, path="/api/auth")
+    assert (await client.post("/api/auth/refresh")).status_code == 401
+    await db.refresh(session)
+    assert session.revoked_reason == "refresh_token_reuse"
+
+
 async def test_logout_revokes_session_and_access_token(client, oauth):
     signed = await sign_in(client)
     headers = {"Authorization": f"Bearer {signed['token']}"}
