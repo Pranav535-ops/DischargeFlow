@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Activity, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, errorMessage } from '@/lib/api';
-import { invalidateDischarge, usePlanCodes } from '@/lib/queries';
+import { invalidateDischarge, useClinicalContext, usePlanCodes } from '@/lib/queries';
 import { riskInputsBody } from '@/lib/plans';
 import { Button } from './ui/button';
 
@@ -14,9 +14,12 @@ const formFrom = (inputs) => ({
 
 // Readmission risk on the discharge plan (ADR-002 item 20): the LACE index, a published score over structured data
 // (not an AI prediction). Every point is shown with the input it came from. When the score is high, extra tasks are
-// suggested; the clinician picks which to add.
-const ReadmissionRiskPanel = ({ encounterId, risk, canEdit }) => {
+// suggested; the clinician picks which to add. With an EHR launch, Charlson comorbidities coded on the EHR problem
+// list are proposed (Quan et al. 2005 ICD-10 algorithm), unchecked: they count only once a clinician ticks and saves
+// them through the normal risk-inputs save.
+const ReadmissionRiskPanel = ({ encounterId, patientId, risk, canEdit }) => {
   const { data: codes } = usePlanCodes();
+  const { data: ehr } = useClinicalContext(patientId);
   const [form, setForm] = useState(formFrom(risk?.inputs));
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -26,6 +29,10 @@ const ReadmissionRiskPanel = ({ encounterId, risk, canEdit }) => {
   useEffect(() => { setForm(formFrom(JSON.parse(inputsKey))); }, [inputsKey]);
 
   if (!risk) return null;
+
+  const proposals = ehr?.available ? ehr.charlson_proposals || [] : [];
+  const proposed = new Set(proposals.map(p => p.key));
+  const recorded = new Set(risk.inputs?.comorbidities || []);
 
   const send = async (request, done) => {
     setSaving(true);
@@ -50,6 +57,7 @@ const ReadmissionRiskPanel = ({ encounterId, risk, canEdit }) => {
   const toggle = (key) => setForm(f => ({
     ...f, comorbidities: f.comorbidities.includes(key) ? f.comorbidities.filter(k => k !== key) : [...f.comorbidities, key],
   }));
+  const accept = (key) => { setEditing(true); toggle(key); };
 
   return (
     <div className="border-t border-zinc-800 pt-4" data-testid="readmission-risk">
@@ -103,6 +111,31 @@ const ReadmissionRiskPanel = ({ encounterId, risk, canEdit }) => {
         </div>
       )}
 
+      {proposals.length > 0 && (
+        <div className="mt-3" data-testid="risk-proposals" title={ehr.charlson_citation}>
+          <h4 className="text-xs text-zinc-400 mb-1">
+            Proposed from the EHR problem list (not counted until a clinician confirms and saves)
+          </h4>
+          <ul className="space-y-1">
+            {proposals.map(p => (
+              <li key={p.key} className="flex items-start gap-2 text-sm" data-testid={`risk-proposal-${p.key}`}>
+                {recorded.has(p.key) ? (
+                  <span className="text-xs text-emerald-400 w-16 shrink-0">Recorded</span>
+                ) : canEdit ? (
+                  <input type="checkbox" className="mt-1" checked={form.comorbidities.includes(p.key)}
+                    onChange={() => accept(p.key)} aria-label={`Confirm ${p.label}`}
+                    data-testid={`risk-proposal-accept-${p.key}`} />
+                ) : <span className="w-16 shrink-0" />}
+                <span className="text-zinc-300">{p.label} ({p.weight})</span>
+                <span className="text-xs text-zinc-500">
+                  from {p.sources.map(s => `${s.condition} (${s.system} ${s.code})`).join('; ')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {canEdit && !editing && (
         <Button size="sm" variant="outline" className="mt-3 border-zinc-700 text-zinc-300"
           onClick={() => setEditing(true)} data-testid="risk-edit">Record risk inputs</Button>
@@ -137,6 +170,7 @@ const ReadmissionRiskPanel = ({ encounterId, risk, canEdit }) => {
                   <input type="checkbox" checked={form.comorbidities.includes(c.key)} onChange={() => toggle(c.key)}
                     data-testid={`risk-comorbidity-${c.key}`} />
                   {c.label} ({c.weight})
+                  {proposed.has(c.key) && <span className="text-xs text-blue-400">proposed by the EHR</span>}
                 </label>
               ))}
             </div>

@@ -13,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import select
 
+from app.ai import service as ai_service
 from app.ai.grounding import check_grounding
 from app.ai.schemas import DischargeSummaryDoc
 from app.audit.models import AuditLog
@@ -108,10 +109,19 @@ class FakeEhr:
                  "dosageInstruction": [{"text": "500 mg twice daily with meals"}]},
             ],
             "Condition": [
-                {"resourceType": "Condition", "code": {"coding": [{"display": "Type 2 diabetes mellitus"}]},
+                {"resourceType": "Condition", "code": {"coding": [
+                    {"system": "http://hl7.org/fhir/sid/icd-10-cm", "code": "E11.9",
+                     "display": "Type 2 diabetes mellitus"},
+                    {"system": "http://snomed.info/sct", "code": "44054006"}]},
                  "clinicalStatus": {"coding": [{"code": "active"}]},
                  "category": [{"coding": [{"code": "problem-list-item"}]}]},
-                {"resourceType": "Condition", "code": {"text": "Hypertension"},
+                {"resourceType": "Condition", "code": {"text": "Chronic systolic heart failure", "coding": [
+                    {"system": "http://hl7.org/fhir/sid/icd-10-cm", "code": "I50.22"}]}},
+                {"resourceType": "Condition", "code": {"text": "Hypertension", "coding": [
+                    {"system": "http://hl7.org/fhir/sid/icd-10-cm", "code": "I10"}]}},
+                # Refuted: neither listed nor proposed.
+                {"resourceType": "Condition", "code": {"text": "Dementia", "coding": [
+                    {"system": "http://hl7.org/fhir/sid/icd-10-cm", "code": "F03.90"}]},
                  "verificationStatus": {"coding": [{"code": "refuted"}]}},
             ],
             "AllergyIntolerance": [
@@ -305,7 +315,17 @@ async def test_clinical_context_is_read_live_audited_and_session_bound(client, s
     assert ctx["available"] is True
     assert [m["name"] for m in ctx["medications"]] == ["Lisinopril 10 MG Oral Tablet", "Metformin 500 MG Oral Tablet"]
     assert ctx["medications"][0]["dosage"] == "10 mg by mouth once daily"
-    assert [p["name"] for p in ctx["problems"]] == ["Type 2 diabetes mellitus"]  # refuted one left out
+    assert [p["name"] for p in ctx["problems"]] == ["Type 2 diabetes mellitus", "Chronic systolic heart failure",
+                                                    "Hypertension"]  # refuted one left out
+    # Charlson flags proposed from the codes, each with the condition it came from (refuted dementia is not).
+    assert ctx["charlson_proposals"] == [
+        {"key": "diabetes_uncomplicated", "label": "Diabetes without complications", "weight": 1, "sources": [
+            {"condition": "Type 2 diabetes mellitus", "system": "ICD-10-CM", "code": "E11.9"},
+            {"condition": "Type 2 diabetes mellitus", "system": "SNOMED CT", "code": "44054006"}]},
+        {"key": "congestive_heart_failure", "label": "Congestive heart failure", "weight": 2, "sources": [
+            {"condition": "Chronic systolic heart failure", "system": "ICD-10-CM", "code": "I50.22"}]}]
+    assert "Quan" in ctx["charlson_citation"]
+    assert all("codings" not in p for p in ctx["problems"])
     assert ctx["allergies"] == [{"substance": "Penicillin", "criticality": "high", "reactions": ["Hives"]}]
     assert EHR_TOKEN not in json.dumps(ctx)
 
@@ -313,7 +333,8 @@ async def test_clinical_context_is_read_live_audited_and_session_bound(client, s
     again = (await client.get(f"/api/smart/clinical-context/{pid}", headers=headers)).json()
     assert again["available"] is True and ehr.fhir_calls() == calls  # served from the short in-process cache
     reads = (await audit_rows(db, "PHI_READ"))[reads_before:]
-    assert len(reads) == 2 and all(r.resource_id == pid and "2 medications" in r.details for r in reads)
+    assert len(reads) == 2 and all(r.resource_id == pid and "2 medications" in r.details
+                                   and "2 Charlson proposals" in r.details for r in reads)
 
     # Another session (the same physician signed in elsewhere, or someone else) can't use this launch's token.
     _, other = await make_user("physician")
@@ -349,7 +370,15 @@ async def test_disabling_the_issuer_ends_its_launches(client, setup, ehr, db):
     assert refused.status_code == 403
 
 
-async def test_summary_is_grounded_in_the_ehr_lists(client, setup, ehr, db):
+async def test_summary_is_grounded_in_the_ehr_lists(client, setup, ehr, db, monkeypatch):
+    seen: list[dict] = []
+
+    async def spy(db, user, patient):
+        ctx = await smart.summary_context(db, user, patient)
+        seen.append(ctx)
+        return ctx
+
+    monkeypatch.setattr(ai_service, "_clinical_context_source", spy)
     resp, _ = await do_launch(client, ehr)
     headers = {"Authorization": f"Bearer {resp.json()['token']}"}
     pid = setup["patient"]["patient_id"]
@@ -366,6 +395,8 @@ async def test_summary_is_grounded_in_the_ehr_lists(client, setup, ehr, db):
     assert [w["type"] for w in gen.json()["generation"]["grounding_warnings"]] == ["allergy"]
     reads = await audit_rows(db, "PHI_READ")
     assert any("EHR clinical context (summary)" in r.details for r in reads)
+    # Risk proposals never reach the model's input.
+    assert seen and seen[0]["problems"] and not any("charlson" in k for k in seen[0])
 
 
 # ---------- units ----------

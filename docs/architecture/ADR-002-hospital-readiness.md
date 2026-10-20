@@ -644,9 +644,18 @@ which needs monthly partitioning within a year or two.
       Ontario, discriminates only moderately (C 0.684), and is not validated for every population (obstetrics,
       paediatrics, discharge to another facility); the flag supports, and does not replace, clinical judgement. This
       system only sees the ED visits the ADT feed sends, so the count is low unless staff record it. Comorbidities are
-      recorded by hand. Item 15 now reads the patient's problem list from the EHR, but mapping those conditions to the
-      Charlson flags (ICD-10 or SNOMED coding) is not built: it is the follow-up, as a proposal of `comorbidities` keys
-      that a clinician confirms on the plan, never written into the score on its own. The suggested tasks are not tracked against
+      recorded by hand; with an EHR launch (item 15) the plan proposes them from the problem list's codes
+      (`app/risk/charlson_codes.py`: the Charlson ICD-10 algorithm of Quan H, Sundararajan V, Halfon P, et al., Med
+      Care 2005;43(11):1130-1139, doi:10.1097/01.mlr.0000182534.19832.83), each shown with the condition and code it
+      came from, unchecked, and counted only once a clinician saves it; the server never writes a proposal into the
+      score, and proposals are kept out of the summary's EHR context. Limits of the proposals: the code lists were
+      checked against the `charlson_icd10_quan` encoding of the R package `comorbidity`, not the paper's printed table
+      (not retrievable here); Quan is WHO ICD-10, so ICD-10-CM-only codes (E08/E09 secondary diabetes, C7A/C7B, C86,
+      Z21) are not proposed and E1x.6 counts as uncomplicated diabetes as in Quan; Quan's peptic ulcer, hemiplegia and
+      renal categories have no LACE key; the SNOMED CT table is a local mapping of 34 parent concepts by exact id (ids
+      checked active on tx.fhir.org, the assignment to keys unverified against any published source), with no
+      subsumption, so a more specific concept is missed; uncoded or free-text problems propose nothing. Tested against
+      the fake EHR only. The suggested tasks are not tracked against
       outcomes yet (item 19). Tested on SQLite; PostgreSQL 16 in CI.
 21. [x] Real-time delivery without serverless polling once on AWS (finding 9, design change 4; migration 0016, done
     2026-10-19 in code; production on Vercel still polls until the AWS move).

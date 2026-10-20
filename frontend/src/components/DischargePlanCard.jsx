@@ -146,7 +146,8 @@ const DischargePlanCard = ({ patientId }) => {
             </div>
           )}
 
-          <ReadmissionRiskPanel encounterId={current.encounter_id} risk={plan.readmission_risk} canEdit={canEdit} />
+          <ReadmissionRiskPanel encounterId={current.encounter_id} patientId={patientId} risk={plan.readmission_risk}
+            canEdit={canEdit} />
         </div>
       )}
     </div>

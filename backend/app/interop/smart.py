@@ -50,6 +50,7 @@ from app.interop.fhir_client import ClinicalContext, FhirClient, FhirError
 from app.interop.models import EhrUserLink, SmartIssuer, SmartLaunch
 from app.patients.models import Encounter, Patient
 from app.patients.service import current_encounter
+from app.risk import charlson_codes
 
 SCOPES = "launch openid fhirUser patient/*.read"
 LAUNCH_TTL = timedelta(minutes=10)
@@ -500,10 +501,17 @@ async def clinical_context(db: AsyncSession, user: CurrentUser, patient: Patient
     if len(ctx.errors) == len(fhir_client.SEARCHES):
         return {"available": False, "reason": "unavailable", "detail": "The EHR did not answer.",
                 "errors": ctx.errors}
-    await audit_phi_read(db, user, patient.patient_id, f"EHR clinical context ({purpose}): {ctx.counts()}", request)
-    return {"available": True, "source": CONTEXT_SOURCE, "launch_id": launch.launch_id,
-            "fetched_at": datetime.fromtimestamp(ctx.fetched_at, tz=timezone.utc).isoformat(),
-            **ctx.as_dict()}
+    for_screen = purpose == "view"
+    counts = ctx.counts() + (f", {len(ctx.charlson_proposals)} Charlson proposals" if for_screen else "")
+    await audit_phi_read(db, user, patient.patient_id, f"EHR clinical context ({purpose}): {counts}", request)
+    out = {"available": True, "source": CONTEXT_SOURCE, "launch_id": launch.launch_id,
+           "fetched_at": datetime.fromtimestamp(ctx.fetched_at, tz=timezone.utc).isoformat(), **ctx.as_dict()}
+    if for_screen:
+        # Proposals for the readmission-risk panel; a clinician confirms each through the risk-inputs save. Left out
+        # of the summary's context (risk is never sent to a model).
+        out["charlson_proposals"] = ctx.charlson_proposals
+        out["charlson_citation"] = charlson_codes.CITATION
+    return out
 
 
 async def summary_context(db: AsyncSession, user: CurrentUser, patient: Patient) -> Optional[dict]:
